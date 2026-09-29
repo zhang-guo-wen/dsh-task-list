@@ -141,7 +141,7 @@ describe('task launch', () => {
     } finally { globalThis.fetch = originalFetch }
   })
 
-  it('creates a session in the linked workspace and opens an unsent title-and-description draft', async () => {
+  it('creates a session in the linked workspace and opens an unsent content-only draft', async () => {
     const steps: string[] = []
     const task = { id: 'task-1', version: 1, status: 'todo', title: 'Build feature', notes: 'Include tests', workspaceId: 'workspace-1', sendImmediately: false, useWorktree: false, agent: null } as TaskRecord
     const draft = vi.fn((text: string) => { steps.push(`draft:${text}`) })
@@ -178,10 +178,11 @@ describe('task launch', () => {
     expect(create).toHaveBeenCalledWith({ workspaceId: 'workspace-1' })
     expect(ctx.sessions.using).toHaveBeenCalledWith('session-1', { source: 'controllerOperation' }, expect.any(Function))
     expect(ctx.conversation.input.for).toHaveBeenCalledWith(scope)
-    expect(draft).toHaveBeenCalledWith('Build feature\n\nInclude tests')
+    // The title is derived from the content, so the draft never repeats it.
+    expect(draft).toHaveBeenCalledWith('Include tests')
     expect(updateTask).toHaveBeenCalledWith({ id: 'task-1', version: 1, status: 'in_progress', sessionId: 'session-1' })
     expect(openSession).toHaveBeenCalledWith('session-1')
-    expect(steps).toEqual(['create', 'draft:Build feature\n\nInclude tests', 'update', 'open'])
+    expect(steps).toEqual(['create', 'draft:Include tests', 'update', 'open'])
 
     // An explicitly linked but deleted workspace is still refused here; a task
     // with no workspace at all launches in the default one (tested below).
@@ -196,6 +197,10 @@ describe('task launch', () => {
     updateTask.mockRejectedValueOnce(new Error('status unavailable'))
     await expect(panel.start(task)).rejects.toThrow('status unavailable')
     expect(openSession).toHaveBeenCalledTimes(1)
+
+    // A legacy row stored before content became the source still sends its title.
+    await panel.start({ ...task, title: 'Legacy row', notes: '' })
+    expect(draft).toHaveBeenLastCalledWith('Legacy row')
   })
 
   it('launches a task without a workspace in the default workspace', async () => {

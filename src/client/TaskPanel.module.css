@@ -16,7 +16,7 @@
 .inner { max-width: 960px; margin: 0 auto; padding: 0 clamp(24px, 4vw, 48px) 48px; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
-.primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button, .searchButton, .subtaskOpen, .subtaskDraftAction {
+.primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button, .searchButton, .headerAction {
   font: inherit; cursor: pointer;
 }
 .primary { height: 32px; padding: 0 12px; border: 0; border-radius: 16px; background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); font-size: 13px; line-height: 20px; white-space: nowrap; }
@@ -50,9 +50,8 @@
 .textButton, .dialogActions button { border: 1px solid var(--dsw-alias-border-l3, #ddd); background: transparent; color: inherit; }
 .textButton { height: 36px; padding: 0 12px; border-radius: 12px; font-size: 13px; }
 .textButton:hover, .dialogActions button:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
-/* One task per row, one fixed-width column per visible field: the content
-   flexes and clips with an ellipsis, status and workspace keep their measured
-   width. The bound session id and the creation time stay out of the list. */
+/* The row shows content, status, workspace, and actions; subtasks stay out of
+   the panel while their storage and remotes keep the data. */
 .list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 18px 0 0; padding: 0; }
 .row {
   box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
@@ -102,19 +101,6 @@
 .row:hover .delete, .row:focus-within .delete { opacity: 1; pointer-events: auto; }
 .delete:hover, .delete:focus-visible { color: #b74242; background: #f8dede; }
 .doneState { flex: none; padding: 4px 10px; border-radius: 14px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
-/* Subtasks hang under their task; a linked row is a jump into its conversation. */
-.subtasks { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 2px solid var(--dsw-alias-border-l2, #eee); }
-.subtaskRow { display: grid; grid-template-columns: minmax(0, 1fr) 72px 96px; align-items: center; gap: 12px; }
-.subtaskText {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0;
-  background: transparent; font: inherit; font-size: 13px; line-height: 20px; text-align: left;
-  color: var(--dsw-alias-label-secondary, #5b6068);
-}
-.subtaskLinked { color: var(--dsw-alias-state-business-primary, #326dca); cursor: pointer; }
-.subtaskLinked:hover { text-decoration: underline; }
-.subtaskStatus { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.subtaskSessionEmpty { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); opacity: .72; }
-.subtaskOpen { padding: 0; border: 0; background: transparent; color: var(--dsw-alias-state-business-primary, #326dca); font-size: 12px; text-align: left; text-decoration: underline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .placeholder { padding: 28px 4px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .empty { display: flex; flex-direction: column; gap: 8px; padding: 48px 20px; align-items: center; color: var(--dsw-alias-label-tertiary, #81858c); }
 .empty strong { color: var(--dsw-alias-label-primary, #0f1115); }
@@ -131,13 +117,26 @@
 .backdrop { position: fixed; inset: 0; z-index: 1000; background: #0008; display: grid; place-items: center; padding: 20px; }
 .dialog { width: min(100%, 620px); max-height: 90vh; overflow: auto; box-sizing: border-box; border-radius: 12px; padding: 20px 24px; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #0f1115); box-shadow: 0 18px 54px #0003; }
 .dialog h2 { margin: 0 0 16px; font-size: 20px; }
-/* The composer keeps a fixed height as one column of two rows: the scrolling
-   field body on top and the action bar pinned to the bottom. */
+/* The title keeps the left; an edit dialog offers its status action on the right,
+   so Save and Start are one click instead of two dialogs. The header stays above
+   the scrolling body, so that action never scrolls out of reach. */
+.dialogHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 0; }
+.dialogHeader h2 { flex: 1; min-width: 0; margin: 0; }
+.headerAction {
+  flex: none; min-height: 30px; padding: 5px 16px; border: 0; border-radius: 15px;
+  background: var(--dsw-alias-button-primary-fill, #0f1115); color: var(--dsw-alias-label-primary-foreground, #fff);
+  font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.headerAction:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #252b35); }
+/* A refused save or launch would otherwise be hidden behind the backdrop. */
+.dialogError { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; color: #a32929; background: #fff0f0; font-size: 13px; }
+/* The composer keeps a fixed height as one column of three rows: the dialog
+   header, the scrolling field body, and the action bar pinned to the bottom. */
 .dialogFixed {
-  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto;
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
   height: min(640px, 88vh); max-height: 88vh; overflow: hidden; padding: 0;
 }
-.dialogBody { min-height: 0; overflow: auto; padding: 20px 24px; }
+.dialogBody { min-height: 0; overflow: auto; padding: 16px 24px 20px; }
 .dialogFooter {
   display: flex; justify-content: flex-end; gap: 8px; padding: 12px 24px 16px;
   border-top: 1px solid var(--dsw-alias-border-l2, #eee); background: var(--dsw-alias-bg-base, #fff);
@@ -163,20 +162,13 @@
 .fieldBlock .fieldHint { margin: 0; }
 .worktreeHint { margin: -4px 0 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
 .worktreeError { color: #a32929; }
-.subtasksSection { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2, #eee); }
-.subtasksHeader { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.subtasksHeader strong { flex: 1; font-weight: 500; color: var(--dsw-alias-label-primary, #0f1115); }
-.subtasksHeader .textButton { height: 30px; }
-.subtaskDrafts { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
-.subtaskDraft {
-  display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; align-items: center; gap: 8px;
-  padding: 10px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 10px;
+/* Send immediately and Use worktree share one row, in that order. */
+.toggleRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; }
+/* Read-only facts close the composer: their own two-column grid under a rule. */
+.metaSection {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; align-items: start;
+  margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2, #eee);
 }
-.subtaskDraft > input { grid-column: 1 / -1; }
-.subtaskDraft input, .subtaskDraft select { height: 34px; padding: 6px 8px; font-size: 13px; }
-.subtaskDraftRemoved { opacity: .5; }
-.subtaskDraftAction { height: 30px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 10px; background: transparent; font-size: 12px; white-space: nowrap; }
-.subtaskDraftAction:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 .initPath { overflow-wrap: anywhere; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); font-size: 12px; }
 .initToolbar { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 13px; }
 .initToolbar strong { flex: 1; font-weight: 500; }
@@ -192,7 +184,6 @@
 .initLoading, .initError { margin: 8px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .initError { color: var(--dsw-alias-label-error, #a32929); }
 .initWarning { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 13px; }
-.readOnlyTimes { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .dialogActions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialogActions button { height: 32px; padding: 0 12px; border-radius: 16px; font-size: 13px; }
 .dialogActions .primary { border: 0; background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); }
@@ -208,19 +199,15 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
 @media (max-width: 900px) {
   .rowLine { grid-template-columns: minmax(0, 1fr) 72px auto; }
   .workspaceMeta { display: none; }
-  .subtaskRow { grid-template-columns: minmax(0, 1fr) 72px; }
-  .subtaskOpen, .subtaskSessionEmpty { display: none; }
 }
 @media (max-width: 760px) {
   .toolbarRight { width: 100%; margin-left: 0; }
   .toolbar select { flex: 1; max-width: none; }
   .searchBox { width: 100%; }
   .searchBox input { width: 100%; flex: 1; }
-  .subtaskDraft { grid-template-columns: 88px minmax(0, 1fr); }
-  .subtaskDraftAction { grid-column: 1 / -1; justify-self: end; }
 }
 /* A dialog narrower than two usable columns falls back to one field per row. */
 @media (max-width: 560px) {
-  .dialog form { grid-template-columns: minmax(0, 1fr); }
+  .dialog form, .metaSection { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .row { transition: none; } }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT,
+  // The subtask remotes stay on the face while the panel hides the feature.
   type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type DeleteTaskRequest,
   type ListTasksRequest, type SubtaskRecord, type TaskPage, type TaskPriority, type TaskRecord, type TaskStatus,
   type UpdateSubtaskRequest, type UpdateTaskRequest,
@@ -15,7 +16,7 @@ interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
 }
 
-/** One Session offered by the subtask picker. */
+/** One Session offered by the session picker. */
 export interface SessionOption { id: string; title: string }
 export interface SessionSnapshot { items: readonly SessionOption[] }
 
@@ -58,20 +59,6 @@ const statusKeys: TaskStatus[] = ['todo', 'in_progress', 'done']
 const priorityKeys: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
 const pageSizes: number[] = [10, 20, 50, MAX_PAGE_SIZE]
 
-/** One editable subtask row held by the composer until Save applies it. */
-interface SubtaskDraft {
-  key: string
-  id: string | null
-  version: number | null
-  notes: string
-  status: TaskStatus
-  sessionId: string | null
-  removed: boolean
-  savedNotes: string
-  savedStatus: TaskStatus
-  savedSessionId: string | null
-}
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -90,8 +77,7 @@ function contentOf(task: TaskRecord): string {
 }
 
 export function TaskPanel({
-  list, create, update, remove, createSubtask, updateSubtask, removeSubtask, openSession,
-  sessionSnapshot, subscribeSessions,
+  list, create, update, remove,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces, t,
 }: TaskPanelProps) {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
@@ -116,7 +102,6 @@ export function TaskPanel({
   const [sessionId, setSessionId] = useState('')
   const [agent, setAgent] = useState('')
   const [useWorktree, setUseWorktree] = useState(false)
-  const [subtaskDrafts, setSubtaskDrafts] = useState<SubtaskDraft[]>([])
   const [worktreeProbe, setWorktreeProbe] = useState<{ workspaceId: string; checking: boolean; needsInit: boolean; error: string } | null>(null)
   const [initializeTask, setInitializeTask] = useState<{ task: TaskRecord; workspaceTitle: string; workspacePath: string } | null>(null)
   const [initialEntries, setInitialEntries] = useState<InitialCommitEntry[]>([])
@@ -128,9 +113,7 @@ export function TaskPanel({
   const mounted = useRef(false)
   const generation = useRef(0)
   const agentPrefilled = useRef(false)
-  const draftKeys = useRef(0)
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
-  const sessions = useSyncExternalStore(subscribeSessions, sessionSnapshot).items
   const workspaces = workspaceState.items
   const workspaceNames = new Map(workspaces.map(row => [row.workspaceId, row.title]))
   const defaultWorkspace = pickDefaultWorkspace(workspaces, t('defaultWorkspaceName'))
@@ -220,19 +203,6 @@ export function TaskPanel({
     return () => { active = false }
   }, [composerOpen, useWorktree, workspaceId, probeWorktree])
 
-  const nextDraftKey = (): string => `draft-${++draftKeys.current}`
-
-  const draftOf = (subtask: SubtaskRecord): SubtaskDraft => ({
-    key: subtask.id, id: subtask.id, version: subtask.version,
-    notes: subtask.notes, status: subtask.status, sessionId: subtask.sessionId, removed: false,
-    savedNotes: subtask.notes, savedStatus: subtask.status, savedSessionId: subtask.sessionId,
-  })
-
-  const emptyDraft = (): SubtaskDraft => ({
-    key: nextDraftKey(), id: null, version: null, notes: '', status: 'todo', sessionId: null, removed: false,
-    savedNotes: '', savedStatus: 'todo', savedSessionId: null,
-  })
-
   const openCreate = () => {
     setEditing(null)
     setNotes('')
@@ -244,7 +214,7 @@ export function TaskPanel({
     setSessionId('')
     setAgent('')
     setUseWorktree(false)
-    setSubtaskDrafts([])
+    setError('')
     setComposerOpen(true)
   }
 
@@ -259,7 +229,7 @@ export function TaskPanel({
     setSessionId(task.sessionId ?? '')
     setAgent(task.agent ?? '')
     setUseWorktree(task.useWorktree)
-    setSubtaskDrafts(task.subtasks.map(draftOf))
+    setError('')
     setComposerOpen(true)
   }
 
@@ -269,45 +239,10 @@ export function TaskPanel({
   const submitSearch = () => { setQuery(searchText.trim()); setPage(1) }
   const clearSearch = () => { setSearchText(''); setQuery(''); setPage(1) }
 
-  const updateDraft = (key: string, patch: Partial<SubtaskDraft>) => {
-    setSubtaskDrafts(current => current.map(draft => draft.key === key ? { ...draft, ...patch } : draft))
-  }
-  const addDraft = () => { setSubtaskDrafts(current => [...current, emptyDraft()]) }
-  const toggleDraft = (key: string) => {
-    setSubtaskDrafts(current => current.flatMap(draft => {
-      if (draft.key !== key) return [draft]
-      // A row that was never saved is simply dropped; a saved one is marked for deletion.
-      if (draft.id === null) return []
-      return [{ ...draft, removed: !draft.removed }]
-    }))
-  }
-
-  /** Apply the composer's subtask edits to a saved task: deletions, additions, then changes. */
-  const syncSubtasks = async (taskId: string) => {
-    for (const draft of subtaskDrafts) {
-      if (!draft.removed || draft.id === null || draft.version === null) continue
-      await removeSubtask({ id: draft.id, version: draft.version })
-    }
-    for (const draft of subtaskDrafts) {
-      if (draft.removed) continue
-      const text = draft.notes.trim()
-      if (!text) continue
-      if (draft.id === null) {
-        await createSubtask({ taskId, notes: text, status: draft.status, sessionId: draft.sessionId })
-      } else if (draft.version !== null && (text !== draft.savedNotes || draft.status !== draft.savedStatus
-        || draft.sessionId !== draft.savedSessionId)) {
-        await updateSubtask({ id: draft.id, version: draft.version, notes: text, status: draft.status, sessionId: draft.sessionId })
-      }
-    }
-  }
-
   const derivedTitle = deriveTaskTitle('', notes)
 
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (busy || !derivedTitle) return
-    setBusy(true)
-    setError('')
+  /** Write the composer fields and return the saved row; a refusal is thrown for the caller to show. */
+  const persist = async (): Promise<TaskRecord> => {
     const fields = {
       title: derivedTitle, notes, priority,
       storyPoints: storyPoints === '' ? null : Number(storyPoints),
@@ -315,16 +250,55 @@ export function TaskPanel({
       workspaceId: workspaceId || null,
       sendImmediately, sessionId: sessionId.trim() || null, agent: agent || null, useWorktree,
     }
+    return editing
+      ? await update({ id: editing.id, version: editing.version, status: editing.status, ...fields })
+      : await create(fields)
+  }
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (busy || !derivedTitle) return
+    setBusy(true)
+    setError('')
     try {
-      const saved = editing
-        ? await update({ id: editing.id, version: editing.version, status: editing.status, ...fields })
-        : await create(fields)
-      await syncSubtasks(saved.id)
+      await persist()
       if (!mounted.current) return
       setComposerOpen(false)
       setEditing(null)
       await refresh()
     } catch (failure) { if (mounted.current) setError(errorText(failure)) }
+    finally { if (mounted.current) setBusy(false) }
+  }
+
+  /**
+   * The dialog header action for a saved task: write the composer first, then run the same
+   * start/finish the list row offers, so the dialog never closes on an unsaved edit.
+   */
+  const saveAndLaunch = async () => {
+    if (busy || !derivedTitle || editing === null) return
+    const finish = editing.status === 'in_progress'
+    let saved: TaskRecord | null = null
+    setBusy(true)
+    setError('')
+    try {
+      saved = await persist()
+      if (!mounted.current) return
+      setComposerOpen(false)
+      setEditing(null)
+      await refresh()
+      if (!mounted.current) return
+      if (finish) await update({ id: saved.id, version: saved.version, status: 'done' })
+      else await start(saved)
+      if (mounted.current) await refresh()
+    } catch (failure) {
+      if (!mounted.current) return
+      // A non-Git workspace is resolved with the initialization dialog, exactly as in the list.
+      if (failure instanceof WorktreeNotGitError && saved !== null) {
+        setInitializeTask({ task: saved, workspaceTitle: failure.workspaceTitle, workspacePath: failure.workspacePath })
+        return
+      }
+      setError(errorText(failure))
+    }
     finally { if (mounted.current) setBusy(false) }
   }
 
@@ -446,7 +420,9 @@ export function TaskPanel({
         </div>
       </div>
 
-      {error && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
+      {/* With the composer open its own copy is the visible one, so the banner
+          stays quiet to avoid announcing the same failure twice. */}
+      {error && !composerOpen && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
       {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : tasks.length === 0 ? <div className={css.empty}>
         <strong>{filtered ? t('emptySearch') : t('empty')}</strong><span>{filtered ? t('emptySearchHint') : t('emptyHint')}</span>
       </div> : <ul className={css.list}>
@@ -473,18 +449,6 @@ export function TaskPanel({
                   aria-label={`${t('remove')}: ${content}`} title={t('remove')}>×</button>
               </div>
             </div>
-            {task.subtasks.length > 0 && <ul className={css.subtasks}>
-              {task.subtasks.map(subtask => <li className={css.subtaskRow} data-status={subtask.status} key={subtask.id}>
-                {subtask.sessionId === null
-                  ? <span className={css.subtaskText} title={subtask.notes}>{subtask.notes}</span>
-                  : <button type="button" className={css.subtaskText + ' ' + css.subtaskLinked} title={t('openSession')}
-                    onClick={() => openSession(subtask.sessionId!)}>{subtask.notes}</button>}
-                <span className={css.subtaskStatus}>{t(statusKey(subtask.status))}</span>
-                {subtask.sessionId === null ? <span className={css.subtaskSessionEmpty}>{t('noSession')}</span>
-                  : <button type="button" className={css.subtaskOpen} title={`${t('openSession')}: ${subtask.sessionId}`}
-                    onClick={() => openSession(subtask.sessionId!)}>{t('openSession')}</button>}
-              </li>)}
-            </ul>}
           </li>
         })}
       </ul>}
@@ -507,24 +471,18 @@ export function TaskPanel({
 
     {composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setComposerOpen(false) }}>
       <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
-        <div className={css.dialogBody}>
+        <div className={css.dialogHeader}>
           <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
+          {editing !== null && editing.status !== 'done' && <button type="button" className={css.headerAction}
+            onClick={() => void saveAndLaunch()} disabled={busy || !canSave}>
+            {t(editing.status === 'in_progress' ? 'finish' : 'start')}
+          </button>}
+        </div>
+        <div className={css.dialogBody}>
+          {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
           <form id="task-list-form" onSubmit={event => void save(event)}>
             <label className={css.fullRow}>{t('notesLabel')}<textarea autoFocus required value={notes} maxLength={20000} rows={5}
               placeholder={t('notesHint')} onChange={event => setNotes(event.target.value)} /></label>
-            <div className={css.fieldBlock}>
-              <label>{t('status')}<span className={css.fixedValue} title={t(statusKey(composerStatus))}>{t(statusKey(composerStatus))}</span></label>
-              <p className={css.fieldHint}>{t('statusFixed')}</p>
-            </div>
-            <div className={css.fieldBlock}>
-              <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
-              <p className={css.fieldHint}>{t('sessionIdLocked')}</p>
-            </div>
-            <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
-              {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
-            </select></label>
-            <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
-            <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
             <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
               {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
               {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
@@ -535,42 +493,32 @@ export function TaskPanel({
               {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
               {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
             </select></label>
-            <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
-            <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
+            <div className={css.toggleRow + ' ' + css.fullRow}>
+              <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
+              <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
+            </div>
             {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
               {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
                 : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
             </p>}
-            {editing && <div className={css.readOnlyTimes + ' ' + css.fullRow}>
-              <span>{t('createdAt')}: {formattedTime(editing.createdAt)}</span>
-              {editing.startedAt !== null && <span>{t('startedAt')}: {formattedTime(editing.startedAt)}</span>}
-              {editing.completedAt !== null && <span>{t('completedAt')}: {formattedTime(editing.completedAt)}</span>}
-            </div>}
-            <section className={css.subtasksSection + ' ' + css.fullRow}>
-              <div className={css.subtasksHeader}>
-                <strong>{t('subtasks')}</strong>
-                <button type="button" className={css.textButton} onClick={addDraft} disabled={busy}>{t('addSubtask')}</button>
+            <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
+              {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
+            </select></label>
+            <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
+            <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
+            {/* Read-only facts stay in the composer, styled exactly like the fields above. */}
+            <section className={css.metaSection + ' ' + css.fullRow}>
+              <div className={css.fieldBlock}>
+                <label>{t('status')}<span className={css.fixedValue} title={t(statusKey(composerStatus))}>{t(statusKey(composerStatus))}</span></label>
+                <p className={css.fieldHint}>{t('statusFixed')}</p>
               </div>
-              {subtaskDrafts.length === 0 ? <p className={css.fieldHint}>{t('subtasksEmpty')}</p>
-                : <ul className={css.subtaskDrafts}>
-                  {subtaskDrafts.map(draft => <li key={draft.key} className={draft.removed ? css.subtaskDraft + ' ' + css.subtaskDraftRemoved : css.subtaskDraft}>
-                    <input value={draft.notes} maxLength={2000} placeholder={t('subtaskHint')} disabled={draft.removed} aria-label={t('subtaskHint')}
-                      onChange={event => updateDraft(draft.key, { notes: event.target.value })} />
-                    <select aria-label={t('status')} value={draft.status} disabled={draft.removed}
-                      onChange={event => updateDraft(draft.key, { status: event.target.value as TaskStatus })}>
-                      {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
-                    </select>
-                    <select aria-label={t('subtaskSession')} value={draft.sessionId ?? ''} disabled={draft.removed}
-                      onChange={event => updateDraft(draft.key, { sessionId: event.target.value || null })}>
-                      <option value="">{t('noSession')}</option>
-                      {draft.sessionId !== null && !sessions.some(option => option.id === draft.sessionId)
-                        && <option value={draft.sessionId ?? ''}>{draft.sessionId}</option>}
-                      {sessions.map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
-                    </select>
-                    <button type="button" className={css.subtaskDraftAction} disabled={busy}
-                      onClick={() => toggleDraft(draft.key)}>{draft.removed ? t('restore') : t('remove')}</button>
-                  </li>)}
-                </ul>}
+              <div className={css.fieldBlock}>
+                <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
+                <p className={css.fieldHint}>{t('sessionIdLocked')}</p>
+              </div>
+              {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
+              {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
+              {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
             </section>
           </form>
         </div>

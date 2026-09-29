@@ -179,9 +179,11 @@ export async function apply(ctx: Context): Promise<void> {
         if (task.agent && !task.useWorktree) {
           await unwrap(agentPresets().select(sessionId, task.agent))
         }
-        const draft = [task.title.trim(), task.notes.trim()].filter(Boolean).join('\n\n')
+        // The title is derived from the content, so the draft carries the content
+        // only; a legacy row without content still falls back to its stored title.
+        const content = task.notes.trim() || task.title.trim()
         const input = ctx.conversation.input.for(scope)
-        input.setDraft(draft)
+        input.setDraft(content)
         await unwrap(remote().updateTask({ id: task.id, version: task.version, status: 'in_progress', sessionId }))
         ctx.uiWorkspace.openSession(sessionId)
         if (task.sendImmediately) input.submit('queue', 'click')
