@@ -1,6 +1,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import type { CreateTaskRequest, DeleteTaskRequest, ListTasksRequest, TaskRecord, UpdateTaskRequest } from './types.ts'
+import type {
+  CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
+  SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
+} from './types.ts'
 import type { TaskStore } from './store.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -11,8 +14,8 @@ export class TaskService extends TypertRemoteService {
   constructor(ctx: Context, readonly store: TaskStore) { super(ctx, 'taskList') }
 
   @Remote('listTasks')
-  async listTasks(request: ListTasksRequest): Promise<TaskRecord[]> {
-    return this.store.list(request?.status)
+  async listTasks(request: ListTasksRequest): Promise<TaskPage> {
+    return this.store.list(request ?? {})
   }
 
   @Remote('createTask')
@@ -28,6 +31,22 @@ export class TaskService extends TypertRemoteService {
   @Remote('deleteTask')
   async deleteTask(request: DeleteTaskRequest): Promise<{ deleted: true }> {
     this.store.delete(request?.id, request?.version)
+    return { deleted: true }
+  }
+
+  @Remote('createSubtask')
+  async createSubtask(request: CreateSubtaskRequest): Promise<SubtaskRecord> {
+    return this.store.createSubtask(request)
+  }
+
+  @Remote('updateSubtask')
+  async updateSubtask(request: UpdateSubtaskRequest): Promise<SubtaskRecord> {
+    return this.store.updateSubtask(request)
+  }
+
+  @Remote('deleteSubtask')
+  async deleteSubtask(request: DeleteSubtaskRequest): Promise<{ deleted: true }> {
+    this.store.deleteSubtask(request?.id, request?.version)
     return { deleted: true }
   }
 }

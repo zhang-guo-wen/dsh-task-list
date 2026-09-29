@@ -9,10 +9,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import type { CreateTaskRequest, DeleteTaskRequest, ListTasksRequest, TaskRecord, UpdateTaskRequest } from '../types.ts'
+import type {
+  CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
+  SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
+} from '../types.ts'
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
 import { NS, en, zh, type TaskKey } from './locales.ts'
-import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type TaskFace } from './TaskPanel.tsx'
+import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { pickDefaultWorkspace } from './workspaces.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -20,16 +23,28 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 interface RemoteService {
-  listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskRecord[]>>
+  listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskPage>>
   createTask(request: CreateTaskRequest): Promise<RemoteResult<TaskRecord>>
   updateTask(request: UpdateTaskRequest): Promise<RemoteResult<TaskRecord>>
   deleteTask(request: DeleteTaskRequest): Promise<RemoteResult<{ deleted: true }>>
+  createSubtask(request: CreateSubtaskRequest): Promise<RemoteResult<SubtaskRecord>>
+  updateSubtask(request: UpdateSubtaskRequest): Promise<RemoteResult<SubtaskRecord>>
+  deleteSubtask(request: DeleteSubtaskRequest): Promise<RemoteResult<{ deleted: true }>>
 }
 
 interface AgentPresetService {
   list(): Promise<RemoteResult<{ presets: readonly { id: string; name?: string; isDefault: boolean; broken?: string }[] }>>
   select(sessionId: string, agent: string): Promise<RemoteResult<string>>
 }
+
+/** Projection of the Session Controller catalog the picker needs. */
+interface SessionListLike {
+  ids: readonly string[]
+  byId: Record<string, { displayTitle?: string } | undefined>
+}
+
+/** Most recent Sessions offered in a picker; keeps one select usable. */
+const SESSION_OPTION_LIMIT = 200
 
 interface WorktreeStartResult { sessionId: string; workspaceId: string }
 
@@ -86,6 +101,21 @@ export async function apply(ctx: Context): Promise<void> {
   }
   const agentPresets = (): AgentPresetService => ctx.remote.agentPresets as unknown as AgentPresetService
   const workspaceFor = (id: string | null) => ctx.workspaces.list.getSnapshot().items.find(item => item.workspaceId === id)
+  // The Session catalog snapshot changes identity on every publish, so project
+  // it once per snapshot: useSyncExternalStore requires a stable reference.
+  let sessionCache: { source: unknown; value: SessionSnapshot } = { source: undefined, value: { items: [] } }
+  const sessionSnapshot = (): SessionSnapshot => {
+    const snapshot = ctx.sessions.list.getSnapshot() as unknown as SessionListLike | undefined
+    if (sessionCache.source !== snapshot) {
+      const ids = snapshot?.ids ?? []
+      const byId = snapshot?.byId ?? {}
+      sessionCache = {
+        source: snapshot,
+        value: { items: ids.slice(0, SESSION_OPTION_LIMIT).map(id => ({ id, title: byId[id]?.displayTitle ?? id })) },
+      }
+    }
+    return sessionCache.value
+  }
   const probeWorktree = async (workspaceId: string): Promise<void> => {
     const workspace = workspaceFor(workspaceId)
     if (workspace === undefined) throw new Error(t('startWorkspaceMissing'))
@@ -105,6 +135,12 @@ export async function apply(ctx: Context): Promise<void> {
     create: request => unwrap(remote().createTask(request)),
     update: request => unwrap(remote().updateTask(request)),
     remove: request => unwrap(remote().deleteTask(request)),
+    createSubtask: request => unwrap(remote().createSubtask(request)),
+    updateSubtask: request => unwrap(remote().updateSubtask(request)),
+    removeSubtask: request => unwrap(remote().deleteSubtask(request)),
+    openSession: sessionId => ctx.uiWorkspace.openSession(sessionId as Parameters<typeof ctx.uiWorkspace.openSession>[0]),
+    sessionSnapshot,
+    subscribeSessions: listener => ctx.sessions.list.subscribe(listener),
     listAgents: async () => {
       const result = await agentPresets().list()
       if (!result.ok) throw new Error(result.error.message)

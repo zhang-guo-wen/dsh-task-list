@@ -22,10 +22,93 @@ describe('client contribution', () => {
       expect.objectContaining({ name: 'main', key: 'task-list' }),
       expect.objectContaining({ name: 'sidebar.panellist', id: 'task-list' }),
     ])
-    expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual(['listTasks', 'createTask', 'updateTask', 'deleteTask'])
+    expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual([
+      'listTasks', 'createTask', 'updateTask', 'deleteTask', 'createSubtask', 'updateSubtask', 'deleteSubtask',
+    ])
     cleanups.forEach(fn => fn())
     expect(offRemote).toHaveBeenCalledOnce()
     expect(offLocale).toHaveBeenCalledOnce()
+  })
+})
+
+describe('subtasks and sessions', () => {
+  interface PanelFace {
+    openSession(sessionId: string): void
+    sessionSnapshot(): { items: readonly { id: string; title: string }[] }
+    subscribeSessions(listener: () => void): () => void
+    createSubtask(request: { taskId: string; notes: string }): Promise<unknown>
+    updateSubtask(request: { id: string; version: number; notes: string }): Promise<unknown>
+    removeSubtask(request: { id: string; version: number }): Promise<unknown>
+  }
+
+  function panelOf(ctx: Record<string, unknown>): PanelFace {
+    return (ctx.slots as { register: { mock: { calls: Array<[Record<string, unknown>]> } } })
+      .register.mock.calls.find(call => call[0]!.name === 'main')?.[0]!.inject() as PanelFace
+  }
+
+  function baseContext(remote: Record<string, unknown>): Record<string, unknown> {
+    return {
+      remote: { $mount: vi.fn(async () => vi.fn()), ...remote },
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
+      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+    }
+  }
+
+  it('jumps to a linked conversation and projects the session catalog once per snapshot', async () => {
+    const openSession = vi.fn()
+    const unsubscribe = vi.fn()
+    const snapshot = {
+      ids: ['s-2', 's-1'],
+      byId: { 's-1': { displayTitle: 'Release notes' }, 's-2': { displayTitle: undefined } },
+    }
+    const subscribe = vi.fn(() => unsubscribe)
+    const ctx = baseContext({})
+    ctx.sessions = { list: { getSnapshot: () => snapshot, subscribe } }
+    ctx.uiWorkspace = { openSession }
+    await apply(ctx as unknown as Context)
+    const panel = panelOf(ctx)
+
+    expect(panel.sessionSnapshot().items).toEqual([
+      { id: 's-2', title: 's-2' }, { id: 's-1', title: 'Release notes' },
+    ])
+    // useSyncExternalStore compares by identity, so one snapshot projects once.
+    expect(panel.sessionSnapshot()).toBe(panel.sessionSnapshot())
+
+    panel.openSession('s-2')
+    expect(openSession).toHaveBeenCalledWith('s-2')
+
+    const listener = () => undefined
+    panel.subscribeSessions(listener)
+    expect(subscribe).toHaveBeenCalledWith(listener)
+  })
+
+  it('routes subtask edits through the taskList remote namespace', async () => {
+    const createSubtask = vi.fn(async () => ({ ok: true as const, value: { id: 'sub-1', notes: 'Write tests' } }))
+    const updateSubtask = vi.fn(async () => ({ ok: true as const, value: { id: 'sub-1', notes: 'Write more tests' } }))
+    const deleteSubtask = vi.fn(async () => ({ ok: true as const, value: { deleted: true as const } }))
+    const ctx = baseContext({})
+    ctx.get = () => ({ createSubtask, updateSubtask, deleteSubtask })
+    await apply(ctx as unknown as Context)
+    const panel = panelOf(ctx)
+
+    await expect(panel.createSubtask({ taskId: 'task-1', notes: 'Write tests' }))
+      .resolves.toMatchObject({ id: 'sub-1' })
+    await panel.updateSubtask({ id: 'sub-1', version: 1, notes: 'Write more tests' })
+    await panel.removeSubtask({ id: 'sub-1', version: 2 })
+    expect(createSubtask).toHaveBeenCalledWith({ taskId: 'task-1', notes: 'Write tests' })
+    expect(updateSubtask).toHaveBeenCalledWith({ id: 'sub-1', version: 1, notes: 'Write more tests' })
+    expect(deleteSubtask).toHaveBeenCalledWith({ id: 'sub-1', version: 2 })
+  })
+
+  it('surfaces a refused subtask edit as a plain error', async () => {
+    const createSubtask = vi.fn(async () => ({ ok: false as const, error: { message: 'task not found' } }))
+    const ctx = baseContext({})
+    ctx.get = () => ({ createSubtask })
+    await apply(ctx as unknown as Context)
+    const panel = panelOf(ctx)
+    await expect(panel.createSubtask({ taskId: 'missing', notes: 'x' })).rejects.toThrow('task not found')
   })
 })
 

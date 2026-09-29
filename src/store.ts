@@ -2,12 +2,23 @@ import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { CreateTaskRequest, TaskPriority, TaskRecord, TaskStatus, UpdateTaskRequest } from './types.ts'
+import {
+  DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT,
+  type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type ListTasksRequest,
+  type SubtaskRecord, type TaskPage, type TaskPriority, type TaskRecord, type TaskStatus,
+  type UpdateSubtaskRequest, type UpdateTaskRequest,
+} from './types.ts'
 
 const statuses = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
 const priorities = new Set<TaskPriority>(['low', 'medium', 'high', 'urgent'])
 const titleLimit = 200
 const notesLimit = 20_000
+const subtaskNotesLimit = 2_000
+
+/** Current schema version; the store refuses anything newer. */
+const schemaVersion = 4
+/** Newest rows first inside each status group, with a stable id tie-break. */
+const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
 
 function titleOf(value: unknown): string {
   if (typeof value !== 'string') throw new Error('title must be text')
@@ -19,6 +30,15 @@ function titleOf(value: unknown): string {
 function notesOf(value: unknown): string {
   if (typeof value !== 'string' || value.length > notesLimit) throw new Error(`notes must contain at most ${notesLimit} characters`)
   return value
+}
+
+function subtaskNotesOf(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('subtask content must be text')
+  const notes = value.trim()
+  if (!notes || notes.length > subtaskNotesLimit) {
+    throw new Error(`subtask content must contain 1–${subtaskNotesLimit} characters`)
+  }
+  return notes
 }
 
 function statusOf(value: unknown): TaskStatus {
@@ -82,6 +102,37 @@ function versionOf(value: unknown): number {
   return value as number
 }
 
+function queryOf(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new Error('search query must be text')
+  const query = value.trim()
+  if (query.length > SEARCH_LIMIT) throw new Error(`search query must contain at most ${SEARCH_LIMIT} characters`)
+  return query
+}
+
+function pageOf(value: unknown): number {
+  if (value === undefined || value === null) return 1
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error('page must be a positive integer')
+  return value as number
+}
+
+function pageSizeOf(value: unknown): number {
+  if (value === undefined || value === null) return DEFAULT_PAGE_SIZE
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_PAGE_SIZE) {
+    throw new Error(`page size must be an integer from 1 to ${MAX_PAGE_SIZE}`)
+  }
+  return value as number
+}
+
+/**
+ * Wrap a literal search phrase for a `LIKE … ESCAPE '\'` comparison.
+ * @param query - non-empty phrase already trimmed by the caller.
+ * @returns the phrase with SQL wildcards escaped and `%` around it.
+ */
+function likePattern(query: string): string {
+  return `%${query.replace(/[\\%_]/gu, match => `\\${match}`)}%`
+}
+
 interface TaskRow {
   id: string
   title: string
@@ -102,15 +153,50 @@ interface TaskRow {
   updatedAt: number
 }
 
+interface SubtaskRow {
+  id: string
+  taskId: string
+  notes: string
+  status: TaskStatus
+  sessionId: string | null
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
 const select = `SELECT id, title, notes, status, priority, story_points AS storyPoints,
   tags, workspace_id AS workspaceId, send_immediately AS sendImmediately,
   session_id AS sessionId, agent, use_worktree AS useWorktree,
   started_at AS startedAt, completed_at AS completedAt,
   version, created_at AS createdAt, updated_at AS updatedAt FROM tasks`
 
+const selectSubtask = `SELECT id, task_id AS taskId, notes, status, session_id AS sessionId,
+  version, created_at AS createdAt, updated_at AS updatedAt FROM subtasks`
+
 function taskOf(row: TaskRow): TaskRecord {
-  return { ...row, tags: tagsOf(JSON.parse(row.tags)), sendImmediately: row.sendImmediately === 1, useWorktree: row.useWorktree === 1 }
+  return {
+    ...row, tags: tagsOf(JSON.parse(row.tags)),
+    sendImmediately: row.sendImmediately === 1, useWorktree: row.useWorktree === 1,
+    subtasks: [],
+  }
 }
+
+function subtaskOf(row: SubtaskRow): SubtaskRecord {
+  return { ...row, status: statusOf(row.status) }
+}
+
+/** Schema objects added by version 4. */
+const subtaskSchema = `CREATE TABLE subtasks (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  notes TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in_progress', 'done')),
+  session_id TEXT,
+  version INTEGER NOT NULL CHECK(version >= 1),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX subtasks_task_created ON subtasks(task_id, created_at);`
 
 export class TaskStore {
   readonly db: DatabaseSync
@@ -121,7 +207,7 @@ export class TaskStore {
     try {
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
-      if (version.user_version > 3) throw new Error(`unsupported task database version: ${version.user_version}`)
+      if (version.user_version > schemaVersion) throw new Error(`unsupported task database version: ${version.user_version}`)
       if (version.user_version === 0) {
         const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
         if (existing.length) throw new Error('task database has unrecognized tables')
@@ -146,7 +232,8 @@ export class TaskStore {
             updated_at INTEGER NOT NULL
           ) STRICT;
           CREATE INDEX tasks_status_updated ON tasks(status, updated_at DESC);
-          PRAGMA user_version = 3;
+          ${subtaskSchema}
+          PRAGMA user_version = ${schemaVersion};
           COMMIT;
         `)
       } else if (version.user_version === 1) {
@@ -161,7 +248,8 @@ export class TaskStore {
           ALTER TABLE tasks ADD COLUMN session_id TEXT;
           ALTER TABLE tasks ADD COLUMN agent TEXT;
           ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
-          PRAGMA user_version = 3;
+          ${subtaskSchema}
+          PRAGMA user_version = ${schemaVersion};
           COMMIT;
         `)
       } else if (version.user_version === 2) {
@@ -170,7 +258,14 @@ export class TaskStore {
           ALTER TABLE tasks ADD COLUMN session_id TEXT;
           ALTER TABLE tasks ADD COLUMN agent TEXT;
           ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
-          PRAGMA user_version = 3;
+          ${subtaskSchema}
+          PRAGMA user_version = ${schemaVersion};
+          COMMIT;
+        `)
+      } else if (version.user_version === 3) {
+        this.db.exec(`BEGIN;
+          ${subtaskSchema}
+          PRAGMA user_version = ${schemaVersion};
           COMMIT;
         `)
       }
@@ -183,16 +278,77 @@ export class TaskStore {
 
   close(): void { this.db.close() }
 
-  list(status?: TaskStatus): TaskRecord[] {
-    if (status !== undefined) {
-      return (this.db.prepare(`${select} WHERE status = ? ORDER BY updated_at DESC, id`).all(statusOf(status)) as unknown as TaskRow[]).map(taskOf)
+  /**
+   * Read one filtered, searched, ordered page of tasks.
+   * @param request - optional status, literal search phrase, workspace filter, and paging.
+   * @returns the page rows, the unpaged match count, and the clamped page bounds.
+   */
+  list(request: ListTasksRequest = {}): TaskPage {
+    const conditions: string[] = []
+    const parameters: (string | number)[] = []
+    if (request.status !== undefined) {
+      conditions.push('status = ?')
+      parameters.push(statusOf(request.status))
     }
-    return (this.db.prepare(`${select} ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id`).all() as unknown as TaskRow[]).map(taskOf)
+    if (request.workspaceId !== undefined) {
+      const workspaceId = workspaceIdOf(request.workspaceId)!
+      if (request.includeUnassigned) {
+        conditions.push('(workspace_id = ? OR workspace_id IS NULL)')
+      } else {
+        conditions.push('workspace_id = ?')
+      }
+      parameters.push(workspaceId)
+    } else if (request.includeUnassigned) {
+      conditions.push('workspace_id IS NULL')
+    }
+    const query = queryOf(request.query)
+    if (query) {
+      // A task matches through its own fields or through any of its subtasks.
+      conditions.push(`(title LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR session_id LIKE ? ESCAPE '\\'
+        OR EXISTS (SELECT 1 FROM subtasks sub WHERE sub.task_id = tasks.id
+          AND (sub.notes LIKE ? ESCAPE '\\' OR sub.session_id LIKE ? ESCAPE '\\')))`)
+      const pattern = likePattern(query)
+      parameters.push(pattern, pattern, pattern, pattern, pattern)
+    }
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''
+    const counted = this.db.prepare(`SELECT COUNT(*) AS total FROM tasks${where}`).get(...parameters) as { total: number }
+    const pageSize = pageSizeOf(request.pageSize)
+    const pageCount = Math.max(1, Math.ceil(counted.total / pageSize))
+    const page = Math.min(pageOf(request.page), pageCount)
+    const rows = this.db.prepare(`${select}${where} ${taskOrder} LIMIT ? OFFSET ?`)
+      .all(...parameters, pageSize, (page - 1) * pageSize) as unknown as TaskRow[]
+    return { items: this.attachSubtasks(rows.map(taskOf)), total: counted.total, page, pageSize }
   }
 
   get(id: string): TaskRecord | null {
     const row = this.db.prepare(`${select} WHERE id = ?`).get(idOf(id)) as unknown as TaskRow | undefined
-    return row ? taskOf(row) : null
+    return row ? this.attachSubtasks([taskOf(row)])[0]! : null
+  }
+
+  /** Rows of one task, oldest first. */
+  listSubtasks(taskId: string): SubtaskRecord[] {
+    return (this.db.prepare(`${selectSubtask} WHERE task_id = ? ORDER BY created_at, id`)
+      .all(idOf(taskId)) as unknown as SubtaskRow[]).map(subtaskOf)
+  }
+
+  getSubtask(id: string): SubtaskRecord | null {
+    const row = this.db.prepare(`${selectSubtask} WHERE id = ?`).get(idOf(id)) as unknown as SubtaskRow | undefined
+    return row ? subtaskOf(row) : null
+  }
+
+  /** Load every row of the given tasks with one query, preserving task order. */
+  private attachSubtasks(tasks: TaskRecord[]): TaskRecord[] {
+    if (tasks.length === 0) return tasks
+    const ids = tasks.map(task => task.id)
+    const rows = this.db.prepare(`${selectSubtask} WHERE task_id IN (${ids.map(() => '?').join(', ')}) ORDER BY created_at, id`)
+      .all(...ids) as unknown as SubtaskRow[]
+    const grouped = new Map<string, SubtaskRecord[]>()
+    for (const row of rows) {
+      const list = grouped.get(row.taskId)
+      if (list) list.push(subtaskOf(row))
+      else grouped.set(row.taskId, [subtaskOf(row)])
+    }
+    return tasks.map(task => ({ ...task, subtasks: grouped.get(task.id) ?? [] }))
   }
 
   create(input: CreateTaskRequest): TaskRecord {
@@ -214,7 +370,7 @@ export class TaskStore {
   update(input: UpdateTaskRequest): TaskRecord {
     const id = idOf(input?.id)
     const version = versionOf(input?.version)
-    const current = this.get(id)
+    const current = this.db.prepare(`${select} WHERE id = ?`).get(id) as unknown as TaskRow | undefined
     if (!current) throw new Error('task not found')
     if (current.version !== version) throw new Error('task changed; refresh and retry')
     const title = input.title === undefined ? current.title : titleOf(input.title)
@@ -222,12 +378,13 @@ export class TaskStore {
     const status = input.status === undefined ? current.status : statusOf(input.status)
     const priority = input.priority === undefined ? current.priority : priorityOf(input.priority)
     const storyPoints = input.storyPoints === undefined ? current.storyPoints : storyPointsOf(input.storyPoints)
-    const tags = input.tags === undefined ? current.tags : tagsOf(input.tags)
+    const tags = input.tags === undefined ? tagsOf(JSON.parse(current.tags)) : tagsOf(input.tags)
     const workspaceId = input.workspaceId === undefined ? current.workspaceId : workspaceIdOf(input.workspaceId)
-    const sendImmediately = input.sendImmediately === undefined ? current.sendImmediately : booleanOf(input.sendImmediately, 'send immediately')
+    const sendImmediately = input.sendImmediately === undefined
+      ? current.sendImmediately === 1 : booleanOf(input.sendImmediately, 'send immediately')
     const sessionId = input.sessionId === undefined ? current.sessionId : optionalIdOf(input.sessionId, 'session id')
     const agent = input.agent === undefined ? current.agent : optionalIdOf(input.agent, 'agent')
-    const useWorktree = input.useWorktree === undefined ? current.useWorktree : booleanOf(input.useWorktree, 'use worktree')
+    const useWorktree = input.useWorktree === undefined ? current.useWorktree === 1 : booleanOf(input.useWorktree, 'use worktree')
     const now = Date.now()
     const startedAt = status === 'in_progress' && current.startedAt === null ? now : current.startedAt
     const completedAt = status === current.status ? current.completedAt : status === 'done' ? now : null
@@ -246,5 +403,39 @@ export class TaskStore {
   delete(id: string, version: number): void {
     const result = this.db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(idOf(id), versionOf(version))
     if (result.changes !== 1) throw new Error('task missing or changed; refresh and retry')
+  }
+
+  createSubtask(input: CreateSubtaskRequest): SubtaskRecord {
+    const taskId = idOf(input?.taskId)
+    if (this.db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId) === undefined) throw new Error('task not found')
+    const id = randomUUID()
+    const now = Date.now()
+    this.db.prepare(`INSERT INTO subtasks (id, task_id, notes, status, session_id, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)`).run(
+      id, taskId, subtaskNotesOf(input?.notes), statusOf(input?.status ?? 'todo'),
+      optionalIdOf(input?.sessionId ?? null, 'session id'), now, now,
+    )
+    return this.getSubtask(id)!
+  }
+
+  updateSubtask(input: UpdateSubtaskRequest): SubtaskRecord {
+    const id = idOf(input?.id)
+    const version = versionOf(input?.version)
+    const current = this.getSubtask(id)
+    if (!current) throw new Error('subtask not found')
+    if (current.version !== version) throw new Error('subtask changed; refresh and retry')
+    const notes = input.notes === undefined ? current.notes : subtaskNotesOf(input.notes)
+    const status = input.status === undefined ? current.status : statusOf(input.status)
+    const sessionId = input.sessionId === undefined ? current.sessionId : optionalIdOf(input.sessionId, 'session id')
+    const result = this.db.prepare(`UPDATE subtasks SET notes = ?, status = ?, session_id = ?,
+      version = version + 1, updated_at = ? WHERE id = ? AND version = ?`)
+      .run(notes, status, sessionId, Date.now(), id, version)
+    if (result.changes !== 1) throw new Error('subtask changed; refresh and retry')
+    return this.getSubtask(id)!
+  }
+
+  deleteSubtask(id: string, version: number): void {
+    const result = this.db.prepare('DELETE FROM subtasks WHERE id = ? AND version = ?').run(idOf(id), versionOf(version))
+    if (result.changes !== 1) throw new Error('subtask missing or changed; refresh and retry')
   }
 }
