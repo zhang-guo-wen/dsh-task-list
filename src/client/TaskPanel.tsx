@@ -460,9 +460,6 @@ export function TaskPanel({
                 title={content} aria-label={`${t('edit')}: ${content}`}>{content}</button>
               <span className={css.statusChip} data-status={task.status} title={t(statusKey(task.status))}>{t(statusKey(task.status))}</span>
               <span className={css.workspaceMeta} title={workspaceLabel(linked)}>{workspaceLabel(linked)}</span>
-              <span className={task.sessionId ? css.sessionMeta : css.sessionMetaEmpty}
-                title={task.sessionId ?? t('sessionUnbound')}>{task.sessionId ?? t('sessionUnbound')}</span>
-              <span className={css.createdMeta} title={formattedTime(task.createdAt)}>{formattedTime(task.createdAt)}</span>
               <div className={css.rowActions}>
                 {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
                   type="button" className={css.start}
@@ -513,10 +510,16 @@ export function TaskPanel({
         <div className={css.dialogBody}>
           <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
           <form id="task-list-form" onSubmit={event => void save(event)}>
-            <label>{t('notesLabel')}<textarea autoFocus required value={notes} maxLength={20000} rows={5}
+            <label className={css.fullRow}>{t('notesLabel')}<textarea autoFocus required value={notes} maxLength={20000} rows={5}
               placeholder={t('notesHint')} onChange={event => setNotes(event.target.value)} /></label>
-            <label>{t('status')}<span className={css.fixedValue} title={t(statusKey(composerStatus))}>{t(statusKey(composerStatus))}</span></label>
-            <p className={css.fieldHint}>{t('statusFixed')}</p>
+            <div className={css.fieldBlock}>
+              <label>{t('status')}<span className={css.fixedValue} title={t(statusKey(composerStatus))}>{t(statusKey(composerStatus))}</span></label>
+              <p className={css.fieldHint}>{t('statusFixed')}</p>
+            </div>
+            <div className={css.fieldBlock}>
+              <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
+              <p className={css.fieldHint}>{t('sessionIdLocked')}</p>
+            </div>
             <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
               {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
             </select></label>
@@ -527,8 +530,6 @@ export function TaskPanel({
               {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
               {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </select></label>
-            <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
-            <p className={css.fieldHint}>{t('sessionIdLocked')}</p>
             <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
               <option value="">{t('defaultAgent')}</option>
               {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
@@ -536,16 +537,16 @@ export function TaskPanel({
             </select></label>
             <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
             <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
-            {useWorktree && <p className={css.worktreeHint + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
+            {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
               {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
                 : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
             </p>}
-            {editing && <div className={css.readOnlyTimes}>
+            {editing && <div className={css.readOnlyTimes + ' ' + css.fullRow}>
               <span>{t('createdAt')}: {formattedTime(editing.createdAt)}</span>
               {editing.startedAt !== null && <span>{t('startedAt')}: {formattedTime(editing.startedAt)}</span>}
               {editing.completedAt !== null && <span>{t('completedAt')}: {formattedTime(editing.completedAt)}</span>}
             </div>}
-            <section className={css.subtasksSection}>
+            <section className={css.subtasksSection + ' ' + css.fullRow}>
               <div className={css.subtasksHeader}>
                 <strong>{t('subtasks')}</strong>
                 <button type="button" className={css.textButton} onClick={addDraft} disabled={busy}>{t('addSubtask')}</button>

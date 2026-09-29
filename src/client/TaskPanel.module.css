@@ -10,9 +10,10 @@
   font-size: 14px;
   line-height: 1.6;
 }
-/* Fluid on purpose: the panel width varies with the window and the sidebar, and
-   the task list follows it instead of leaving fixed-width columns behind. */
-.inner { width: 100%; box-sizing: border-box; margin: 0 auto; padding: 0 clamp(16px, 3vw, 40px) 40px; }
+/* The same content box as the built-in Automation tasks page: one centred
+   960px column whose side padding shrinks with the panel, so moving between
+   the two pages does not change the width of the list. */
+.inner { max-width: 960px; margin: 0 auto; padding: 0 clamp(24px, 4vw, 48px) 48px; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
 .primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button, .searchButton, .subtaskOpen, .subtaskDraftAction {
@@ -49,8 +50,9 @@
 .textButton, .dialogActions button { border: 1px solid var(--dsw-alias-border-l3, #ddd); background: transparent; color: inherit; }
 .textButton { height: 36px; padding: 0 12px; border-radius: 12px; font-size: 13px; }
 .textButton:hover, .dialogActions button:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
-/* One task per row, one fixed-width column per field: the content flexes and
-   clips with an ellipsis, every other column keeps its measured width. */
+/* One task per row, one fixed-width column per visible field: the content
+   flexes and clips with an ellipsis, status and workspace keep their measured
+   width. The bound session id and the creation time stay out of the list. */
 .list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 18px 0 0; padding: 0; }
 .row {
   box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
@@ -64,7 +66,7 @@
 .row[data-priority='medium'] { border-left-color: #4b87bd; }
 .row[data-priority='high'] { border-left-color: #dd9230; }
 .row[data-priority='urgent'] { border-left-color: #d64e4e; }
-.rowLine { display: grid; grid-template-columns: minmax(0, 1fr) 72px 128px 156px 132px auto; align-items: center; gap: 12px; }
+.rowLine { display: grid; grid-template-columns: minmax(0, 1fr) 72px 128px auto; align-items: center; gap: 12px; }
 .content {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 0; border: 0; background: transparent; color: inherit; font: inherit;
@@ -80,12 +82,10 @@
 }
 .statusChip[data-status='in_progress'] { background: #e8f1fd; color: #2f6fbd; }
 .statusChip[data-status='done'] { background: #e8f5ea; color: #3f7d4f; }
-.workspaceMeta, .sessionMeta, .sessionMetaEmpty, .createdMeta {
+.workspaceMeta {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c);
 }
-.sessionMeta, .sessionMetaEmpty { font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
-.sessionMetaEmpty { opacity: .72; }
 .rowActions { display: flex; align-items: center; gap: 8px; }
 /* Available by default and only slightly different under the pointer. */
 .rowActions .start {
@@ -142,7 +142,9 @@
   display: flex; justify-content: flex-end; gap: 8px; padding: 12px 24px 16px;
   border-top: 1px solid var(--dsw-alias-border-l2, #eee); background: var(--dsw-alias-bg-base, #fff);
 }
-.dialog form { display: flex; flex-direction: column; gap: 12px; }
+/* Two fields per row; the content field and every section row span both. */
+.dialog form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; align-items: start; }
+.fullRow { grid-column: 1 / -1; }
 .dialog label { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 13px; color: var(--dsw-alias-label-secondary, #5b6068); }
 .dialog input, .dialog textarea { box-sizing: border-box; width: 100%; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l3, #ddd); background: transparent; color: inherit; padding: 10px; font: inherit; }
 .dialog textarea { resize: vertical; min-height: 96px; }
@@ -156,6 +158,9 @@
 .dialog .toggle { display: flex; flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
 .dialog .toggle input { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--dsw-alias-state-business-primary, #326dca); }
 .fieldHint { margin: -6px 0 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
+/* A read-only field keeps its own hint directly under it inside one grid cell. */
+.fieldBlock { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fieldBlock .fieldHint { margin: 0; }
 .worktreeHint { margin: -4px 0 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
 .worktreeError { color: #a32929; }
 .subtasksSection { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2, #eee); }
@@ -202,17 +207,20 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
 /* Narrow panels drop the fixed metadata columns instead of squeezing them. */
 @media (max-width: 900px) {
   .rowLine { grid-template-columns: minmax(0, 1fr) 72px auto; }
-  .workspaceMeta, .sessionMeta, .sessionMetaEmpty, .createdMeta { display: none; }
+  .workspaceMeta { display: none; }
   .subtaskRow { grid-template-columns: minmax(0, 1fr) 72px; }
   .subtaskOpen, .subtaskSessionEmpty { display: none; }
 }
 @media (max-width: 760px) {
-  .inner { padding: 0 20px 40px; }
   .toolbarRight { width: 100%; margin-left: 0; }
   .toolbar select { flex: 1; max-width: none; }
   .searchBox { width: 100%; }
   .searchBox input { width: 100%; flex: 1; }
   .subtaskDraft { grid-template-columns: 88px minmax(0, 1fr); }
   .subtaskDraftAction { grid-column: 1 / -1; justify-self: end; }
+}
+/* A dialog narrower than two usable columns falls back to one field per row. */
+@media (max-width: 560px) {
+  .dialog form { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .row { transition: none; } }
