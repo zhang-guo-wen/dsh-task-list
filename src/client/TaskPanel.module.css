@@ -10,63 +10,77 @@
   font-size: 14px;
   line-height: 1.6;
 }
-.inner { max-width: 960px; margin: 0 auto; padding: 0 clamp(24px, 4vw, 48px) 48px; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 24px; }
+/* Fluid on purpose: the panel width varies with the window and the sidebar, and
+   the task list follows it instead of leaving fixed-width columns behind. */
+.inner { width: 100%; box-sizing: border-box; margin: 0 auto; padding: 0 clamp(16px, 3vw, 40px) 40px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
-.primary, .filter, .selected, .textButton, .cardFooter button, .dialogActions button {
+.primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button {
   font: inherit; cursor: pointer;
 }
 .primary { height: 32px; padding: 0 12px; border: 0; border-radius: 16px; background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); font-size: 13px; line-height: 20px; white-space: nowrap; }
 .primary:hover { opacity: .86; }
-.toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }
+/* Status tabs, the workspace filter, and refresh share one row. */
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .filter, .selected { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 14px; background: transparent; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 14px; line-height: 22px; white-space: nowrap; }
 .filter:hover, .selected { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 .selected { color: var(--dsw-alias-label-primary, #0f1115); }
-.toolbarRight { display: flex; align-items: center; gap: 8px; }
+.toolbarRight { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .toolbar select, .dialog select {
   font: inherit; height: 36px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--dsw-alias-border-l3, #ddd);
   color: inherit; background: var(--dsw-alias-bg-base, #fff);
 }
-.toolbar select { flex: 1; min-width: 0; }
+.toolbar select { flex: none; width: auto; min-width: 150px; max-width: 240px; }
 .toolbar select:hover, .dialog select:hover { border-color: var(--dsw-alias-border-l2, #b8bbc0); }
 .toolbar select:focus-visible, .dialog select:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
 .textButton, .dialogActions button { border: 1px solid var(--dsw-alias-border-l3, #ddd); background: transparent; color: inherit; }
 .textButton { height: 36px; padding: 0 12px; border-radius: 12px; font-size: 13px; }
 .textButton:hover, .dialogActions button:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 320px)); gap: 18px; list-style: none; margin: 18px 0 0; padding: 0; }
-.card {
-  position: relative; box-sizing: border-box; min-width: 0; min-height: 250px; display: flex; flex-direction: column; gap: 12px;
-  padding: 18px 18px 16px; border: 1px solid var(--dsw-alias-border-l3, #ddd);
-  border-top: 3px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
-  background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 3px 12px #0000000a;
-  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+/* One task per row: title on the first line, workspace and creation time on the
+   next, and the launch action on the right. Nothing exceeds three text lines. */
+.list { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 18px 0 0; padding: 0; }
+.row {
+  position: relative; box-sizing: border-box; display: flex; align-items: center; gap: 16px;
+  padding: 12px 14px 12px 16px; border: 1px solid var(--dsw-alias-border-l3, #ddd);
+  border-left: 4px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 2px 8px #0000000a;
+  transition: border-color .18s ease, box-shadow .18s ease;
 }
-.card:hover, .card:focus-within { box-shadow: 0 10px 26px #00000015; transform: translateY(-2px); }
-.card[data-priority='low'] { border-top-color: #8293a4; }
-.card[data-priority='medium'] { border-top-color: #4b87bd; }
-.card[data-priority='high'] { border-top-color: #dd9230; }
-.card[data-priority='urgent'] { border-top-color: #d64e4e; }
-.cardOpen { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
-.cardOpen:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; }
-.delete {
-  position: absolute; z-index: 1; top: 8px; right: 8px; width: 28px; height: 28px; padding: 0;
-  border: 0; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-tertiary, #81858c);
-  font: inherit; font-size: 20px; line-height: 1; cursor: pointer; opacity: 0; pointer-events: none;
-}
-.card:hover .delete, .card:focus-within .delete { opacity: 1; pointer-events: auto; }
-.delete:hover, .delete:focus-visible { color: #b74242; background: #f8dede; }
-.card h2 { font-size: 15px; line-height: 23px; font-weight: 500; margin: 0; padding-right: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row:hover, .row:focus-within { box-shadow: 0 6px 18px #00000014; }
+.row[data-priority='low'] { border-left-color: #8293a4; }
+.row[data-priority='medium'] { border-left-color: #4b87bd; }
+.row[data-priority='high'] { border-left-color: #dd9230; }
+.row[data-priority='urgent'] { border-left-color: #d64e4e; }
+.rowOpen { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+.rowOpen:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; }
+/* No stacking context here: the absolutely positioned .rowOpen overlay must stay
+   above the text so a click anywhere on the row still opens the editor. */
+.rowMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rowMain h2 { margin: 0; font-size: 15px; line-height: 22px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .completed { opacity: .72; }
-.notes {
-  margin: 0; min-height: calc(1.5em * 5); color: var(--dsw-alias-label-tertiary, #81858c);
-  font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
-  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+.rowMeta {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #81858c);
 }
-.cardFooter { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--dsw-alias-border-l3, #ddd); }
-.workspaceMeta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.cardFooter .start { position: relative; z-index: 1; flex: none; min-height: 30px; padding: 5px 14px; border: 0; border-radius: 15px; background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); font-size: 13px; white-space: nowrap; }
-.cardFooter .start:hover { opacity: .86; }
+.workspaceMeta { display: inline-block; max-width: min(100%, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.metaSeparator { margin: 0 6px; color: var(--dsw-alias-border-l2, #ccc); }
+.createdMeta { white-space: nowrap; }
+.rowActions { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 8px; }
+/* Available by default and only slightly different under the pointer. */
+.rowActions .start {
+  flex: none; min-height: 30px; padding: 5px 16px; border: 0; border-radius: 15px;
+  background: var(--dsw-alias-button-primary-fill, #0f1115); color: var(--dsw-alias-label-primary-foreground, #fff);
+  font-size: 13px; font-weight: 500; white-space: nowrap; transition: background .15s ease, opacity .15s ease;
+}
+.rowActions .start:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #252b35); }
+.delete {
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  color: var(--dsw-alias-label-tertiary, #81858c); font: inherit; font-size: 20px; line-height: 1; cursor: pointer;
+  opacity: 0; pointer-events: none; transition: opacity .15s ease;
+}
+.row:hover .delete, .row:focus-within .delete { opacity: 1; pointer-events: auto; }
+.delete:hover, .delete:focus-visible { color: #b74242; background: #f8dede; }
 .doneState { flex: none; padding: 4px 10px; border-radius: 14px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
 .placeholder { padding: 28px 4px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .empty { display: flex; flex-direction: column; gap: 8px; padding: 48px 20px; align-items: center; color: var(--dsw-alias-label-tertiary, #81858c); }
@@ -80,9 +94,11 @@
 .dialog label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .full { grid-column: 1 / -1; }
 .dialog input, .dialog textarea { box-sizing: border-box; width: 100%; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l3, #ddd); background: transparent; color: inherit; padding: 10px; font: inherit; }
+.dialog input[readonly] { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-tertiary, #81858c); cursor: default; }
 .dialog select { width: 100%; }
 .dialog .toggle { display: flex; flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
 .dialog .toggle input { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--dsw-alias-state-business-primary, #326dca); }
+.fieldHint { margin: -6px 0 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
 .worktreeHint { grid-column: 1 / -1; margin: -4px 0 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
 .worktreeError { color: #a32929; }
 .initPath { overflow-wrap: anywhere; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); font-size: 12px; }
@@ -109,9 +125,11 @@
 button:disabled, select:disabled { opacity: .5; cursor: default; }
 @media (hover: none) { .delete { opacity: 1; pointer-events: auto; } }
 @media (max-width: 760px) {
-  .inner { padding: 0 24px 48px; }
-  .grid { grid-template-columns: 1fr; }
-  .card { width: 100%; max-width: 320px; }
+  .inner { padding: 0 20px 40px; }
+  .toolbarRight { width: 100%; margin-left: 0; }
+  .toolbar select { flex: 1; max-width: none; }
+  .row { flex-wrap: wrap; }
+  .rowActions { width: 100%; justify-content: flex-end; }
 }
-@media (prefers-reduced-motion: reduce) { .card { transition: none; } .card:hover, .card:focus-within { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .row { transition: none; } }
 @media (max-width: 460px) { .dialog form { grid-template-columns: 1fr; } }

@@ -100,7 +100,9 @@ describe('task launch', () => {
     expect(openSession).toHaveBeenCalledWith('session-1')
     expect(steps).toEqual(['create', 'draft:Build feature\n\nInclude tests', 'update', 'open'])
 
-    await expect(panel.start({ ...task, workspaceId: null })).rejects.toThrow('workspace is unavailable')
+    // An explicitly linked but deleted workspace is still refused here; a task
+    // with no workspace at all launches in the default one (tested below).
+    await expect(panel.start({ ...task, workspaceId: 'missing-workspace' })).rejects.toThrow('workspace is unavailable')
     expect(create).toHaveBeenCalledTimes(1)
 
     create.mockRejectedValueOnce(new Error('session unavailable'))
@@ -111,6 +113,37 @@ describe('task launch', () => {
     updateTask.mockRejectedValueOnce(new Error('status unavailable'))
     await expect(panel.start(task)).rejects.toThrow('status unavailable')
     expect(openSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('launches a task without a workspace in the default workspace', async () => {
+    const updateTask = vi.fn(async () => ({ ok: true as const, value: {} }))
+    const create = vi.fn(async () => 'session-9')
+    const openSession = vi.fn()
+    const register = vi.fn(() => vi.fn())
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()) },
+      get: () => ({ updateTask }),
+      locale: { register: vi.fn(() => vi.fn()), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register },
+      workspaces: { list: { getSnapshot: () => ({ items: [
+        { workspaceId: 'ws-other', title: 'Other', path: '/other' },
+        { workspaceId: 'ws-default', title: 'default-workspace', path: '/default' },
+      ] }) } },
+      sessions: {
+        create,
+        using: vi.fn(async (_id: string, _options: unknown, operation: () => Promise<void>) => { await operation() }),
+        scope: vi.fn(() => ({})),
+      },
+      conversation: { input: { for: vi.fn(() => ({ setDraft: vi.fn() })) } },
+      uiWorkspace: { openSession },
+    }
+    await apply(ctx as unknown as Context)
+    const panel = register.mock.calls.find(call => call[0].name === 'main')?.[0].inject()
+    await panel.start({ id: 'task-6', version: 1, status: 'todo', title: 'Later', notes: '', workspaceId: null, agent: null, sendImmediately: false, useWorktree: false } as TaskRecord)
+    expect(create).toHaveBeenCalledWith({ workspaceId: 'ws-default' })
+    expect(updateTask).toHaveBeenCalledWith({ id: 'task-6', version: 1, status: 'in_progress', sessionId: 'session-9' })
+    expect(openSession).toHaveBeenCalledWith('session-9')
   })
 
   it('selects the agent and submits immediately when enabled', async () => {

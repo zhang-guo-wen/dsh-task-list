@@ -3,6 +3,8 @@ import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   CreateTaskRequest, DeleteTaskRequest, ListTasksRequest, TaskPriority, TaskRecord, TaskStatus, UpdateTaskRequest,
 } from '../types.ts'
+import { deriveTaskTitle } from './task-title.ts'
+import { pickDefaultWorkspace } from './workspaces.ts'
 import css from './TaskPanel.module.css'
 
 interface WorkspaceSnapshot {
@@ -80,9 +82,13 @@ export function TaskPanel({
   const [agents, setAgents] = useState<readonly { id: string; name?: string; isDefault: boolean; broken?: string }[]>([])
   const mounted = useRef(false)
   const generation = useRef(0)
+  const agentPrefilled = useRef(false)
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
   const workspaces = workspaceState.items
   const workspaceNames = new Map(workspaces.map(row => [row.workspaceId, row.title]))
+  const defaultWorkspace = pickDefaultWorkspace(workspaces, t('defaultWorkspaceName'))
+  const defaultWorkspaceId = defaultWorkspace?.workspaceId ?? null
+  const defaultAgent = agents.find(row => row.isDefault && !row.broken)
 
   const refresh = useCallback(async () => {
     const current = ++generation.current
@@ -106,11 +112,23 @@ export function TaskPanel({
     return () => { mounted.current = false; generation.current++ }
   }, [refresh])
 
+  // Load the preset roster when the composer opens: fetching it at mount races
+  // the Remote namespace mount, which left the Agent select with one option.
   useEffect(() => {
+    if (!composerOpen) return
     let active = true
     void listAgents().then(rows => { if (active) setAgents(rows) }).catch(failure => { if (active) setError(errorText(failure)) })
     return () => { active = false }
-  }, [listAgents])
+  }, [composerOpen, listAgents])
+
+  // The default Agent is a real selection, not an empty placeholder: fill it in
+  // once per composer opening, as soon as the preset list is known.
+  useEffect(() => {
+    if (!composerOpen) { agentPrefilled.current = false; return }
+    if (editing || agentPrefilled.current || defaultAgent === undefined) return
+    agentPrefilled.current = true
+    setAgent(defaultAgent.id)
+  }, [composerOpen, editing, defaultAgent])
 
   const initializationWorkspaceId = initializeTask?.task.workspaceId
   useEffect(() => {
@@ -151,7 +169,7 @@ export function TaskPanel({
     setPriority('medium')
     setStoryPoints('')
     setTagsInput('')
-    setWorkspaceId('')
+    setWorkspaceId(defaultWorkspaceId ?? '')
     setSendImmediately(false)
     setSessionId('')
     setAgent('')
@@ -167,7 +185,7 @@ export function TaskPanel({
     setPriority(task.priority)
     setStoryPoints(task.storyPoints === null ? '' : String(task.storyPoints))
     setTagsInput(task.tags.join(', '))
-    setWorkspaceId(task.workspaceId ?? '')
+    setWorkspaceId(task.workspaceId ?? defaultWorkspaceId ?? '')
     setSendImmediately(task.sendImmediately)
     setSessionId(task.sessionId ?? '')
     setAgent(task.agent ?? '')
@@ -175,13 +193,15 @@ export function TaskPanel({
     setComposerOpen(true)
   }
 
+  const derivedTitle = deriveTaskTitle(title, notes)
+
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (busy || !title.trim()) return
+    if (busy || !derivedTitle) return
     setBusy(true)
     setError('')
     const fields = {
-      title, notes, priority,
+      title: derivedTitle, notes, priority,
       storyPoints: storyPoints === '' ? null : Number(storyPoints),
       tags: tagsInput.split(/[,，]/u).map(tag => tag.trim()).filter(Boolean),
       workspaceId: workspaceId || null,
@@ -199,7 +219,7 @@ export function TaskPanel({
   }
 
   const deleteTask = async (task: TaskRecord) => {
-    if (busy || !window.confirm(t('removeConfirm'))) return
+    if (busy) return
     setBusy(true)
     setError('')
     try {
@@ -275,12 +295,17 @@ export function TaskPanel({
   for (const task of tasks) {
     if (task.workspaceId && !workspaceOptions.has(task.workspaceId)) workspaceOptions.set(task.workspaceId, task.workspaceId)
   }
+  /** A task without a workspace belongs to the default Workspace instead. */
+  const workspaceOf = (task: TaskRecord): string | null => task.workspaceId ?? defaultWorkspaceId
+  const workspaceLabel = (id: string | null): string => id === null ? t('noWorkspace') : workspaceNames.get(id) ?? id
+  const workspaceReady = (id: string | null): boolean => id !== null && workspaceNames.has(id)
   const visible = tasks.filter(task => (filter === 'all' || task.status === filter)
-    && (workspaceFilter === 'all' || workspaceFilter === 'none' && task.workspaceId === null
-      || workspaceFilter.startsWith('ws:') && task.workspaceId === workspaceFilter.slice(3)))
+    && (workspaceFilter === 'all' || workspaceOf(task) === workspaceFilter.slice(3)))
     .sort((left, right) => statusKeys.indexOf(left.status) - statusKeys.indexOf(right.status)
       || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
   const selectableInitialEntries = initialEntries.filter(entry => entry.kind !== 'nested_repository')
+  const canSave = Boolean(derivedTitle)
+  const sessionIdLocked = Boolean(editing?.sessionId)
 
   return <main className={css.page}>
     <div className={css.inner}>
@@ -298,7 +323,6 @@ export function TaskPanel({
         <div className={css.toolbarRight}>
           <select aria-label={t('workspace')} value={workspaceFilter} onChange={event => setWorkspaceFilter(event.target.value)}>
             <option value="all">{t('allWorkspaces')}</option>
-            <option value="none">{t('noWorkspace')}</option>
             {[...workspaceOptions].map(([id, name]) => <option key={id} value={`ws:${id}`}>{name}</option>)}
           </select>
           <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}>{t('refresh')}</button>
@@ -308,28 +332,35 @@ export function TaskPanel({
       {error && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
       {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : visible.length === 0 ? <div className={css.empty}>
         <strong>{t('empty')}</strong><span>{t('emptyHint')}</span>
-      </div> : <ul className={css.grid}>
-        {visible.map(task => <li className={css.card} data-priority={task.priority} key={task.id}>
-          <button type="button" className={css.cardOpen} onClick={() => openEdit(task)} disabled={busy}
-            aria-label={`${t('edit')}: ${task.title}`} />
-          <button type="button" className={css.delete} onClick={() => void deleteTask(task)} disabled={busy}
-            aria-label={`${t('remove')}: ${task.title}`} title={t('remove')}>×</button>
-          <h2 className={task.status === 'done' ? css.completed : ''} title={task.title}>{task.title}</h2>
-          <p className={css.notes}>{task.notes}</p>
-          <div className={css.cardFooter}>
-            <span className={css.workspaceMeta} title={task.workspaceId ? workspaceNames.get(task.workspaceId) ?? task.workspaceId : t('noWorkspace')}>
-              {task.workspaceId ? workspaceNames.get(task.workspaceId) ?? task.workspaceId : t('noWorkspace')}
-            </span>
-            {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
-              type="button" className={css.start}
-              onClick={() => void (task.status === 'todo' ? startTask(task) : finishTask(task))}
-              disabled={busy || task.status === 'todo' && (!task.workspaceId || !workspaceNames.has(task.workspaceId))}
-              aria-label={`${t(task.status === 'todo' ? 'start' : 'finish')}: ${task.title}`}
-              title={task.status === 'todo' ? !task.workspaceId ? t('startRequiresWorkspace') : !workspaceNames.has(task.workspaceId) ? t('startWorkspaceMissing') : undefined : undefined}>
-              {t(task.status === 'todo' ? 'start' : 'finish')}
-            </button>}
-          </div>
-        </li>)}
+      </div> : <ul className={css.list}>
+        {visible.map(task => {
+          const linked = workspaceOf(task)
+          const ready = workspaceReady(linked)
+          return <li className={css.row} data-priority={task.priority} key={task.id}>
+            <button type="button" className={css.rowOpen} onClick={() => openEdit(task)} disabled={busy}
+              aria-label={`${t('edit')}: ${task.title}`} />
+            <div className={css.rowMain}>
+              <h2 className={task.status === 'done' ? css.completed : ''} title={task.title}>{task.title}</h2>
+              <div className={css.rowMeta}>
+                <span className={css.workspaceMeta} title={workspaceLabel(linked)}>{workspaceLabel(linked)}</span>
+                <span className={css.metaSeparator} aria-hidden="true">·</span>
+                <span className={css.createdMeta} title={formattedTime(task.createdAt)}>{t('createdAt')} {formattedTime(task.createdAt)}</span>
+              </div>
+            </div>
+            <div className={css.rowActions}>
+              {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
+                type="button" className={css.start}
+                onClick={() => void (task.status === 'todo' ? startTask(task) : finishTask(task))}
+                disabled={busy || task.status === 'todo' && !ready}
+                aria-label={`${t(task.status === 'todo' ? 'start' : 'finish')}: ${task.title}`}
+                title={task.status === 'todo' && !ready ? linked === null ? t('startRequiresWorkspace') : t('startWorkspaceMissing') : undefined}>
+                {t(task.status === 'todo' ? 'start' : 'finish')}
+              </button>}
+              <button type="button" className={css.delete} onClick={() => void deleteTask(task)} disabled={busy}
+                aria-label={`${t('remove')}: ${task.title}`} title={t('remove')}>×</button>
+            </div>
+          </li>
+        })}
       </ul>}
     </div>
 
@@ -337,8 +368,8 @@ export function TaskPanel({
       <div className={css.dialog} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
         <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
         <form onSubmit={event => void save(event)}>
-          <label className={css.full}>{t('titleLabel')}<input autoFocus value={title} maxLength={200} onChange={event => setTitle(event.target.value)} required /></label>
-          <label className={css.full}>{t('notesLabel')}<textarea value={notes} maxLength={20000} rows={3} onChange={event => setNotes(event.target.value)} /></label>
+          <label className={css.full}>{t('titleLabel')}<input value={title} maxLength={200} placeholder={t('titleHint')} onChange={event => setTitle(event.target.value)} /></label>
+          <label className={css.full}>{t('notesLabel')}<textarea autoFocus required value={notes} maxLength={20000} rows={3} onChange={event => setNotes(event.target.value)} /></label>
           {editing && <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
             {statusKeys.map(item => <option key={item} value={item}>{t(item === 'in_progress' ? 'inProgress' : item)}</option>)}
           </select></label>}
@@ -348,7 +379,8 @@ export function TaskPanel({
           <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
           <label className={css.full}>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
           <label className={css.full}>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
-            <option value="">{t('noWorkspace')}</option>
+            {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
+            {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
             {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
           </select></label>
           <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
@@ -356,20 +388,22 @@ export function TaskPanel({
             {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
             {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
           </select></label>
-          <label className={css.full}>{t('sessionId')}<input value={sessionId} maxLength={200} onChange={event => setSessionId(event.target.value)} placeholder={t('sessionIdHint')} /></label>
+          <label className={css.full}>{t('sessionId')}<input value={sessionId} maxLength={200} readOnly={sessionIdLocked} onChange={event => setSessionId(event.target.value)} placeholder={t('sessionIdHint')} /></label>
+          {sessionIdLocked && <p className={css.fieldHint + ' ' + css.full}>{t('sessionIdLocked')}</p>}
           <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
           <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
           {useWorktree && <p className={css.worktreeHint + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
             {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
               : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
           </p>}
-          {editing && (editing.startedAt !== null || editing.completedAt !== null) && <div className={css.full + ' ' + css.readOnlyTimes}>
+          {editing && <div className={css.full + ' ' + css.readOnlyTimes}>
+            <span>{t('createdAt')}: {formattedTime(editing.createdAt)}</span>
             {editing.startedAt !== null && <span>{t('startedAt')}: {formattedTime(editing.startedAt)}</span>}
             {editing.completedAt !== null && <span>{t('completedAt')}: {formattedTime(editing.completedAt)}</span>}
           </div>}
           <div className={css.dialogActions + ' ' + css.full}>
             <button type="button" onClick={() => setComposerOpen(false)} disabled={busy}>{t('cancel')}</button>
-            <button type="submit" className={css.primary} disabled={busy || !title.trim()}>{t('save')}</button>
+            <button type="submit" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
           </div>
         </form>
       </div>

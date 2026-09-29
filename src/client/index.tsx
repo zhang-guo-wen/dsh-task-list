@@ -13,6 +13,7 @@ import type { CreateTaskRequest, DeleteTaskRequest, ListTasksRequest, TaskRecord
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type TaskFace } from './TaskPanel.tsx'
+import { pickDefaultWorkspace } from './workspaces.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap { taskList: TaskKey }
@@ -70,7 +71,9 @@ function TaskIcon({ size }: { size: number }) {
   </svg>
 }
 
-export const inject = ['slots', 'locale', 'remote', 'workspaces', 'sessions', 'conversation', 'uiWorkspace']
+// `remote.agentPresets` must be injected explicitly: Cordis refuses a
+// namespace property that the plugin did not declare.
+export const inject = ['slots', 'locale', 'remote', 'remote.agentPresets', 'workspaces', 'sessions', 'conversation', 'uiWorkspace']
 export async function apply(ctx: Context): Promise<void> {
   const off = await ctx.remote.$mount(TYPERT_REMOTE)
   ctx.effect(() => () => off(), 'task-list: remote mount')
@@ -118,7 +121,12 @@ export async function apply(ctx: Context): Promise<void> {
       if (result?.initialized !== true) throw new Error('dsh-worktree did not initialize the repository')
     },
     start: async task => {
-      const workspace = workspaceFor(task.workspaceId)
+      // A task without a linked workspace belongs to the default one instead
+      // of being unlaunchable; an explicitly linked but deleted workspace is
+      // still an error the caller must fix.
+      const workspace = task.workspaceId === null
+        ? pickDefaultWorkspace(ctx.workspaces.list.getSnapshot().items, t('defaultWorkspaceName'))
+        : workspaceFor(task.workspaceId)
       if (workspace === undefined) throw new Error('task workspace is unavailable')
       let sessionId: string
       if (task.useWorktree) {
