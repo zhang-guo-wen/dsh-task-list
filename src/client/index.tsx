@@ -1,0 +1,153 @@
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
+import type { CreateTaskRequest, DeleteTaskRequest, ListTasksRequest, TaskRecord, UpdateTaskRequest } from '../types.ts'
+import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
+import { NS, en, zh, type TaskKey } from './locales.ts'
+import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type TaskFace } from './TaskPanel.tsx'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface LocaleNamespaceMap { taskList: TaskKey }
+}
+
+interface RemoteService {
+  listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskRecord[]>>
+  createTask(request: CreateTaskRequest): Promise<RemoteResult<TaskRecord>>
+  updateTask(request: UpdateTaskRequest): Promise<RemoteResult<TaskRecord>>
+  deleteTask(request: DeleteTaskRequest): Promise<RemoteResult<{ deleted: true }>>
+}
+
+interface AgentPresetService {
+  list(): Promise<RemoteResult<{ presets: readonly { id: string; name?: string; isDefault: boolean; broken?: string }[] }>>
+  select(sessionId: string, agent: string): Promise<RemoteResult<string>>
+}
+
+interface WorktreeStartResult { sessionId: string; workspaceId: string }
+
+async function worktreeRequest(method: 'list' | 'start' | 'init' | 'init-files', request: Record<string, unknown>, gitUnavailableMessage: string): Promise<unknown> {
+  const response = await fetch(`/worktree/api/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const error = (body as { error?: { message?: string; code?: string } } | null)?.error
+    if (error?.code === 'git_not_found' || /\bspawn\s+git\s+ENOENT\b/iu.test(error?.message ?? '')) {
+      throw new Error(gitUnavailableMessage)
+    }
+    throw new Error(error?.message ?? `dsh-worktree is unavailable (${response.status})`)
+  }
+  return body
+}
+
+async function startWorktree(cwd: string, agent: string | null, gitUnavailableMessage: string): Promise<WorktreeStartResult> {
+  const body = await worktreeRequest('start', { cwd, ...(agent ? { agentPreset: agent } : {}) }, gitUnavailableMessage)
+  const result = body as WorktreeStartResult | null
+  if (!result || typeof result.sessionId !== 'string' || typeof result.workspaceId !== 'string') {
+    throw new Error('dsh-worktree returned an invalid session')
+  }
+  return result
+}
+
+async function unwrap<T>(call: Promise<RemoteResult<T>>): Promise<T> {
+  const result = await call
+  if (!result.ok) throw new Error(result.error.message)
+  return result.value
+}
+
+function TaskIcon({ size }: { size: number }) {
+  return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+    <rect x="3" y="2.5" width="14" height="15" rx="2" />
+    <path d="m6 7 1.4 1.4L10 5.8M11.5 7.2H14M6 12h2.5M11.5 12H14" />
+  </svg>
+}
+
+export const inject = ['slots', 'locale', 'remote', 'workspaces', 'sessions', 'conversation', 'uiWorkspace']
+export async function apply(ctx: Context): Promise<void> {
+  const off = await ctx.remote.$mount(TYPERT_REMOTE)
+  ctx.effect(() => () => off(), 'task-list: remote mount')
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'task-list: dictionaries')
+  const t = ctx.locale.bind(NS)
+  const remote = (): RemoteService => {
+    const service = ctx.get(`remote.${REMOTE_NAMESPACE}`) as RemoteService | undefined
+    if (!service) throw new Error('taskList namespace is not mounted')
+    return service
+  }
+  const agentPresets = (): AgentPresetService => ctx.remote.agentPresets as unknown as AgentPresetService
+  const workspaceFor = (id: string | null) => ctx.workspaces.list.getSnapshot().items.find(item => item.workspaceId === id)
+  const probeWorktree = async (workspaceId: string): Promise<void> => {
+    const workspace = workspaceFor(workspaceId)
+    if (workspace === undefined) throw new Error(t('startWorkspaceMissing'))
+    if (!workspace.path) throw new Error(t('worktreeRequiresGit'))
+    try {
+      const result = await worktreeRequest('list', { cwd: workspace.path }, t('gitUnavailable')) as { worktrees?: unknown } | null
+      if (!Array.isArray(result?.worktrees) || result.worktrees.length === 0) throw new Error(t('worktreeRequiresGit'))
+    } catch (error) {
+      if (/not a git repository/iu.test(error instanceof Error ? error.message : String(error))) {
+        throw new WorktreeNotGitError(workspace.title, workspace.path, t('worktreeRequiresGit'))
+      }
+      throw error
+    }
+  }
+  const face: TaskFace = {
+    list: request => unwrap(remote().listTasks(request)),
+    create: request => unwrap(remote().createTask(request)),
+    update: request => unwrap(remote().updateTask(request)),
+    remove: request => unwrap(remote().deleteTask(request)),
+    listAgents: async () => {
+      const result = await agentPresets().list()
+      if (!result.ok) throw new Error(result.error.message)
+      return result.value.presets
+    },
+    probeWorktree,
+    listInitialEntries: async workspaceId => {
+      const result = await worktreeRequest('init-files', { workspaceId }, t('gitUnavailable')) as { entries?: InitialCommitEntry[] } | null
+      if (!Array.isArray(result?.entries)) throw new Error('dsh-worktree returned an invalid file list')
+      return result.entries
+    },
+    initializeGit: async (workspaceId, selectedEntries) => {
+      const result = await worktreeRequest('init', { workspaceId, selectedEntries }, t('gitUnavailable')) as { initialized?: unknown } | null
+      if (result?.initialized !== true) throw new Error('dsh-worktree did not initialize the repository')
+    },
+    start: async task => {
+      const workspace = workspaceFor(task.workspaceId)
+      if (workspace === undefined) throw new Error('task workspace is unavailable')
+      let sessionId: string
+      if (task.useWorktree) {
+        await probeWorktree(workspace.workspaceId)
+        sessionId = (await startWorktree(workspace.path!, task.agent, t('gitUnavailable'))).sessionId
+        await ctx.sessions.refresh()
+        if (!ctx.sessions.list.getSnapshot().byId[sessionId]) await ctx.sessions.refresh()
+      } else {
+        sessionId = await ctx.sessions.create({ workspaceId: workspace.workspaceId })
+      }
+      await ctx.sessions.using(sessionId, { source: 'controllerOperation' }, async () => {
+        const scope = ctx.sessions.scope(sessionId as Parameters<typeof ctx.sessions.scope>[0])
+        if (scope === undefined) throw new Error('new session has no active scope')
+        if (task.agent && !task.useWorktree) {
+          await unwrap(agentPresets().select(sessionId, task.agent))
+        }
+        const draft = [task.title.trim(), task.notes.trim()].filter(Boolean).join('\n\n')
+        const input = ctx.conversation.input.for(scope)
+        input.setDraft(draft)
+        await unwrap(remote().updateTask({ id: task.id, version: task.version, status: 'in_progress', sessionId }))
+        ctx.uiWorkspace.openSession(sessionId)
+        if (task.sendImmediately) input.submit('queue', 'click')
+      })
+    },
+    workspaceSnapshot: () => ctx.workspaces.list.getSnapshot(),
+    subscribeWorkspaces: listener => ctx.workspaces.list.subscribe(listener),
+  }
+  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'task-list', locale: NS, inject: () => face }, TaskPanel))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
+  }, TaskIcon))
+}
