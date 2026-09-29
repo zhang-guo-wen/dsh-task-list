@@ -35,6 +35,8 @@ export const zh = {
   subtasks: '子任务', addSubtask: '添加子任务', subtasksEmpty: '还没有子任务',
   subtaskHint: '子任务内容，例如：确认接口字段',
   noSession: '不关联会话', openSession: '打开会话', subtaskSession: '关联会话', restore: '恢复',
+  captureTask: '存为任务', captureHint: 'Ctrl+S：把输入框内容创建成任务，并清空输入框',
+  captureCreated: '已创建任务：{title}', captureEmpty: '输入框没有内容', captureFailed: '创建任务失败',
 } as const
 export type TaskKey = keyof typeof zh
 export const en: Record<TaskKey, string> = {
@@ -74,4 +76,6 @@ export const en: Record<TaskKey, string> = {
   subtasks: 'Subtasks', addSubtask: 'Add subtask', subtasksEmpty: 'No subtasks yet',
   subtaskHint: 'Subtask content, for example: confirm the API fields',
   noSession: 'No session', openSession: 'Open session', subtaskSession: 'Linked session', restore: 'Restore',
+  captureTask: 'Save as task', captureHint: 'Ctrl+S: create a task from the composer draft and clear the composer',
+  captureCreated: 'Task created: {title}', captureEmpty: 'The composer is empty', captureFailed: 'Could not create the task',
 }

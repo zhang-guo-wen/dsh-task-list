@@ -16,6 +16,7 @@ import type {
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
+import { TaskCapture } from './TaskCapture.tsx'
 import { pickDefaultWorkspace } from './workspaces.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -196,4 +197,10 @@ export async function apply(ctx: Context): Promise<void> {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
   }, TaskIcon))
+  // Ctrl+S inside the composer stores the unsent draft as a task; the control
+  // rides the composer tool row so it disappears with the composer.
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'task-capture', order: 60, locale: NS,
+    inject: () => ({ create: (request: CreateTaskRequest) => unwrap(remote().createTask(request)) }),
+  }, TaskCapture))
 }

@@ -1,0 +1,16 @@
+/* Ctrl+S capture control living in the composer tool row. */
+.capture { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font: inherit; }
+.button {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
+  font: inherit; font-size: 12px; line-height: 18px; white-space: nowrap; cursor: pointer;
+  border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-tertiary, #81858c);
+}
+.button:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary, #0f1115); }
+.button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 1px; }
+.key {
+  padding: 0 4px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 4px;
+  font-family: var(--dsw-font-family-mono, ui-monospace, monospace); font-size: 11px; line-height: 16px;
+}
+.report { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.report[data-tone='created'] { color: var(--dsw-alias-state-business-primary, #326dca); }
+.report[data-tone='failed'] { color: var(--dsw-alias-state-error-primary, #c4314b); }

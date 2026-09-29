@@ -21,6 +21,7 @@ describe('client contribution', () => {
     expect(register.mock.calls.map(call => call[0])).toEqual([
       expect.objectContaining({ name: 'main', key: 'task-list' }),
       expect.objectContaining({ name: 'sidebar.panellist', id: 'task-list' }),
+      expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
     ])
     expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual([
       'listTasks', 'createTask', 'updateTask', 'deleteTask', 'createSubtask', 'updateSubtask', 'deleteSubtask',
@@ -341,5 +342,45 @@ describe('task launch', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1)
       expect(updateTask).not.toHaveBeenCalled()
     } finally { globalThis.fetch = originalFetch }
+  })
+})
+
+describe('composer capture', () => {
+  it('writes the captured draft through the taskList remote namespace', async () => {
+    const createTask = vi.fn(async () => ({ ok: true as const, value: { id: 'task-9', title: '整理发布清单' } }))
+    const register = vi.fn(() => vi.fn())
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()) },
+      get: () => ({ createTask }),
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register },
+      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+    }
+    await apply(ctx as unknown as Context)
+    const entry = register.mock.calls.find(call => call[0].name === 'conversation.input.right')
+    expect(entry?.[0]).toMatchObject({ id: 'task-capture' })
+
+    const face = entry![0].inject() as { create(request: Record<string, unknown>): Promise<unknown> }
+    await expect(face.create({ title: '整理发布清单', notes: '整理发布清单' }))
+      .resolves.toMatchObject({ id: 'task-9' })
+    expect(createTask).toHaveBeenCalledWith({ title: '整理发布清单', notes: '整理发布清单' })
+  })
+
+  it('surfaces a refused capture as a plain error', async () => {
+    const createTask = vi.fn(async () => ({ ok: false as const, error: { message: 'task store is read-only' } }))
+    const register = vi.fn(() => vi.fn())
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()) },
+      get: () => ({ createTask }),
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register },
+      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+    }
+    await apply(ctx as unknown as Context)
+    const face = register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0]
+      .inject() as { create(request: Record<string, unknown>): Promise<unknown> }
+    await expect(face.create({ title: 'x', notes: 'x' })).rejects.toThrow('task store is read-only')
   })
 })
