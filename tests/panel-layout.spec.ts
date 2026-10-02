@@ -37,6 +37,17 @@ describe('panel layout', () => {
     expect(css).not.toMatch(/sessionMeta|createdMeta/)
   })
 
+  it('dims a completed card exactly like an ended row on the Automation tasks page', () => {
+    // The row carries its status, so the stylesheet can reach a done card.
+    expect(panel).toMatch(/<li className=\{css\.row\} data-priority=\{task\.priority\} data-status=\{task\.status\}/)
+    // Tertiary content over a caption workspace line, back to the usual steps
+    // while the pointer is on the card or focus is inside it.
+    expect(rule(".row[data-status='done'] .content")).toContain('color: var(--dsw-alias-label-tertiary')
+    expect(rule(".row[data-status='done'] .workspaceMeta")).toContain('color: var(--dsw-alias-label-caption')
+    expect(rule(".row[data-status='done']:is(:hover, :focus-within) .content")).toContain('color: inherit')
+    expect(rule(".row[data-status='done']:is(:hover, :focus-within) .workspaceMeta")).toContain('color: var(--dsw-alias-label-tertiary')
+  })
+
   it('lays the composer out two fields per row around full-width rows', () => {
     expect(rule('.dialog form')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
     expect(rule('.fullRow')).toContain('grid-column: 1 / -1')
@@ -46,7 +57,7 @@ describe('panel layout', () => {
     expect(panel.match(/css\.fullRow/g)).toHaveLength(4)
   })
 
-  it('orders the composer content, workspace and agent, toggles, priority and tags, story points', () => {
+  it('orders the composer content, workspace and agent, toggles, priority and status, tags, story points', () => {
     const order = [
       "className={css.fullRow}>{t('notesLabel')}",
       "<label>{t('workspace')}",
@@ -55,6 +66,7 @@ describe('panel layout', () => {
       "{t('sendImmediately')}",
       "{t('useWorktree')}",
       "<label>{t('priorityLabel')}",
+      "<label>{t('status')}",
       "<label>{t('tags')}",
       "<label>{t('storyPoints')}",
     ].map(at)
@@ -69,11 +81,20 @@ describe('panel layout', () => {
     expect(row).toContain("{t('useWorktree')}")
   })
 
+  it('lets the composer set the status of a new or existing task', () => {
+    // One select drives both paths, so no branch keeps the stored status back.
+    expect(panel).toContain("<label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>")
+    expect(panel).toContain("{statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}")
+    expect(panel).toContain('title: derivedTitle, notes, status, priority,')
+    expect(panel).not.toContain('status: editing.status')
+    expect(panel).not.toContain('composerStatus')
+  })
+
   it('closes the composer with read-only facts in the same field style', () => {
     expect(rule('.metaSection')).toContain('border-top')
     expect(at('css.metaSection')).toBeGreaterThan(at("<label>{t('storyPoints')}"))
-    // Status, session id, created, started, and completed use the fixed-value style.
-    expect(panel.match(/css\.fixedValue/g)).toHaveLength(5)
+    // Session id, created, started, and completed use the fixed-value style.
+    expect(panel.match(/css\.fixedValue/g)).toHaveLength(4)
     expect(at("t('createdAt')")).toBeLessThan(at("t('startedAt')"))
     expect(at("t('startedAt')")).toBeLessThan(at("t('completedAt')"))
     expect(at("t('notStarted')")).toBeGreaterThan(0)
@@ -87,13 +108,20 @@ describe('panel layout', () => {
     expect(at('css.dialogHeader')).toBeLessThan(at('css.dialogBody'))
   })
 
-  it('offers the save-then-run action in the edit dialog header', () => {
+  it('offers Start and Complete side by side in the edit dialog header', () => {
     expect(rule('.dialogHeader')).toContain('justify-content: space-between')
-    expect(at('css.headerAction')).toBeGreaterThan(at('css.dialogHeader'))
-    expect(panel).toContain("editing !== null && editing.status !== 'done'")
-    expect(panel).toContain("{t(editing.status === 'in_progress' ? 'finish' : 'start')}")
-    // The button must call the save-then-run handler, not the plain save.
-    expect(panel).toContain('onClick={() => void saveAndLaunch()}')
+    expect(rule('.headerActions')).toContain('display: flex')
+    expect(at('css.headerActions')).toBeGreaterThan(at('css.dialogHeader'))
+    expect(at('className={css.headerAction}')).toBeGreaterThan(at('css.headerActions'))
+    expect(panel).toContain('editing !== null && <div className={css.headerActions}>')
+    // Start stays available at every status, so a running or finished task can be
+    // started again; Complete is only meaningful while the task is not Done yet.
+    expect(panel).toContain('onClick={() => void saveAndLaunch(false)}')
+    expect(panel).toContain('onClick={() => void saveAndLaunch(true)}')
+    expect(panel).toContain("disabled={busy || !canSave}>{t('start')}")
+    expect(panel).toContain("disabled={busy || !canSave || status === 'done'}>{t('finish')}")
+    // Neither button runs the plain save on its own.
+    expect(panel).not.toContain('onClick={() => void saveAndLaunch()}')
     // One composer error means one alert region: the banner yields to the dialog.
     expect(panel).toContain('{error && !composerOpen && <div className={css.error} role="alert">')
   })

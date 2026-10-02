@@ -135,6 +135,42 @@ describe('independent task database', () => {
     store.close()
   })
 
+  it('moves a task between any two statuses and keeps the timestamps honest', () => {
+    const store = new TaskStore(fixture())
+    const created = store.create({ title: 'Rework' })
+    // To do → Done skips the running state and records only the completion.
+    const done = store.update({ id: created.id, version: created.version, status: 'done' })
+    expect(done.status).toBe('done')
+    expect(done.completedAt).toEqual(expect.any(Number))
+    expect(done.startedAt).toBeNull()
+    // Done → In progress clears the completion and stamps the start.
+    const active = store.update({ id: done.id, version: done.version, status: 'in_progress' })
+    expect(active.completedAt).toBeNull()
+    expect(active.startedAt).toEqual(expect.any(Number))
+    // In progress → To do keeps the earlier start, as the reopen case above.
+    const reopened = store.update({ id: active.id, version: active.version, status: 'todo' })
+    expect(reopened).toMatchObject({ status: 'todo', completedAt: null })
+    expect(reopened.startedAt).toBe(active.startedAt)
+    expect(() => store.update({ id: reopened.id, version: reopened.version, status: 'blocked' as never }))
+      .toThrow('invalid task status')
+    store.close()
+  })
+
+  it('creates a task directly in the chosen status with its matching timestamp', () => {
+    const store = new TaskStore(fixture())
+    const plain = store.create({ title: 'Plain' })
+    expect(plain).toMatchObject({ status: 'todo', startedAt: null, completedAt: null })
+    const active = store.create({ title: 'Already running', status: 'in_progress' })
+    expect(active.status).toBe('in_progress')
+    expect(active.startedAt).toEqual(expect.any(Number))
+    expect(active.completedAt).toBeNull()
+    const done = store.create({ title: 'Already done', status: 'done' })
+    expect(done.status).toBe('done')
+    expect(done.startedAt).toBeNull()
+    expect(done.completedAt).toEqual(expect.any(Number))
+    store.close()
+  })
+
   it('validates task input and refuses an unrelated SQLite file', () => {
     const file = fixture()
     const store = new TaskStore(file)

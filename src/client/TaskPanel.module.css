@@ -65,6 +65,14 @@
 .row[data-priority='medium'] { border-left-color: #4b87bd; }
 .row[data-priority='high'] { border-left-color: #dd9230; }
 .row[data-priority='urgent'] { border-left-color: #d64e4e; }
+/* A completed card reads dimmer, exactly like an ended row on the built-in
+   Automation tasks page: the content line takes the tertiary ink and the
+   workspace line one step lighter. Pointing at the card or focusing inside it
+   returns both to the usual steps, so the row stays readable while it is used. */
+.row[data-status='done'] .content { color: var(--dsw-alias-label-tertiary, #81858c); }
+.row[data-status='done'] .workspaceMeta { color: var(--dsw-alias-label-caption, #a8abb0); }
+.row[data-status='done']:is(:hover, :focus-within) .content { color: inherit; }
+.row[data-status='done']:is(:hover, :focus-within) .workspaceMeta { color: var(--dsw-alias-label-tertiary, #81858c); }
 .rowLine { display: grid; grid-template-columns: minmax(0, 1fr) 72px 128px auto; align-items: center; gap: 12px; }
 .content {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -117,11 +125,13 @@
 .backdrop { position: fixed; inset: 0; z-index: 1000; background: #0008; display: grid; place-items: center; padding: 20px; }
 .dialog { width: min(100%, 620px); max-height: 90vh; overflow: auto; box-sizing: border-box; border-radius: 12px; padding: 20px 24px; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #0f1115); box-shadow: 0 18px 54px #0003; }
 .dialog h2 { margin: 0 0 16px; font-size: 20px; }
-/* The title keeps the left; an edit dialog offers its status action on the right,
+/* The title keeps the left; an edit dialog offers its status actions on the right,
    so Save and Start are one click instead of two dialogs. The header stays above
-   the scrolling body, so that action never scrolls out of reach. */
+   the scrolling body, so those actions never scroll out of reach. */
 .dialogHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 0; }
 .dialogHeader h2 { flex: 1; min-width: 0; margin: 0; }
+/* Start and Complete sit side by side at the header's right end. */
+.headerActions { display: flex; flex: none; align-items: center; gap: 8px; }
 .headerAction {
   flex: none; min-height: 30px; padding: 5px 16px; border: 0; border-radius: 15px;
   background: var(--dsw-alias-button-primary-fill, #0f1115); color: var(--dsw-alias-label-primary-foreground, #fff);

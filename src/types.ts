@@ -65,6 +65,8 @@ export interface TaskPage {
 export interface CreateTaskRequest {
   title: string
   notes?: string
+  /** Status the new task starts in; the store defaults to `todo`. */
+  status?: TaskStatus
   priority?: TaskPriority
   storyPoints?: number | null
   tags?: string[]

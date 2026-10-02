@@ -94,6 +94,7 @@ export function TaskPanel({
   const [editing, setEditing] = useState<TaskRecord | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
   const [notes, setNotes] = useState('')
+  const [status, setStatus] = useState<TaskStatus>('todo')
   const [priority, setPriority] = useState<TaskPriority>('medium')
   const [storyPoints, setStoryPoints] = useState('')
   const [tagsInput, setTagsInput] = useState('')
@@ -206,6 +207,7 @@ export function TaskPanel({
   const openCreate = () => {
     setEditing(null)
     setNotes('')
+    setStatus('todo')
     setPriority('medium')
     setStoryPoints('')
     setTagsInput('')
@@ -221,6 +223,7 @@ export function TaskPanel({
   const openEdit = (task: TaskRecord) => {
     setEditing(task)
     setNotes(task.notes)
+    setStatus(task.status)
     setPriority(task.priority)
     setStoryPoints(task.storyPoints === null ? '' : String(task.storyPoints))
     setTagsInput(task.tags.join(', '))
@@ -244,14 +247,16 @@ export function TaskPanel({
   /** Write the composer fields and return the saved row; a refusal is thrown for the caller to show. */
   const persist = async (): Promise<TaskRecord> => {
     const fields = {
-      title: derivedTitle, notes, priority,
+      title: derivedTitle, notes, status, priority,
       storyPoints: storyPoints === '' ? null : Number(storyPoints),
       tags: tagsInput.split(/[,，]/u).map(tag => tag.trim()).filter(Boolean),
       workspaceId: workspaceId || null,
       sendImmediately, sessionId: sessionId.trim() || null, agent: agent || null, useWorktree,
     }
+    // The composer's status is authoritative, so the same payload serves the
+    // create and the edit path and any transition is one save away.
     return editing
-      ? await update({ id: editing.id, version: editing.version, status: editing.status, ...fields })
+      ? await update({ id: editing.id, version: editing.version, ...fields })
       : await create(fields)
   }
 
@@ -271,12 +276,13 @@ export function TaskPanel({
   }
 
   /**
-   * The dialog header action for a saved task: write the composer first, then run the same
-   * start/finish the list row offers, so the dialog never closes on an unsaved edit.
+   * The dialog header actions for a saved task: write the composer first, then run the same
+   * start/finish the list row offers, so the dialog never closes on an unsaved edit. Starting
+   * opens a fresh session for this task, so it is offered at every status — a task that is
+   * already In progress or Done can be started again, which rebinds it to the new session.
    */
-  const saveAndLaunch = async () => {
+  const saveAndLaunch = async (finish: boolean) => {
     if (busy || !derivedTitle || editing === null) return
-    const finish = editing.status === 'in_progress'
     let saved: TaskRecord | null = null
     setBusy(true)
     setError('')
@@ -389,7 +395,6 @@ export function TaskPanel({
   const pageSummary = t('pageSummary')
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
   const filtered = query !== '' || filter !== 'all' || workspaceFilter !== 'all'
-  const composerStatus = editing?.status ?? 'todo'
 
   return <main className={css.page}>
     <div className={css.inner}>
@@ -430,7 +435,7 @@ export function TaskPanel({
           const linked = workspaceOf(task)
           const ready = workspaceReady(linked)
           const content = contentOf(task)
-          return <li className={css.row} data-priority={task.priority} key={task.id}>
+          return <li className={css.row} data-priority={task.priority} data-status={task.status} key={task.id}>
             <div className={css.rowLine}>
               <button type="button" className={css.content} onClick={() => openEdit(task)} disabled={busy}
                 title={content} aria-label={`${t('edit')}: ${content}`}>{content}</button>
@@ -473,10 +478,15 @@ export function TaskPanel({
       <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
         <div className={css.dialogHeader}>
           <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
-          {editing !== null && editing.status !== 'done' && <button type="button" className={css.headerAction}
-            onClick={() => void saveAndLaunch()} disabled={busy || !canSave}>
-            {t(editing.status === 'in_progress' ? 'finish' : 'start')}
-          </button>}
+          {editing !== null && <div className={css.headerActions}>
+            {/* Start is offered at every status: a running or finished task can be started
+                again, which opens a fresh session and rebinds the task to it. */}
+            <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(false)}
+              disabled={busy || !canSave}>{t('start')}</button>
+            {/* Nothing left to complete once the composer already reads Done. */}
+            <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(true)}
+              disabled={busy || !canSave || status === 'done'}>{t('finish')}</button>
+          </div>}
         </div>
         <div className={css.dialogBody}>
           {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
@@ -504,14 +514,13 @@ export function TaskPanel({
             <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
               {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
             </select></label>
+            <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
+              {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
+            </select></label>
             <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
             <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
             {/* Read-only facts stay in the composer, styled exactly like the fields above. */}
             <section className={css.metaSection + ' ' + css.fullRow}>
-              <div className={css.fieldBlock}>
-                <label>{t('status')}<span className={css.fixedValue} title={t(statusKey(composerStatus))}>{t(statusKey(composerStatus))}</span></label>
-                <p className={css.fieldHint}>{t('statusFixed')}</p>
-              </div>
               <div className={css.fieldBlock}>
                 <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
                 <p className={css.fieldHint}>{t('sessionIdLocked')}</p>

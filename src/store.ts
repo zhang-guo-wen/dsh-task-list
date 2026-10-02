@@ -354,15 +354,19 @@ export class TaskStore {
   create(input: CreateTaskRequest): TaskRecord {
     const id = randomUUID()
     const now = Date.now()
+    // A task may be created already running or already finished, so the
+    // timestamps follow the same rule as a status change on an existing row.
+    const status = statusOf(input?.status ?? 'todo')
     this.db.prepare(`INSERT INTO tasks
       (id, title, notes, status, priority, story_points, tags, workspace_id,
-       send_immediately, session_id, agent, use_worktree, version, created_at, updated_at)
-      VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
-      id, titleOf(input?.title), notesOf(input?.notes ?? ''), priorityOf(input?.priority ?? 'medium'),
+       send_immediately, session_id, agent, use_worktree, started_at, completed_at, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
+      id, titleOf(input?.title), notesOf(input?.notes ?? ''), status, priorityOf(input?.priority ?? 'medium'),
       storyPointsOf(input?.storyPoints ?? null), JSON.stringify(tagsOf(input?.tags ?? [])),
       workspaceIdOf(input?.workspaceId ?? null), booleanOf(input?.sendImmediately ?? false, 'send immediately') ? 1 : 0,
       optionalIdOf(input?.sessionId ?? null, 'session id'), optionalIdOf(input?.agent ?? null, 'agent'),
-      booleanOf(input?.useWorktree ?? false, 'use worktree') ? 1 : 0, now, now,
+      booleanOf(input?.useWorktree ?? false, 'use worktree') ? 1 : 0,
+      status === 'in_progress' ? now : null, status === 'done' ? now : null, now, now,
     )
     return this.get(id)!
   }
