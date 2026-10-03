@@ -1,5 +1,9 @@
 # DSH Task List
 
+English | [中文](README.zh.md)
+
+Native task list for DeepSeek Harness with its own SQLite storage, host-side search and paging, and one-click Start and Complete.
+
 A native task-list panel for DeepSeek Harness Web. The page uses the same content box as the built-in Automation tasks page: one centred column capped at 960px whose side padding follows the panel width (`clamp(24px, 4vw, 48px)`), so switching between the two pages does not change the list width. Tasks appear as a single-column list: every row shows the task content (its description) first, followed by fixed-width status and workspace columns that clip with an ellipsis, with Start or Complete on the right; the bound session ID and the creation time are not shown in the list (the edit dialog still shows the created, started, and completed times). The toolbar offers status tabs, a workspace filter, a search box with Search and Refresh buttons, and the list loads one page at a time (10, 20, 50, or 100 rows; 20 by default). Paging, filtering, and searching all run on the Host.
 
 A task can still store subtasks — the database table and the remotes stay in place — but this version hides them in both the task rows and the composer until the feature returns.

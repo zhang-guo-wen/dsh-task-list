@@ -1,7 +1,7 @@
 {
   "name": "@guowenzhang/dsh-task-list",
   "version": "0.4.0",
-  "description": "Native task list for DeepSeek Harness with independent SQLite storage, search, paging, and session-linked subtasks",
+  "description": "Native task list for DeepSeek Harness with its own SQLite storage, host-side search and paging, and one-click Start and Complete",
   "type": "module",
   "license": "Apache-2.0",
   "main": "lib/index.mjs",
