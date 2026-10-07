@@ -50,9 +50,6 @@ interface SessionListLike {
   byId: Record<string, { displayTitle?: string } | undefined>
 }
 
-/** Most recent Sessions offered in a picker; keeps one select usable. */
-const SESSION_OPTION_LIMIT = 200
-
 interface WorktreeStartResult { sessionId: string; workspaceId: string }
 
 async function worktreeRequest(method: 'list' | 'start' | 'init' | 'init-files', request: Record<string, unknown>, gitUnavailableMessage: string): Promise<unknown> {
@@ -119,7 +116,7 @@ export async function apply(ctx: Context): Promise<void> {
       const byId = snapshot?.byId ?? {}
       sessionCache = {
         source: snapshot,
-        value: { items: ids.slice(0, SESSION_OPTION_LIMIT).map(id => ({ id, title: byId[id]?.displayTitle ?? id })) },
+        value: { items: ids.map(id => ({ id, title: byId[id]?.displayTitle?.trim() || t('sessionUntitled') })) },
       }
     }
     return sessionCache.value
@@ -224,11 +221,12 @@ export async function apply(ctx: Context): Promise<void> {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
   }, TaskIcon))
-  // Ctrl+S stores the unsent draft as a task. Keep the listener and temporary
-  // feedback mounted with the composer, without a visible capture button.
+  // Ctrl+S stores the unsent draft as a task. Mount the listener with the
+  // composer; feedback uses the host's top toast, without a capture button.
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
     name: 'conversation.input.right', id: 'task-capture', order: 60, locale: NS,
-    inject: () => ({
+    inject: sessionId => ({
+      sessionId,
       create: (request: CreateTaskRequest) => face.create(request),
       captureAttachments: async (ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }> => {
         const drafts = conversation().resolveDraftAttachments(ids)

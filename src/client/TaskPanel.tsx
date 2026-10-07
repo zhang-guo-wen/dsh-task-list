@@ -82,7 +82,8 @@ function contentOf(task: TaskRecord): string {
 
 export function TaskPanel({
   list, create, update, remove, readAttachments,
-  start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces, t,
+  start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces,
+  sessionSnapshot, subscribeSessions, t,
 }: TaskPanelProps) {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [total, setTotal] = useState(0)
@@ -122,6 +123,8 @@ export function TaskPanel({
   const mounted = useRef(false)
   const generation = useRef(0)
   const agentPrefilled = useRef(false)
+  const sessionState = useSyncExternalStore(subscribeSessions, sessionSnapshot)
+  const sessionNames = new Map(sessionState.items.map(row => [row.id, row.title]))
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
   const workspaces = workspaceState.items
   const workspaceNames = new Map(workspaces.map(row => [row.workspaceId, row.title]))
@@ -536,11 +539,14 @@ export function TaskPanel({
             </select></label>
             <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
             <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
-            {/* Read-only facts stay in the composer, styled exactly like the fields above. */}
             <section className={css.metaSection + ' ' + css.fullRow}>
               <div className={css.fieldBlock}>
-                <label>{t('sessionId')}<span className={css.fixedValue} title={sessionId || t('sessionUnbound')}>{sessionId || t('sessionUnbound')}</span></label>
-                <p className={css.fieldHint}>{t('sessionIdLocked')}</p>
+                <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
+                  <option value="">{t('noSession')}</option>
+                  {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
+                  {sessionState.items.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
+                </select></label>
+                <p className={css.fieldHint}>{t('sessionIdHint')}</p>
               </div>
               {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
               {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}

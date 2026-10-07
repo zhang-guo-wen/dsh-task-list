@@ -13,6 +13,8 @@ let tasks: TaskRecord[] = []
 const attachments = new Map<string, TaskAttachmentUpload[]>()
 const snapshot = { items: [{ workspaceId: 'ws-test', title: '测试工作区' }] }
 const subscribe = () => () => {}
+let sessionSnapshot = { items: [{ id: 'session-current', title: '当前中文会话' }, { id: 'session-other', title: '另一个中文会话' }] }
+const sessionListeners = new Set<() => void>()
 const face = {
   list: async () => ({ items: tasks, total: tasks.length, page: 1, pageSize: 20 }),
   create: async (request: any) => {
@@ -30,6 +32,8 @@ const face = {
   remove: async (request: any) => { tasks = tasks.filter(task => task.id !== request.id); return { deleted: true } },
   readAttachments: async (request: any) => attachments.get(request.id) ?? [],
   listAgents: async () => [], workspaceSnapshot: () => snapshot, subscribeWorkspaces: subscribe,
+  sessionSnapshot: () => sessionSnapshot,
+  subscribeSessions: (listener: () => void) => { sessionListeners.add(listener); return () => { sessionListeners.delete(listener) } },
 }
 let input = { draft: '', phase: 'plain', attachmentIds: [] as DraftAttachmentId[], draftRev: 1 }
 const listeners = new Set<() => void>()
@@ -62,11 +66,21 @@ createRoot(document.getElementById('root')!).render(<>
   <TaskPanel {...face as any} t={t as any} />
   <div contentEditable suppressContentEditableWarning role="textbox" aria-label="测试对话输入框"
     onInput={event => inputActions.setDraft(event.currentTarget.textContent ?? '')} />
-  <TaskCapture {...{ useInput, inputActions, create: captureCreate, captureAttachments,
-    releaseAttachment: (id: DraftAttachmentId) => draftFiles.delete(id), t } as any} />
+  <div data-testid="capture-slot" style={{ transform: 'translateZ(0)' }}>
+    <TaskCapture {...{ useInput, inputActions, sessionId: 'session-current', create: captureCreate, captureAttachments,
+      releaseAttachment: (id: DraftAttachmentId) => draftFiles.delete(id), t } as any} />
+  </div>
 </>)
 Object.assign(window, { fixture: {
   tasks: () => tasks,
+  renameSession: (id: string, title: string) => {
+    sessionSnapshot = { items: sessionSnapshot.items.map(row => row.id === id ? { ...row, title } : row) }
+    sessionListeners.forEach(listener => listener())
+  },
+  removeSession: (id: string) => {
+    sessionSnapshot = { items: sessionSnapshot.items.filter(row => row.id !== id) }
+    sessionListeners.forEach(listener => listener())
+  },
   captures: () => captureRequests,
   input: () => input,
   failCapture: (fail: boolean) => { failCapture = fail },

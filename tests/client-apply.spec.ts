@@ -79,7 +79,7 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
 
     expect(panel.sessionSnapshot().items).toEqual([
-      { id: 's-2', title: 's-2' }, { id: 's-1', title: 'Release notes' },
+      { id: 's-2', title: 'sessionUntitled' }, { id: 's-1', title: 'Release notes' },
     ])
     // useSyncExternalStore compares by identity, so one snapshot projects once.
     expect(panel.sessionSnapshot()).toBe(panel.sessionSnapshot())
@@ -90,6 +90,22 @@ describe('subtasks and sessions', () => {
     const listener = () => undefined
     panel.subscribeSessions(listener)
     expect(subscribe).toHaveBeenCalledWith(listener)
+  })
+
+  it('keeps older linked sessions and updates titles when the catalog changes', async () => {
+    const ids = Array.from({ length: 205 }, (_, index) => `session-${index}`)
+    let snapshot = { ids, byId: Object.fromEntries(ids.map(id => [id, { displayTitle: id === 'session-204' ? '较早的中文会话' : '   ' }])) }
+    const ctx = baseContext({})
+    ctx.sessions = { list: { getSnapshot: () => snapshot, subscribe: vi.fn(() => vi.fn()) } }
+    await apply(ctx as unknown as Context)
+    const panel = panelOf(ctx)
+    const before = panel.sessionSnapshot()
+    expect(before.items).toHaveLength(205)
+    expect(before.items[204]).toEqual({ id: 'session-204', title: '较早的中文会话' })
+    expect(before.items[0].title).toBe('sessionUntitled')
+    snapshot = { ...snapshot, byId: { ...snapshot.byId, 'session-204': { displayTitle: '改名后的会话' } } }
+    expect(panel.sessionSnapshot()).not.toBe(before)
+    expect(panel.sessionSnapshot().items[204].title).toBe('改名后的会话')
   })
 
   it('routes subtask edits through the taskList remote namespace', async () => {
@@ -430,6 +446,20 @@ describe('composer capture', () => {
       ctx.conversation.resolveDraftAttachments.mockReturnValueOnce([])
       await expect(face.captureAttachments(ids)).rejects.toThrow('attachmentMissing')
     } finally { store.close(); rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('injects the owning composer session instead of a global active session', async () => {
+    const register = vi.fn(() => vi.fn())
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()) },
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register },
+    }
+    await apply(ctx as unknown as Context)
+    const capture = register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0]
+    expect(capture.inject('session-one').sessionId).toBe('session-one')
+    expect(capture.inject('session-two').sessionId).toBe('session-two')
   })
 
   it('writes the captured draft through the taskList remote namespace', async () => {

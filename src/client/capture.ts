@@ -37,6 +37,8 @@ export interface CaptureDeps {
   /** Persist bytes first; callers keep runtime attachments until the task is saved. */
   captureAttachments?(): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }>
   hasAttachments?: boolean
+  /** Session owning the draft, captured before asynchronous attachment reads. */
+  sessionId?: string | null
   clearAttachments?(): void
 }
 
@@ -91,7 +93,7 @@ export async function captureDraft(draft: string, deps: CaptureDeps): Promise<Ca
     title = deriveTaskTitle('', notes)
     await deps.create({
       title, notes, content, attachments: captured.uploads, priority: 'medium', storyPoints: null, tags: [],
-      workspaceId: null, sendImmediately: false, sessionId: null, agent: null, useWorktree: false,
+      workspaceId: null, sendImmediately: false, sessionId: deps.sessionId ?? null, agent: null, useWorktree: false,
     })
   } catch (error) {
     return { kind: 'failed', message: error instanceof Error ? error.message : String(error) }

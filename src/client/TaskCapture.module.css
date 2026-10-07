@@ -1,5 +1,0 @@
-/* Temporary feedback for keyboard-only draft capture. */
-.capture { display: inline-flex; align-items: center; min-width: 0; font: inherit; }
-.report { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.report[data-tone='created'] { color: var(--dsw-alias-state-business-primary, #326dca); }
-.report[data-tone='failed'] { color: var(--dsw-alias-state-error-primary, #c4314b); }

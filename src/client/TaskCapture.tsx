@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { CreateTaskRequest, TaskContent, TaskAttachmentUpload } from '../types.ts'
 import type { DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { captureDraft, installCaptureShortcut, type CaptureOutcome } from './capture.ts'
-import css from './TaskCapture.module.css'
 
 /** Business face the composer control needs: the task writer. */
 export interface TaskCaptureFace {
+  sessionId: string
   create(request: CreateTaskRequest): Promise<unknown>
   captureAttachments(ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }>
   releaseAttachment(id: DraftAttachmentId): void
@@ -15,8 +16,8 @@ export interface TaskCaptureFace {
 
 type TaskCaptureProps = PropsRuntime<'conversation.input.right'> & InjectFace<TaskCaptureFace> & PropsLocale<'taskList'>
 
-/** How long one capture result stays visible next to the control. */
-const REPORT_TIMEOUT_MS = 4000
+/** Full-opacity hold; the host Toast owns its fade and dismissal timer. */
+const REPORT_HOLD_MS = 3000
 
 /** Composer projection the shortcut reads; the session input machine supplies it. */
 interface ComposerInput { readonly draft: string; readonly attachmentIds?: readonly DraftAttachmentId[]; readonly phase?: string; readonly draftRev?: number }
@@ -34,24 +35,21 @@ function asDraft(value: unknown): string {
  * the button in this component if requested; keep the Ctrl+S listener mounted.
  * Reads the draft through the session input projection and reports captures.
  */
-export function TaskCapture({ useInput, inputActions, create, captureAttachments, releaseAttachment, t }: TaskCaptureProps) {
+export function TaskCapture({ useInput, inputActions, sessionId, create, captureAttachments, releaseAttachment, t }: TaskCaptureProps) {
   const input = useInput(selectInput)
   const draft = asDraft(input?.draft)
-  const [outcome, setOutcome] = useState<CaptureOutcome | null>(null)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [notice, setNotice] = useState<{ outcome: CaptureOutcome; seq: number } | null>(null)
+  const sequence = useRef(0)
   // The keydown listener is installed once; this ref keeps it reading the
   // latest draft, actions, and face without reinstalling per keystroke.
-  const latest = useRef({ draft, input, inputActions, create, captureAttachments, releaseAttachment, t })
-  latest.current = { draft, input, inputActions, create, captureAttachments, releaseAttachment, t }
+  const latest = useRef({ draft, input, inputActions, sessionId, create, captureAttachments, releaseAttachment, t })
+  latest.current = { draft, input, inputActions, sessionId, create, captureAttachments, releaseAttachment, t }
   const capturing = useRef(false)
 
-  const report = useCallback((next: CaptureOutcome) => {
-    setOutcome(next)
-    if (timer.current !== null) clearTimeout(timer.current)
-    timer.current = setTimeout(() => setOutcome(null), REPORT_TIMEOUT_MS)
+  const report = useCallback((outcome: CaptureOutcome) => {
+    // A repeated result must remount Toast to restart its hold/fade cycle.
+    setNotice({ outcome, seq: ++sequence.current })
   }, [])
-
-  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current) }, [])
 
   useEffect(() => installCaptureShortcut(document, {
     readDraft: () => latest.current.draft,
@@ -64,6 +62,7 @@ export function TaskCapture({ useInput, inputActions, create, captureAttachments
       try {
         return await captureDraft(text, {
           create: snapshot.create,
+          sessionId: snapshot.sessionId,
           hasAttachments: ids.length > 0,
           ...(ids.length ? { captureAttachments: () => snapshot.captureAttachments(ids) } : {}),
           clearDraft: () => {
@@ -84,13 +83,14 @@ export function TaskCapture({ useInput, inputActions, create, captureAttachments
     report,
   }), [report])
 
-  const message = outcome === null ? '' : outcome.kind === 'created'
+  if (notice === null) return null
+
+  const { outcome, seq } = notice
+  const message = outcome.kind === 'created'
     ? t('captureCreated').replace('{title}', outcome.title)
     : outcome.kind === 'empty' ? t('captureEmpty') : `${t('captureFailed')}: ${outcome.message}`
 
-  if (outcome === null) return null
-
-  return <span className={css.capture}>
-    <span className={css.report} role="status" data-tone={outcome.kind}>{message}</span>
-  </span>
+  // Toast portals into document.body: no result occupies the composer slot.
+  return <Toast key={seq} text={message} {...(outcome.kind === 'created' ? { tone: 'success' as const } : {})}
+    holdMs={REPORT_HOLD_MS} onDone={() => setNotice(current => current?.seq === seq ? null : current)} />
 }

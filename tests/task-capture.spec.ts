@@ -66,6 +66,28 @@ describe('captureDraft', () => {
     expect(clearDraft).toHaveBeenCalledTimes(1)
   })
 
+  it('links the captured task to its composer session', async () => {
+    const create = vi.fn(async () => ({}))
+    await captureDraft('保存当前会话任务', { create, clearDraft: vi.fn(), sessionId: 'session-current' })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-current' }))
+  })
+
+  it('keeps the originating session while attachment capture is pending', async () => {
+    const create = vi.fn(async () => ({}))
+    const node = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: '需求.txt', mediaType: 'text/plain', bytes: 3 }
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let activeSession = 'session-original'
+    const outcome = captureDraft('异步保存', {
+      create, clearDraft: vi.fn(), sessionId: activeSession, hasAttachments: true,
+      captureAttachments: async () => { await pending; return { blocks: [node], uploads: [{ id: node.id, data: 'YWJj' }] } },
+    })
+    activeSession = 'session-other'
+    release()
+    await expect(outcome).resolves.toMatchObject({ kind: 'created' })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-original' }))
+  })
+
   it('captures attachment-only drafts and releases them only after persistence', async () => {
     const steps: string[] = []
     const node = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: '需求.txt', mediaType: 'text/plain', bytes: 3 }

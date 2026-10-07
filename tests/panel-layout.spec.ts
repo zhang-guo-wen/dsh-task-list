@@ -90,11 +90,15 @@ describe('panel layout', () => {
     expect(panel).not.toContain('composerStatus')
   })
 
-  it('closes the composer with read-only facts in the same field style', () => {
+  it('closes the composer with a session picker and read-only timestamps', () => {
     expect(rule('.metaSection')).toContain('border-top')
     expect(at('css.metaSection')).toBeGreaterThan(at("<label>{t('storyPoints')}"))
-    // Session id, created, started, and completed use the fixed-value style.
-    expect(panel.match(/css\.fixedValue/g)).toHaveLength(4)
+    // The linked session is selectable by title; only timestamps stay fixed.
+    expect(panel).toContain("<label>{t('sessionId')}<select value={sessionId}")
+    expect(panel).toContain('onChange={event => setSessionId(event.target.value)}')
+    expect(panel).toContain('{row.title}</option>')
+    expect(panel).toContain('useSyncExternalStore(subscribeSessions, sessionSnapshot)')
+    expect(panel.match(/css\.fixedValue/g)).toHaveLength(3)
     expect(at("t('createdAt')")).toBeLessThan(at("t('startedAt')"))
     expect(at("t('startedAt')")).toBeLessThan(at("t('completedAt')"))
     expect(at("t('notStarted')")).toBeGreaterThan(0)
