@@ -33,6 +33,7 @@ describe('composer focus', () => {
   it('rejects a plain field and a missing focus target', () => {
     expect(isComposerFocused({ getAttribute: () => null, closest: () => null })).toBe(false)
     expect(isComposerFocused(null)).toBe(false)
+    expect(isComposerFocused({ getAttribute: () => 'true', closest: selector => selector === '[role="dialog"]' ? {} : null })).toBe(false)
   })
 })
 
@@ -48,6 +49,11 @@ describe('captureDraft', () => {
     expect(create).toHaveBeenCalledWith({
       title: '写一个任务列表 第二行',
       notes: '写一个任务列表\n第二行',
+      content: { version: 1, blocks: [
+        { type: 'paragraph', children: [{ text: '写一个任务列表' }] },
+        { type: 'paragraph', children: [{ text: '第二行' }] },
+      ] },
+      attachments: [],
       priority: 'medium',
       storyPoints: null,
       tags: [],
@@ -58,6 +64,44 @@ describe('captureDraft', () => {
       useWorktree: false,
     })
     expect(clearDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('captures attachment-only drafts and releases them only after persistence', async () => {
+    const steps: string[] = []
+    const node = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: '需求.txt', mediaType: 'text/plain', bytes: 3 }
+    const create = vi.fn(async () => { steps.push('save') })
+    const outcome = await captureDraft('', {
+      create, hasAttachments: true,
+      captureAttachments: async () => ({ blocks: [node], uploads: [{ id: node.id, data: 'YWJj' }] }),
+      clearDraft: () => { steps.push('clear') }, clearAttachments: () => { steps.push('release') },
+    })
+    expect(outcome).toEqual({ kind: 'created', title: '需求.txt' })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ notes: '\n需求.txt', attachments: [{ id: node.id, data: 'YWJj' }] }))
+    expect(steps).toEqual(['save', 'clear', 'release'])
+    const clearDraft = vi.fn()
+    const clearAttachments = vi.fn()
+    expect(await captureDraft('text', {
+      create, clearDraft, clearAttachments, hasAttachments: true,
+      captureAttachments: async () => { throw new Error('read failed') },
+    })).toEqual({ kind: 'failed', message: 'read failed' })
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(clearAttachments).not.toHaveBeenCalled()
+  })
+
+  it('does not discard attachments when the writer refuses the task or capture is unavailable', async () => {
+    const create = vi.fn(async () => { throw new Error('save refused') })
+    const clearDraft = vi.fn()
+    const clearAttachments = vi.fn()
+    const node = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: 'file.txt', mediaType: 'text/plain', bytes: 1 }
+    expect(await captureDraft('text', {
+      create, clearDraft, clearAttachments, hasAttachments: true,
+      captureAttachments: async () => ({ blocks: [node], uploads: [{ id: node.id, data: 'YQ==' }] }),
+    })).toEqual({ kind: 'failed', message: 'save refused' })
+    expect(await captureDraft('text', { create, clearDraft, clearAttachments, hasAttachments: true }))
+      .toEqual({ kind: 'failed', message: 'attachment capture is unavailable' })
+    expect(create).toHaveBeenCalledOnce()
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(clearAttachments).not.toHaveBeenCalled()
   })
 
   it('ignores a blank draft without writing anything', async () => {

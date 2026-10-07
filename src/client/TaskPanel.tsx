@@ -11,6 +11,9 @@ import type { TaskKey } from './locales.ts'
 import { deriveTaskTitle } from './task-title.ts'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import css from './TaskPanel.module.css'
+import { contentText, textContent } from '../content.ts'
+import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
+import { TaskContentEditor } from './TaskContentEditor.tsx'
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
@@ -36,6 +39,7 @@ export interface TaskFace {
   list(request: ListTasksRequest): Promise<TaskPage>
   create(request: CreateTaskRequest): Promise<TaskRecord>
   update(request: UpdateTaskRequest): Promise<TaskRecord>
+  readAttachments(request: { id: string; version: number }): Promise<TaskAttachmentUpload[]>
   remove(request: DeleteTaskRequest): Promise<{ deleted: true }>
   createSubtask(request: CreateSubtaskRequest): Promise<SubtaskRecord>
   updateSubtask(request: UpdateSubtaskRequest): Promise<SubtaskRecord>
@@ -77,7 +81,7 @@ function contentOf(task: TaskRecord): string {
 }
 
 export function TaskPanel({
-  list, create, update, remove,
+  list, create, update, remove, readAttachments,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces, t,
 }: TaskPanelProps) {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
@@ -93,7 +97,11 @@ export function TaskPanel({
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<TaskRecord | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
-  const [notes, setNotes] = useState('')
+  const [content, setContent] = useState<TaskContent>(() => textContent(''))
+  const [uploads, setUploads] = useState<TaskAttachmentUpload[]>([])
+  const [attachmentBusy, setAttachmentBusy] = useState(false)
+  const [contentValid, setContentValid] = useState(true)
+  const notes = contentText(content)
   const [status, setStatus] = useState<TaskStatus>('todo')
   const [priority, setPriority] = useState<TaskPriority>('medium')
   const [storyPoints, setStoryPoints] = useState('')
@@ -206,7 +214,10 @@ export function TaskPanel({
 
   const openCreate = () => {
     setEditing(null)
-    setNotes('')
+    setContent(textContent(''))
+    setUploads([])
+    setAttachmentBusy(false)
+    setContentValid(true)
     setStatus('todo')
     setPriority('medium')
     setStoryPoints('')
@@ -222,7 +233,10 @@ export function TaskPanel({
 
   const openEdit = (task: TaskRecord) => {
     setEditing(task)
-    setNotes(task.notes)
+    setContent(task.content?.blocks.length ? task.content : textContent(task.notes.trim() || task.title))
+    setUploads([])
+    setAttachmentBusy(false)
+    setContentValid(true)
     setStatus(task.status)
     setPriority(task.priority)
     setStoryPoints(task.storyPoints === null ? '' : String(task.storyPoints))
@@ -248,6 +262,7 @@ export function TaskPanel({
   const persist = async (): Promise<TaskRecord> => {
     const fields = {
       title: derivedTitle, notes, status, priority,
+      content, attachments: uploads,
       storyPoints: storyPoints === '' ? null : Number(storyPoints),
       tags: tagsInput.split(/[,，]/u).map(tag => tag.trim()).filter(Boolean),
       workspaceId: workspaceId || null,
@@ -262,7 +277,7 @@ export function TaskPanel({
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (busy || !derivedTitle) return
+    if (busy || attachmentBusy || !contentValid || !derivedTitle) return
     setBusy(true)
     setError('')
     try {
@@ -282,7 +297,7 @@ export function TaskPanel({
    * already In progress or Done can be started again, which rebinds it to the new session.
    */
   const saveAndLaunch = async (finish: boolean) => {
-    if (busy || !derivedTitle || editing === null) return
+    if (busy || attachmentBusy || !contentValid || !derivedTitle || editing === null) return
     let saved: TaskRecord | null = null
     setBusy(true)
     setError('')
@@ -390,7 +405,7 @@ export function TaskPanel({
   const workspaceLabel = (id: string | null): string => id === null ? t('noWorkspace') : workspaceNames.get(id) ?? id
   const workspaceReady = (id: string | null): boolean => id !== null && workspaceNames.has(id)
   const selectableInitialEntries = initialEntries.filter(entry => entry.kind !== 'nested_repository')
-  const canSave = Boolean(derivedTitle)
+  const canSave = Boolean(derivedTitle) && !attachmentBusy && contentValid
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const pageSummary = t('pageSummary')
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
@@ -474,7 +489,7 @@ export function TaskPanel({
       </div>}
     </div>
 
-    {composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setComposerOpen(false) }}>
+    {composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !attachmentBusy) setComposerOpen(false) }}>
       <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
         <div className={css.dialogHeader}>
           <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
@@ -491,8 +506,10 @@ export function TaskPanel({
         <div className={css.dialogBody}>
           {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
           <form id="task-list-form" onSubmit={event => void save(event)}>
-            <label className={css.fullRow}>{t('notesLabel')}<textarea autoFocus required value={notes} maxLength={20000} rows={5}
-              placeholder={t('notesHint')} onChange={event => setNotes(event.target.value)} /></label>
+            <div className={css.fullRow}>{t('notesLabel')}<TaskContentEditor value={content} uploads={uploads}
+              onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
+              readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
+              disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>
             <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
               {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
               {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
@@ -532,7 +549,7 @@ export function TaskPanel({
           </form>
         </div>
         <div className={css.dialogFooter}>
-          <button type="button" onClick={() => setComposerOpen(false)} disabled={busy}>{t('cancel')}</button>
+          <button type="button" onClick={() => setComposerOpen(false)} disabled={busy || attachmentBusy}>{t('cancel')}</button>
           <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
         </div>
       </div>

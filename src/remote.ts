@@ -17,7 +17,7 @@ function descriptor(method: string): InvocationDescriptor {
 export const TYPERT_REMOTE: TypertRemoteContribution = {
   package: '@guowenzhang/dsh-task-list',
   descriptors: [
-    'listTasks', 'createTask', 'updateTask', 'deleteTask',
+    'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments',
     'createSubtask', 'updateSubtask', 'deleteSubtask',
   ].map(descriptor),
 }

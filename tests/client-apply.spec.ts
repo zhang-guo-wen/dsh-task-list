@@ -3,6 +3,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TaskRecord } from '../src/types.ts'
 import { apply } from '../src/client/index.tsx'
 import { TYPERT_REMOTE } from '../src/remote.ts'
+import { captureDraft } from '../src/client/capture.ts'
+import type { TaskCaptureFace } from '../src/client/TaskCapture.tsx'
+import type { DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { TaskStore } from '../src/store.ts'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 describe('client contribution', () => {
   it('mounts the task panel and its matching sidebar entry', async () => {
@@ -24,7 +31,7 @@ describe('client contribution', () => {
       expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
     ])
     expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual([
-      'listTasks', 'createTask', 'updateTask', 'deleteTask', 'createSubtask', 'updateSubtask', 'deleteSubtask',
+      'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask',
     ])
     cleanups.forEach(fn => fn())
     expect(offRemote).toHaveBeenCalledOnce()
@@ -204,6 +211,43 @@ describe('task launch', () => {
     expect(draft).toHaveBeenLastCalledWith('Legacy row')
   })
 
+  it.each([
+    { name: 'requirements.txt', mediaType: 'text/plain', data: 'YWJj', bytes: 3 },
+    { name: 'image.png', mediaType: 'image/png', data: 'iVBORw==', bytes: 4 },
+  ])('restores persisted $name and Markdown before immediate submit', async attachment => {
+    const node = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: attachment.name, mediaType: attachment.mediaType, bytes: attachment.bytes }
+    const setDraft = vi.fn()
+    const addAttachments = vi.fn(() => true)
+    const submit = vi.fn()
+    const createDrafts = vi.fn((_id: string, files: File[]) => files.map(file => ({ id: 'runtime-id', file })))
+    const readTaskAttachments = vi.fn(async () => ({ ok: true, value: [{ id: node.id, data: attachment.data }] }))
+    const updateTask = vi.fn(async () => ({ ok: true, value: {} }))
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()) }, get: () => ({ readTaskAttachments, updateTask }),
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
+      workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'ws' }] }) } },
+      sessions: { create: vi.fn(async () => 'session-attachments'), using: async (_id: string, _options: unknown, fn: () => Promise<void>) => fn(), scope: () => ({}) },
+      conversation: { createDrafts, input: { for: () => ({ setDraft, addAttachments, submit }) } },
+      uiWorkspace: { openSession: vi.fn() },
+    }
+    await apply(ctx as unknown as Context)
+    const panel = ctx.slots.register.mock.calls.find(call => call[0].name === 'main')?.[0].inject()
+    const task = { id: 'task-attachments', version: 2, title: 'Check', notes: 'Check', workspaceId: 'ws', agent: null, sendImmediately: true,
+      content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'Check', marks: ['bold'] }] }, node] } } as TaskRecord
+    await panel.start(task)
+    expect(readTaskAttachments).toHaveBeenCalledWith({ id: task.id, version: 2 })
+    expect(createDrafts).toHaveBeenCalledWith('session-attachments', [expect.objectContaining({ name: attachment.name, type: attachment.mediaType, size: attachment.bytes })])
+    expect(Buffer.from(await createDrafts.mock.calls[0][1][0].arrayBuffer()).toString('base64')).toBe(attachment.data)
+    expect(addAttachments).toHaveBeenCalledWith(['runtime-id'])
+    expect(setDraft).toHaveBeenCalledWith('**Check**')
+    expect(submit).toHaveBeenCalledWith('queue', 'click')
+    readTaskAttachments.mockRejectedValueOnce(new Error('task changed'))
+    await expect(panel.start(task)).rejects.toThrow('task changed')
+    expect(ctx.sessions.create).toHaveBeenCalledTimes(1)
+  })
+
   it('launches a task without a workspace in the default workspace', async () => {
     const updateTask = vi.fn(async () => ({ ok: true as const, value: {} }))
     const create = vi.fn(async () => 'session-9')
@@ -346,6 +390,48 @@ describe('task launch', () => {
 })
 
 describe('composer capture', () => {
+  it('carries original file and image bytes into SQLite, even while the host file upload is pending', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'task-capture-attachments-'))
+    let store = new TaskStore(join(root, 'tasks.sqlite'))
+    try {
+      const file = new File(['file bytes'], '需求.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+      const image = new File([new Uint8Array([137, 80, 78, 71])], '截图.png', { type: 'image/png' })
+      const ids = ['file-runtime', 'image-runtime'] as DraftAttachmentId[]
+      const drafts = [{ kind: 'file', id: ids[0], file }, { kind: 'image', id: ids[1], file: image, previewUrl: 'blob:preview' }]
+      const releaseDraftAttachment = vi.fn()
+      const createTask = vi.fn(async (request: Parameters<TaskStore['create']>[0]) => ({ ok: true as const, value: store.create(request) }))
+      const ctx = {
+        remote: { $mount: vi.fn(async () => vi.fn()) }, get: () => ({ createTask, capabilities: async () => ({ ok: true, value: { version: 1, richText: true, attachments: true } }),
+          readTaskAttachments: async (request: { id: string; version: number }) => ({ ok: true, value: store.readAttachments(request.id, request.version) }) }),
+        locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+        effect: (fn: () => (() => void)) => { fn() },
+        slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
+        conversation: { resolveDraftAttachments: vi.fn(() => drafts), releaseDraftAttachment,
+          fileUploads: { getSnapshot: () => ({ 'file-runtime': { status: 'uploading' } }) } },
+      }
+      await apply(ctx as unknown as Context)
+      const face = ctx.slots.register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0].inject() as TaskCaptureFace
+      const clearDraft = vi.fn()
+      expect(await captureDraft('带文件和图片的任务', {
+        create: face.create, hasAttachments: true, captureAttachments: () => face.captureAttachments(ids), clearDraft,
+        clearAttachments: () => ids.forEach(face.releaseAttachment),
+      })).toEqual({ kind: 'created', title: '带文件和图片的任务 需求.docx 截图.png' })
+      const task = store.list().items[0]!
+      const nodes = task.content.blocks.filter(block => block.type === 'attachment')
+      expect(nodes.map(node => [node.name, node.mediaType, node.bytes])).toEqual([[file.name, file.type, file.size], [image.name, image.type, image.size]])
+      expect(clearDraft).toHaveBeenCalledOnce()
+      expect(releaseDraftAttachment.mock.calls.map(call => call[0])).toEqual(ids)
+      store.close()
+      store = new TaskStore(join(root, 'tasks.sqlite'))
+      const bytes = store.readAttachments(task.id, task.version)
+      expect(Buffer.from(bytes[0]!.data, 'base64').toString()).toBe('file bytes')
+      expect([...Buffer.from(bytes[1]!.data, 'base64')]).toEqual([137, 80, 78, 71])
+      // A disappeared browser object must fail rather than save just the text.
+      ctx.conversation.resolveDraftAttachments.mockReturnValueOnce([])
+      await expect(face.captureAttachments(ids)).rejects.toThrow('attachmentMissing')
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('writes the captured draft through the taskList remote namespace', async () => {
     const createTask = vi.fn(async () => ({ ok: true as const, value: { id: 'task-9', title: '整理发布清单' } }))
     const register = vi.fn(() => vi.fn())

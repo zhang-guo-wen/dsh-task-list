@@ -63,6 +63,7 @@ const cssModulePlugin = {
 const bundle = await rolldown({
   input: join(root, 'src', 'client', 'index.tsx'),
   platform: 'browser',
+  transform: { define: { 'process.env.NODE_ENV': '"production"' } },
   external: [/^react$/, /^react\//, /^@deepseek-ai\//],
   plugins: [cssModulePlugin],
 })

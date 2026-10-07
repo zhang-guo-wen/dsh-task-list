@@ -1,5 +1,6 @@
 /** Composer draft capture: Ctrl+S turns unsent input into a task. */
-import type { CreateTaskRequest } from '../types.ts'
+import type { CreateTaskRequest, TaskAttachmentUpload, TaskContent } from '../types.ts'
+import { contentText, textContent, validateContent } from '../content.ts'
 import { deriveTaskTitle } from './task-title.ts'
 
 /** Keyboard shape the shortcut check reads; a DOM KeyboardEvent satisfies it. */
@@ -33,6 +34,10 @@ export interface CaptureDeps {
   create(request: CreateTaskRequest): Promise<unknown>
   /** Empty the composer after a successful capture. */
   clearDraft(): void
+  /** Persist bytes first; callers keep runtime attachments until the task is saved. */
+  captureAttachments?(): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }>
+  hasAttachments?: boolean
+  clearAttachments?(): void
 }
 
 export interface CaptureKeyDeps {
@@ -59,7 +64,7 @@ export function isCaptureShortcut(event: ShortcutEvent): boolean {
 
 /** @returns whether the focused element is the composer editor or inside it. */
 export function isComposerFocused(target: FocusTarget | null): boolean {
-  if (target === null) return false
+  if (target === null || target.closest?.('[role="dialog"]')) return false
   if (target.getAttribute?.('contenteditable') === 'true') return true
   const inside = target.closest?.('[contenteditable="true"]')
   return inside !== null && inside !== undefined
@@ -73,18 +78,26 @@ export function isComposerFocused(target: FocusTarget | null): boolean {
  * @returns what the control should report.
  */
 export async function captureDraft(draft: string, deps: CaptureDeps): Promise<CaptureOutcome> {
-  const notes = draft.trim()
-  if (notes === '') return { kind: 'empty' }
-  const title = deriveTaskTitle('', notes)
+  const text = draft.trim()
+  if (text === '' && !deps.hasAttachments) return { kind: 'empty' }
+  let title: string
   try {
+    // Never silently downgrade an attachment-bearing draft to a text-only task.
+    if (deps.hasAttachments && !deps.captureAttachments) throw new Error('attachment capture is unavailable')
+    const captured = await deps.captureAttachments?.() ?? { blocks: [], uploads: [] }
+    if (deps.hasAttachments && (captured.blocks.length === 0 || captured.uploads.length === 0)) throw new Error('attachment bytes missing')
+    const content = validateContent({ version: 1, blocks: [...textContent(text).blocks, ...captured.blocks] })
+    const notes = contentText(content)
+    title = deriveTaskTitle('', notes)
     await deps.create({
-      title, notes, priority: 'medium', storyPoints: null, tags: [],
+      title, notes, content, attachments: captured.uploads, priority: 'medium', storyPoints: null, tags: [],
       workspaceId: null, sendImmediately: false, sessionId: null, agent: null, useWorktree: false,
     })
   } catch (error) {
     return { kind: 'failed', message: error instanceof Error ? error.message : String(error) }
   }
   deps.clearDraft()
+  deps.clearAttachments?.()
   return { kind: 'created', title }
 }
 

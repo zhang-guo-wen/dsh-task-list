@@ -13,6 +13,11 @@ declare module '@deepseek-ai/cordis' {
 export class TaskService extends TypertRemoteService {
   constructor(ctx: Context, readonly store: TaskStore) { super(ctx, 'taskList') }
 
+  @Remote('capabilities')
+  async capabilities(request: Record<string, never>) {
+    return { version: 1 as const, richText: true as const, attachments: true as const }
+  }
+
   @Remote('listTasks')
   async listTasks(request: ListTasksRequest): Promise<TaskPage> {
     return this.store.list(request ?? {})
@@ -26,6 +31,11 @@ export class TaskService extends TypertRemoteService {
   @Remote('updateTask')
   async updateTask(request: UpdateTaskRequest): Promise<TaskRecord> {
     return this.store.update(request)
+  }
+
+  @Remote('readTaskAttachments')
+  async readTaskAttachments(request: { id: string; version: number }) {
+    return this.store.readAttachments(request?.id, request?.version)
   }
 
   @Remote('deleteTask')

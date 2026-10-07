@@ -126,6 +126,13 @@ describe('panel layout', () => {
     expect(panel).toContain('{error && !composerOpen && <div className={css.error} role="alert">')
   })
 
+  it('uses the rich-text editor without altering the full-width content field', () => {
+    expect(panel).toContain('<TaskContentEditor value={content} uploads={uploads}')
+    expect(panel).not.toContain('<textarea')
+    expect(panel).toContain('onValid={setContentValid}')
+    expect(panel).toContain('content, attachments: uploads,')
+  })
+
   it('leaves subtasks out of the panel and the composer', () => {
     expect(panel).not.toMatch(/subtasksSection|subtaskDraft|css\.subtasks/)
     expect(css).not.toMatch(/\.subtask/)

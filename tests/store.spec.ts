@@ -62,7 +62,7 @@ describe('independent task database', () => {
       storyPoints: null, tags: [], workspaceId: null, startedAt: null, completedAt: null,
       sendImmediately: false, sessionId: null, agent: null, useWorktree: false, subtasks: [],
     })])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(4)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
     migrated.close()
   })
 
@@ -99,12 +99,12 @@ describe('independent task database', () => {
 
     // Reopen as a version-3 database the way the previous release left it.
     const legacy = new DatabaseSync(file)
-    legacy.exec('DROP TABLE subtasks; PRAGMA user_version = 3;')
+    legacy.exec('DROP TABLE subtasks; DROP TABLE task_attachments; ALTER TABLE tasks DROP COLUMN content; PRAGMA user_version = 3;')
     legacy.close()
 
     const migrated = new TaskStore(file)
     expect(migrated.list().items.map(row => row.title)).toEqual(['Existing'])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(4)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5)
     const subtask = migrated.createSubtask({ taskId: task.id, notes: 'Added after migration' })
     expect(migrated.get(task.id)?.subtasks.map(row => row.id)).toEqual([subtask.id])
     migrated.close()
@@ -185,6 +185,75 @@ describe('independent task database', () => {
     db.exec('CREATE TABLE unrelated (id TEXT PRIMARY KEY)')
     db.close()
     expect(() => new TaskStore(other)).toThrow('unrecognized tables')
+  })
+})
+
+describe('persistent rich text and attachments', () => {
+  const attachment = { type: 'attachment' as const, id: '22222222-2222-4222-8222-222222222222', name: '需求.txt', mediaType: 'text/plain', bytes: 3 }
+  const content = { version: 1 as const, blocks: [
+    { type: 'heading' as const, children: [{ text: '检查需求', marks: ['bold' as const] }] }, attachment,
+  ] }
+
+  it('persists JSON and bytes across reopen without putting bytes in list pages', () => {
+    const file = fixture()
+    const store = new TaskStore(file)
+    const task = store.create({ title: '检查需求', notes: 'ignored', content, attachments: [{ id: attachment.id, data: 'YWJj' }] })
+    expect(task.notes).toBe('检查需求\n需求.txt')
+    expect(task.content).toEqual(content)
+    expect(JSON.stringify(store.list())).not.toContain('YWJj')
+    expect(store.list({ query: '需求.txt' }).total).toBe(1)
+    store.close()
+    const reopened = new TaskStore(file)
+    expect(reopened.get(task.id)?.content).toEqual(content)
+    expect(reopened.readAttachments(task.id, task.version)).toEqual([{ id: attachment.id, data: 'YWJj' }])
+    const changed = reopened.update({ id: task.id, version: task.version, status: 'in_progress' })
+    expect(changed.content).toEqual(content)
+    expect(() => reopened.readAttachments(task.id, task.version)).toThrow('task changed')
+    reopened.delete(changed.id, changed.version)
+    expect(reopened.db.prepare('SELECT * FROM task_attachments').all()).toHaveLength(0)
+    reopened.close()
+  })
+
+  it('keeps row and bytes atomic, refuses foreign attachments and cleans removed bytes', () => {
+    const store = new TaskStore(fixture())
+    expect(() => store.create({ title: 'Missing', content })).toThrow('bytes missing')
+    expect(store.list().total).toBe(0)
+    expect(() => store.create({ title: 'Wrong size', content, attachments: [{ id: attachment.id, data: 'YQ==' }] })).toThrow('size mismatch')
+    const task = store.create({ title: 'Valid', content, attachments: [{ id: attachment.id, data: 'YWJj' }] })
+    expect(() => store.create({ title: 'Steal', content })).toThrow('another task')
+    expect(() => store.update({ id: task.id, version: task.version, content, attachments: [{ id: attachment.id, data: 'YWJj' }] })).toThrow('immutable')
+    expect(store.get(task.id)?.version).toBe(1)
+    const removed = store.update({ id: task.id, version: task.version, content: { version: 1, blocks: [] } })
+    expect(store.readAttachments(removed.id, removed.version)).toEqual([])
+    expect(store.db.prepare('SELECT * FROM task_attachments').all()).toHaveLength(0)
+    store.close()
+  })
+
+  it('preserves notes written by a stale text-only Host after schema migration', () => {
+    const store = new TaskStore(fixture())
+    try {
+      const task = store.create({ title: 'Legacy', notes: 'body\nimage.png' })
+      store.db.prepare('UPDATE tasks SET content = ? WHERE id = ?').run('{"version":1,"blocks":[]}', task.id)
+      expect(store.get(task.id)?.content.blocks[0]).toEqual({ type: 'paragraph', children: [{ text: 'body' }] })
+      const launched = store.update({ id: task.id, version: task.version, status: 'in_progress' })
+      expect(launched.notes).toBe('body\nimage.png')
+      expect(launched.content.blocks).toHaveLength(2)
+      expect(store.readAttachments(task.id, launched.version)).toEqual([])
+    } finally { store.close() }
+  })
+
+  it('migrates v4 content literally without altering row versions or times', () => {
+    const file = fixture()
+    const store = new TaskStore(file)
+    const task = store.create({ title: 'Legacy', notes: '<b>literal</b>\n\n第二行' })
+    store.close()
+    const legacy = new DatabaseSync(file)
+    legacy.exec('DROP TABLE task_attachments; ALTER TABLE tasks DROP COLUMN content; PRAGMA user_version = 4;')
+    legacy.close()
+    const migrated = new TaskStore(file)
+    expect(migrated.get(task.id)).toEqual(task)
+    expect(migrated.get(task.id)?.content.blocks[0]).toEqual({ type: 'paragraph', children: [{ text: '<b>literal</b>' }] })
+    migrated.close()
   })
 })
 

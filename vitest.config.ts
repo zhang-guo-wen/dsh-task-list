@@ -6,6 +6,7 @@ import { defineConfig } from 'vitest/config'
 // project to this repository's own tests and to Node (the host-side modules
 // under test read real files).
 export default defineConfig({
+  resolve: { alias: { '@deepseek-ai/dsh-client-ui-primitives': `${import.meta.dirname}/tests/host-primitives.ts` } },
   test: {
     root: import.meta.dirname,
     include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],

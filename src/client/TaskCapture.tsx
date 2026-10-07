@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { CreateTaskRequest } from '../types.ts'
+import type { CreateTaskRequest, TaskContent, TaskAttachmentUpload } from '../types.ts'
+import type { DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { captureDraft, installCaptureShortcut, type CaptureOutcome } from './capture.ts'
 import css from './TaskCapture.module.css'
 
 /** Business face the composer control needs: the task writer. */
 export interface TaskCaptureFace {
   create(request: CreateTaskRequest): Promise<unknown>
+  captureAttachments(ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }>
+  releaseAttachment(id: DraftAttachmentId): void
 }
 
 type TaskCaptureProps = PropsRuntime<'conversation.input.right'> & InjectFace<TaskCaptureFace> & PropsLocale<'taskList'>
@@ -16,29 +19,31 @@ type TaskCaptureProps = PropsRuntime<'conversation.input.right'> & InjectFace<Ta
 const REPORT_TIMEOUT_MS = 4000
 
 /** Composer projection the shortcut reads; the session input machine supplies it. */
-interface ComposerInput { readonly draft: string }
+interface ComposerInput { readonly draft: string; readonly attachmentIds?: readonly DraftAttachmentId[]; readonly phase?: string; readonly draftRev?: number }
 /** Composer verbs the shortcut needs; the session input actions supply them. */
-interface ComposerActions { setDraft(text: string): void }
+interface ComposerActions { setDraft(text: string): void; removeAttachment(id: DraftAttachmentId): void }
 
-const selectDraft = (state: ComposerInput): string => state.draft
+const selectInput = (state: ComposerInput): ComposerInput => state
 
 function asDraft(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
 /**
- * Composer control for Ctrl+S. Reads the draft through the session input
- * projection, writes one task through the injected face, and empties the
- * composer on success — no dialog, only a short inline report.
+ * Parked: the visible Save as task button is intentionally removed. Restore
+ * the button in this component if requested; keep the Ctrl+S listener mounted.
+ * Reads the draft through the session input projection and reports captures.
  */
-export function TaskCapture({ useInput, inputActions, create, t }: TaskCaptureProps) {
-  const draft = asDraft(useInput(selectDraft))
+export function TaskCapture({ useInput, inputActions, create, captureAttachments, releaseAttachment, t }: TaskCaptureProps) {
+  const input = useInput(selectInput)
+  const draft = asDraft(input?.draft)
   const [outcome, setOutcome] = useState<CaptureOutcome | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // The keydown listener is installed once; this ref keeps it reading the
   // latest draft, actions, and face without reinstalling per keystroke.
-  const latest = useRef({ draft, inputActions, create })
-  latest.current = { draft, inputActions, create }
+  const latest = useRef({ draft, input, inputActions, create, captureAttachments, releaseAttachment, t })
+  latest.current = { draft, input, inputActions, create, captureAttachments, releaseAttachment, t }
+  const capturing = useRef(false)
 
   const report = useCallback((next: CaptureOutcome) => {
     setOutcome(next)
@@ -51,28 +56,41 @@ export function TaskCapture({ useInput, inputActions, create, t }: TaskCapturePr
   useEffect(() => installCaptureShortcut(document, {
     readDraft: () => latest.current.draft,
     activeElement: () => document.activeElement,
-    capture: text => captureDraft(text, {
-      create: request => latest.current.create(request),
-      clearDraft: () => (latest.current.inputActions as ComposerActions).setDraft(''),
-    }),
+    capture: async text => {
+      const snapshot = latest.current
+      if (capturing.current || snapshot.input?.phase && snapshot.input.phase !== 'plain') return { kind: 'failed', message: snapshot.t('captureBusy') }
+      capturing.current = true
+      const ids = [...snapshot.input?.attachmentIds ?? []]
+      try {
+        return await captureDraft(text, {
+          create: snapshot.create,
+          hasAttachments: ids.length > 0,
+          ...(ids.length ? { captureAttachments: () => snapshot.captureAttachments(ids) } : {}),
+          clearDraft: () => {
+            // Do not erase edits made while attachment reads / RPC were in flight.
+            if (latest.current.inputActions === snapshot.inputActions && latest.current.input?.phase === snapshot.input?.phase && latest.current.draft === text
+              && latest.current.input?.draftRev === snapshot.input?.draftRev) (snapshot.inputActions as ComposerActions).setDraft('')
+          },
+          clearAttachments: () => {
+            if (latest.current.inputActions !== snapshot.inputActions || latest.current.input?.phase !== snapshot.input?.phase) return
+            for (const id of ids) {
+              (snapshot.inputActions as ComposerActions).removeAttachment(id)
+              snapshot.releaseAttachment(id)
+            }
+          },
+        })
+      } finally { capturing.current = false }
+    },
     report,
   }), [report])
-
-  const run = (): void => {
-    void captureDraft(draft, {
-      create,
-      clearDraft: () => (inputActions as ComposerActions).setDraft(''),
-    }).then(report)
-  }
 
   const message = outcome === null ? '' : outcome.kind === 'created'
     ? t('captureCreated').replace('{title}', outcome.title)
     : outcome.kind === 'empty' ? t('captureEmpty') : `${t('captureFailed')}: ${outcome.message}`
 
+  if (outcome === null) return null
+
   return <span className={css.capture}>
-    <button type="button" className={css.button} onClick={run} title={t('captureHint')} aria-label={t('captureTask')}>
-      {t('captureTask')}<kbd className={css.key}>Ctrl+S</kbd>
-    </button>
-    {outcome !== null && <span className={css.report} role="status" data-tone={outcome.kind}>{message}</span>}
+    <span className={css.report} role="status" data-tone={outcome.kind}>{message}</span>
   </span>
 }

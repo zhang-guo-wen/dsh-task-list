@@ -9,6 +9,9 @@ import {
   type UpdateSubtaskRequest, type UpdateTaskRequest,
 } from './types.ts'
 
+import { ATTACHMENT_BYTE_LIMIT, contentAttachments, contentText, textContent, validateContent } from './content.ts'
+import type { TaskAttachmentUpload, TaskContent } from './types.ts'
+
 const statuses = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
 const priorities = new Set<TaskPriority>(['low', 'medium', 'high', 'urgent'])
 const titleLimit = 200
@@ -16,7 +19,7 @@ const notesLimit = 20_000
 const subtaskNotesLimit = 2_000
 
 /** Current schema version; the store refuses anything newer. */
-const schemaVersion = 4
+const schemaVersion = 5
 /** Newest rows first inside each status group, with a stable id tie-break. */
 const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
 
@@ -134,6 +137,7 @@ function likePattern(query: string): string {
 }
 
 interface TaskRow {
+  content: string
   id: string
   title: string
   notes: string
@@ -164,7 +168,7 @@ interface SubtaskRow {
   updatedAt: number
 }
 
-const select = `SELECT id, title, notes, status, priority, story_points AS storyPoints,
+const select = `SELECT id, title, notes, content, status, priority, story_points AS storyPoints,
   tags, workspace_id AS workspaceId, send_immediately AS sendImmediately,
   session_id AS sessionId, agent, use_worktree AS useWorktree,
   started_at AS startedAt, completed_at AS completedAt,
@@ -173,9 +177,16 @@ const select = `SELECT id, title, notes, status, priority, story_points AS story
 const selectSubtask = `SELECT id, task_id AS taskId, notes, status, session_id AS sessionId,
   version, created_at AS createdAt, updated_at AS updatedAt FROM subtasks`
 
+function storedContentOf(row: TaskRow): TaskContent {
+  const content = validateContent(JSON.parse(row.content))
+  // A previously running text-only Host can insert rows after the v5 migration,
+  // leaving the new column at its empty default. Preserve its original notes.
+  return content.blocks.length === 0 && row.notes ? textContent(row.notes) : content
+}
+
 function taskOf(row: TaskRow): TaskRecord {
   return {
-    ...row, tags: tagsOf(JSON.parse(row.tags)),
+    ...row, content: storedContentOf(row), tags: tagsOf(JSON.parse(row.tags)),
     sendImmediately: row.sendImmediately === 1, useWorktree: row.useWorktree === 1,
     subtasks: [],
   }
@@ -233,7 +244,7 @@ export class TaskStore {
           ) STRICT;
           CREATE INDEX tasks_status_updated ON tasks(status, updated_at DESC);
           ${subtaskSchema}
-          PRAGMA user_version = ${schemaVersion};
+          PRAGMA user_version = 4;
           COMMIT;
         `)
       } else if (version.user_version === 1) {
@@ -249,7 +260,7 @@ export class TaskStore {
           ALTER TABLE tasks ADD COLUMN agent TEXT;
           ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
           ${subtaskSchema}
-          PRAGMA user_version = ${schemaVersion};
+          PRAGMA user_version = 4;
           COMMIT;
         `)
       } else if (version.user_version === 2) {
@@ -259,15 +270,29 @@ export class TaskStore {
           ALTER TABLE tasks ADD COLUMN agent TEXT;
           ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
           ${subtaskSchema}
-          PRAGMA user_version = ${schemaVersion};
+          PRAGMA user_version = 4;
           COMMIT;
         `)
       } else if (version.user_version === 3) {
         this.db.exec(`BEGIN;
           ${subtaskSchema}
-          PRAGMA user_version = ${schemaVersion};
+          PRAGMA user_version = 4;
           COMMIT;
         `)
+      }
+      if (version.user_version < 5) {
+        this.db.exec(`BEGIN;
+          ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}';
+          CREATE TABLE task_attachments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            data BLOB NOT NULL
+          ) STRICT;
+          CREATE INDEX task_attachments_task ON task_attachments(task_id);`)
+        const rows = this.db.prepare('SELECT id, notes FROM tasks').all() as unknown as { id: string; notes: string }[]
+        const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
+        for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
+        this.db.exec(`PRAGMA user_version = ${schemaVersion}; COMMIT;`)
       }
     } catch (error) {
       try { this.db.exec('ROLLBACK') } catch { /* no active transaction */ }
@@ -357,11 +382,13 @@ export class TaskStore {
     // A task may be created already running or already finished, so the
     // timestamps follow the same rule as a status change on an existing row.
     const status = statusOf(input?.status ?? 'todo')
+    const content = validateContent(input?.content ?? textContent(notesOf(input?.notes ?? '')))
+    return this.writeContent(id, content, input?.attachments ?? [], () => {
     this.db.prepare(`INSERT INTO tasks
-      (id, title, notes, status, priority, story_points, tags, workspace_id,
+      (id, title, notes, content, status, priority, story_points, tags, workspace_id,
        send_immediately, session_id, agent, use_worktree, started_at, completed_at, version, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
-      id, titleOf(input?.title), notesOf(input?.notes ?? ''), status, priorityOf(input?.priority ?? 'medium'),
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
+      id, titleOf(input?.title), contentText(content), JSON.stringify(content), status, priorityOf(input?.priority ?? 'medium'),
       storyPointsOf(input?.storyPoints ?? null), JSON.stringify(tagsOf(input?.tags ?? [])),
       workspaceIdOf(input?.workspaceId ?? null), booleanOf(input?.sendImmediately ?? false, 'send immediately') ? 1 : 0,
       optionalIdOf(input?.sessionId ?? null, 'session id'), optionalIdOf(input?.agent ?? null, 'agent'),
@@ -369,6 +396,7 @@ export class TaskStore {
       status === 'in_progress' ? now : null, status === 'done' ? now : null, now, now,
     )
     return this.get(id)!
+    })
   }
 
   update(input: UpdateTaskRequest): TaskRecord {
@@ -378,7 +406,8 @@ export class TaskStore {
     if (!current) throw new Error('task not found')
     if (current.version !== version) throw new Error('task changed; refresh and retry')
     const title = input.title === undefined ? current.title : titleOf(input.title)
-    const notes = input.notes === undefined ? current.notes : notesOf(input.notes)
+    const content = validateContent(input.content ?? (input.notes === undefined ? storedContentOf(current) : textContent(notesOf(input.notes))))
+    const notes = contentText(content)
     const status = input.status === undefined ? current.status : statusOf(input.status)
     const priority = input.priority === undefined ? current.priority : priorityOf(input.priority)
     const storyPoints = input.storyPoints === undefined ? current.storyPoints : storyPointsOf(input.storyPoints)
@@ -392,16 +421,64 @@ export class TaskStore {
     const now = Date.now()
     const startedAt = status === 'in_progress' && current.startedAt === null ? now : current.startedAt
     const completedAt = status === current.status ? current.completedAt : status === 'done' ? now : null
-    const result = this.db.prepare(`UPDATE tasks SET title = ?, notes = ?, status = ?, priority = ?, story_points = ?,
+    return this.writeContent(id, content, input.attachments ?? [], () => {
+    const result = this.db.prepare(`UPDATE tasks SET title = ?, notes = ?, content = ?, status = ?, priority = ?, story_points = ?,
       tags = ?, workspace_id = ?, send_immediately = ?, session_id = ?, agent = ?, use_worktree = ?,
       started_at = ?, completed_at = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND version = ?`).run(
-      title, notes, status, priority, storyPoints, JSON.stringify(tags), workspaceId,
+      title, notes, JSON.stringify(content), status, priority, storyPoints, JSON.stringify(tags), workspaceId,
       sendImmediately ? 1 : 0, sessionId, agent, useWorktree ? 1 : 0,
       startedAt, completedAt, now, id, version,
     )
     if (result.changes !== 1) throw new Error('task changed; refresh and retry')
     return this.get(id)!
+    })
+  }
+
+  /** One transaction covers the row, attachment bytes, and removal of unreferenced bytes. */
+  private writeContent(id: string, content: TaskContent, uploads: TaskAttachmentUpload[], write: () => TaskRecord): TaskRecord {
+    if (!Array.isArray(uploads) || uploads.length > 8) throw new Error('invalid attachment uploads')
+    const referenced = contentAttachments(content)
+    const pending = new Map<string, Buffer>()
+    for (const upload of uploads) {
+      const node = referenced.find(block => block.id === upload?.id)
+      if (!node || pending.has(upload.id) || typeof upload.data !== 'string'
+        || upload.data.length > Math.ceil(ATTACHMENT_BYTE_LIMIT / 3) * 4
+        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(upload.data)) throw new Error('invalid attachment upload')
+      const data = Buffer.from(upload.data, 'base64')
+      if (data.length !== node.bytes) throw new Error('attachment size mismatch')
+      pending.set(upload.id, data)
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const node of referenced) {
+        const existing = this.db.prepare('SELECT task_id AS taskId, length(data) AS bytes FROM task_attachments WHERE id = ?').get(node.id) as { taskId: string; bytes: number } | undefined
+        if (existing && (existing.taskId !== id || pending.has(node.id))) throw new Error('attachment belongs to another task or is immutable')
+        if (!existing && !pending.has(node.id)) throw new Error('attachment bytes missing')
+        if (existing && existing.bytes !== node.bytes) throw new Error('attachment size mismatch')
+      }
+      const result = write()
+      for (const [attachmentId, data] of pending) this.db.prepare('INSERT INTO task_attachments (id, task_id, data) VALUES (?, ?, ?)').run(attachmentId, id, data)
+      const keep = new Set(referenced.map(node => node.id))
+      const rows = this.db.prepare('SELECT id FROM task_attachments WHERE task_id = ?').all(id) as unknown as { id: string }[]
+      for (const row of rows) if (!keep.has(row.id)) this.db.prepare('DELETE FROM task_attachments WHERE id = ?').run(row.id)
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  readAttachments(id: string, version: number): TaskAttachmentUpload[] {
+    const task = this.get(idOf(id))
+    if (!task) throw new Error('task not found')
+    if (task.version !== versionOf(version)) throw new Error('task changed; refresh and retry')
+    return contentAttachments(task.content).map(node => {
+      const row = this.db.prepare('SELECT data FROM task_attachments WHERE id = ? AND task_id = ?').get(node.id, id) as { data: Uint8Array } | undefined
+      if (!row) throw new Error('attachment bytes missing')
+      return { id: node.id, data: Buffer.from(row.data).toString('base64') }
+    })
   }
 
   delete(id: string, version: number): void {

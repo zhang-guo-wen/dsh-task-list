@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ConversationController, DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -18,12 +18,18 @@ import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { TaskCapture } from './TaskCapture.tsx'
 import { pickDefaultWorkspace } from './workspaces.ts'
+import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentMarkdown, textContent } from '../content.ts'
+import { attachmentFile, fileUpload } from './rich-text.ts'
+import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
+import { persistRichTask, type TaskStorageCapabilities } from './task-persistence.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap { taskList: TaskKey }
 }
 
 interface RemoteService {
+  capabilities(request: Record<string, never>): Promise<RemoteResult<TaskStorageCapabilities>>
+  readTaskAttachments(request: { id: string; version: number }): Promise<RemoteResult<TaskAttachmentUpload[]>>
   listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskPage>>
   createTask(request: CreateTaskRequest): Promise<RemoteResult<TaskRecord>>
   updateTask(request: UpdateTaskRequest): Promise<RemoteResult<TaskRecord>>
@@ -100,6 +106,7 @@ export async function apply(ctx: Context): Promise<void> {
     if (!service) throw new Error('taskList namespace is not mounted')
     return service
   }
+  const conversation = () => ctx.conversation as ConversationController
   const agentPresets = (): AgentPresetService => ctx.remote.agentPresets as unknown as AgentPresetService
   const workspaceFor = (id: string | null) => ctx.workspaces.list.getSnapshot().items.find(item => item.workspaceId === id)
   // The Session catalog snapshot changes identity on every publish, so project
@@ -133,8 +140,11 @@ export async function apply(ctx: Context): Promise<void> {
   }
   const face: TaskFace = {
     list: request => unwrap(remote().listTasks(request)),
-    create: request => unwrap(remote().createTask(request)),
-    update: request => unwrap(remote().updateTask(request)),
+    readAttachments: request => unwrap(remote().readTaskAttachments(request)),
+    create: request => persistRichTask(request.content, () => unwrap(remote().capabilities({})),
+      () => unwrap(remote().createTask(request)), task => unwrap(remote().readTaskAttachments({ id: task.id, version: task.version })), t('storageUpgradeRequired')),
+    update: request => persistRichTask(request.content, () => unwrap(remote().capabilities({})),
+      () => unwrap(remote().updateTask(request)), task => unwrap(remote().readTaskAttachments({ id: task.id, version: task.version })), t('storageUpgradeRequired')),
     remove: request => unwrap(remote().deleteTask(request)),
     createSubtask: request => unwrap(remote().createSubtask(request)),
     updateSubtask: request => unwrap(remote().updateSubtask(request)),
@@ -165,6 +175,15 @@ export async function apply(ctx: Context): Promise<void> {
         ? pickDefaultWorkspace(ctx.workspaces.list.getSnapshot().items, t('defaultWorkspaceName'))
         : workspaceFor(task.workspaceId)
       if (workspace === undefined) throw new Error('task workspace is unavailable')
+      const document = task.content?.blocks.length ? task.content : textContent(task.notes.trim() || task.title.trim())
+      const nodes = contentAttachments(document)
+      // Read before creating a session, so stale tasks or missing bytes do not launch empty sessions.
+      const uploads = nodes.length ? await unwrap(remote().readTaskAttachments({ id: task.id, version: task.version })) : []
+      const files = nodes.map(node => {
+        const upload = uploads.find(upload => upload.id === node.id)
+        if (!upload) throw new Error(t('attachmentMissing'))
+        return attachmentFile(node, upload.data)
+      })
       let sessionId: string
       if (task.useWorktree) {
         await probeWorktree(workspace.workspaceId)
@@ -182,10 +201,18 @@ export async function apply(ctx: Context): Promise<void> {
         }
         // The title is derived from the content, so the draft carries the content
         // only; a legacy row without content still falls back to its stored title.
-        const content = task.notes.trim() || task.title.trim()
+        const content = contentMarkdown(document).trim() || (files.length ? '' : task.title.trim())
         const input = ctx.conversation.input.for(scope)
-        input.setDraft(content)
-        await unwrap(remote().updateTask({ id: task.id, version: task.version, status: 'in_progress', sessionId }))
+        const drafts = files.length ? conversation().createDrafts(sessionId as Parameters<ConversationController['createDrafts']>[0], files) : []
+        try {
+          if (drafts.length && !input.addAttachments(drafts.map(draft => draft.id))) throw new Error(t('captureBusy'))
+          input.setDraft(content)
+          await unwrap(remote().updateTask({ id: task.id, version: task.version, status: 'in_progress', sessionId }))
+        } catch (error) {
+          for (const draft of drafts) input.removeAttachment(draft.id)
+          if (drafts.length) conversation().releaseDraftAttachments(drafts)
+          throw error
+        }
         ctx.uiWorkspace.openSession(sessionId)
         if (task.sendImmediately) input.submit('queue', 'click')
       })
@@ -197,10 +224,24 @@ export async function apply(ctx: Context): Promise<void> {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
   }, TaskIcon))
-  // Ctrl+S inside the composer stores the unsent draft as a task; the control
-  // rides the composer tool row so it disappears with the composer.
+  // Ctrl+S stores the unsent draft as a task. Keep the listener and temporary
+  // feedback mounted with the composer, without a visible capture button.
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
     name: 'conversation.input.right', id: 'task-capture', order: 60, locale: NS,
-    inject: () => ({ create: (request: CreateTaskRequest) => unwrap(remote().createTask(request)) }),
+    inject: () => ({
+      create: (request: CreateTaskRequest) => face.create(request),
+      captureAttachments: async (ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }> => {
+        const drafts = conversation().resolveDraftAttachments(ids)
+        if (drafts.length !== ids.length) throw new Error(t('attachmentMissing'))
+        if (drafts.length > ATTACHMENT_COUNT_LIMIT || drafts.some(draft => draft.file.size > ATTACHMENT_BYTE_LIMIT)
+          || drafts.reduce((sum, draft) => sum + draft.file.size, 0) > ATTACHMENT_TOTAL_LIMIT) throw new Error(t('attachmentLimit'))
+        const items = await Promise.all(drafts.map(async draft => {
+          const id = crypto.randomUUID()
+          return { node: { type: 'attachment' as const, id, name: draft.file.name, mediaType: draft.file.type || 'application/octet-stream', bytes: draft.file.size }, upload: { id, data: await fileUpload(draft.file) } }
+        }))
+        return { blocks: items.map(item => item.node), uploads: items.map(item => item.upload) }
+      },
+      releaseAttachment: (id: DraftAttachmentId) => conversation().releaseDraftAttachment(id),
+    }),
   }, TaskCapture))
 }

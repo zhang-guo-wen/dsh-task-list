@@ -1,3 +1,21 @@
+export type TaskMark = 'bold' | 'italic' | 'underline' | 'code' | 'strikethrough'
+export interface TaskInline { text: string; marks?: TaskMark[]; href?: string }
+export interface TaskTextBlock {
+  type: 'paragraph' | 'heading' | 'bullet' | 'ordered' | 'quote' | 'code'
+  children: TaskInline[]
+  level?: number
+  indent?: number
+}
+export interface TaskTableCell { blocks: TaskTextBlock[]; header?: boolean; colSpan?: number; rowSpan?: number }
+export type TaskContentBlock =
+  | TaskTextBlock
+  | { type: 'table'; rows: TaskTableCell[][] }
+  | { type: 'attachment'; id: string; name: string; mediaType: string; bytes: number }
+export interface TaskContent { version: 1; blocks: TaskContentBlock[] }
+/** Bytes are sent only on save/read, never in a task-list page. */
+export interface TaskAttachmentUpload { id: string; data: string }
+export interface ReadTaskAttachmentsRequest { id: string; version: number }
+
 export type TaskStatus = 'todo' | 'in_progress' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
 
@@ -16,6 +34,8 @@ export interface SubtaskRecord {
 export interface TaskRecord {
   id: string
   title: string
+  /** Structured rich text is the source of truth; notes is a searchable text projection. */
+  content: TaskContent
   notes: string
   status: TaskStatus
   priority: TaskPriority
@@ -65,6 +85,8 @@ export interface TaskPage {
 export interface CreateTaskRequest {
   title: string
   notes?: string
+  content?: TaskContent
+  attachments?: TaskAttachmentUpload[]
   /** Status the new task starts in; the store defaults to `todo`. */
   status?: TaskStatus
   priority?: TaskPriority
@@ -81,6 +103,8 @@ export interface UpdateTaskRequest {
   version: number
   title?: string
   notes?: string
+  content?: TaskContent
+  attachments?: TaskAttachmentUpload[]
   status?: TaskStatus
   priority?: TaskPriority
   storyPoints?: number | null
