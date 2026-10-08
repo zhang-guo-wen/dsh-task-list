@@ -1,0 +1,8 @@
+{
+  "defaultStatusId": "todo",
+  "statuses": [
+    { "id": "todo", "name": "To Do" },
+    { "id": "doing", "name": "In Progress" },
+    { "id": "done", "name": "Done" }
+  ]
+}

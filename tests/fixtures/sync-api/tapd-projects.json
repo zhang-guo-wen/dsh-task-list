@@ -1,0 +1,8 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "Workspace": { "id": "20000001", "name": "Project One", "status": "open" } },
+    { "Workspace": { "id": "20000002", "name": "Project Two", "status": "closed" } }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    {
+      "Story": {
+        "id": "1152921504606846976123",
+        "workspace_id": "20000001",
+        "workitem_type_id": "1152921504606846003",
+        "name": "Implement sync adapter",
+        "status": "open",
+        "owner": "alice",
+        "iteration_id": "1152921504606846001",
+        "priority_label": "High",
+        "label": "sync|backend",
+        "modified": "2026-10-07 12:00:00",
+        "description": "<p>Body <strong>bold</strong></p>"
+      }
+    },
+    {
+      "Story": {
+        "id": "1152921504606846976124",
+        "workspace_id": "20000001",
+        "workitem_type_id": "1152921504606846003",
+        "name": "Second story",
+        "status": "in_progress",
+        "owner": "bob",
+        "iteration_id": "1152921504606846002",
+        "priority_label": "Low",
+        "label": "ui",
+        "modified": "2026-10-07 13:00:00",
+        "description": "<p>Second body</p>"
+      }
+    }
+  ]
+}

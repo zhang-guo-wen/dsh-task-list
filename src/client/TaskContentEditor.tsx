@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentText, validateContent } from '../content.ts'
 import type { TaskKey } from './locales.ts'
@@ -13,7 +13,8 @@ import { $generateNodesFromDOM } from '@lexical/html'
 import { $setBlocksType } from '@lexical/selection'
 import { $readTaskBlocks } from './lexical-content.ts'
 import css from './TaskContentEditor.module.css'
-import { Button, Tooltip, FileTypeIcon, fileSizeText, IconPaperclipOutlineRegular, IconCloseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Tooltip, fileSizeText, IconPaperclipOutlineRegular, IconCloseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { TaskAttachmentPreview } from './TaskAttachmentPreview.tsx'
 import { $isHeadingNode } from '@lexical/rich-text'
 import { $isListNode } from '@lexical/list'
 import { CAN_UNDO_COMMAND, CAN_REDO_COMMAND, COMMAND_PRIORITY_LOW } from 'lexical'
@@ -49,8 +50,20 @@ export function TaskContentEditor({ value, uploads, onChange, readAttachments, o
   const [history, setHistory] = useState({ undo: false, redo: false })
   const [empty, setEmpty] = useState(true)
   const [dragging, setDragging] = useState(false)
-  const latest = useRef({ value, uploads, onChange, onValid, onBusy, disabled, t })
-  latest.current = { value, uploads, onChange, onValid, onBusy, disabled, t }
+  const latest = useRef({ value, uploads, onChange, onValid, onBusy, disabled, t, readAttachments })
+  latest.current = { value, uploads, onChange, onValid, onBusy, disabled, t, readAttachments }
+  // One read per editor instance, shared by all saved thumbnails and downloads.
+  // Failed reads can be retried; unsaved uploads are never put in this cache.
+  const savedUploads = useRef<Promise<TaskAttachmentUpload[]> | null>(null)
+  const readUploads = useCallback(() => {
+    if (!savedUploads.current) {
+      savedUploads.current = latest.current.readAttachments().catch(failure => {
+        savedUploads.current = null
+        throw failure
+      })
+    }
+    return savedUploads.current
+  }, [])
   const attachments = contentAttachments(value)
   useEffect(() => {
     const instance = createEditor({
@@ -144,7 +157,7 @@ export function TaskContentEditor({ value, uploads, onChange, readAttachments, o
   const download = async (id: string) => {
     try {
       const node = attachments.find(node => node.id === id)!
-      const upload = uploads.find(upload => upload.id === id) ?? (await readAttachments()).find(upload => upload.id === id)
+      const upload = uploads.find(upload => upload.id === id) ?? (await readUploads()).find(upload => upload.id === id)
       if (!upload) throw new Error(t('attachmentMissing'))
       const url = URL.createObjectURL(attachmentFile(node, upload.data))
       const link = document.createElement('a')
@@ -210,7 +223,7 @@ export function TaskContentEditor({ value, uploads, onChange, readAttachments, o
     </div>
     {attachments.length > 0 && <ul className={css.attachments} aria-label={t('attachments')}>
       {attachments.map(node => <li key={node.id}>
-        <span className={css.fileIcon}><FileTypeIcon path={node.name} size={28} /></span>
+        <TaskAttachmentPreview node={node} upload={uploads.find(upload => upload.id === node.id)} readUploads={readUploads} t={t} />
         <button type="button" className={css.fileInfo} title={t('downloadAttachment')} aria-label={node.name} onClick={() => void download(node.id)}>
           <span className={css.fileName}>{node.name}</span><small>{fileSizeText(node.bytes)} · {t('downloadAttachment')}</small>
         </button>

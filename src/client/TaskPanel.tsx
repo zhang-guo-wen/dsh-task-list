@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT,
@@ -9,11 +10,17 @@ import {
 } from '../types.ts'
 import type { TaskKey } from './locales.ts'
 import { deriveTaskTitle } from './task-title.ts'
+import { safeSourceUrl, taskDocument, retainTaskSource } from './task-content.ts'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import css from './TaskPanel.module.css'
 import { contentText, textContent } from '../content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { TaskContentEditor } from './TaskContentEditor.tsx'
+import type { SyncFace } from './sync/face.ts'
+import { SyncControls } from './sync/SyncControls.tsx'
+
+import { StatisticsCalendar } from './StatisticsCalendar.tsx'
+import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
@@ -36,6 +43,7 @@ export interface InitialCommitEntry {
 }
 
 export interface TaskFace {
+  calculateStatistics(request: StatisticsRequest, options?: StatisticsRunOptions): Promise<StatisticsSnapshot>
   list(request: ListTasksRequest): Promise<TaskPage>
   create(request: CreateTaskRequest): Promise<TaskRecord>
   update(request: UpdateTaskRequest): Promise<TaskRecord>
@@ -55,6 +63,8 @@ export interface TaskFace {
   listAgents(): Promise<readonly { id: string; name?: string; isDefault: boolean; broken?: string }[]>
   workspaceSnapshot(): WorkspaceSnapshot
   subscribeWorkspaces(listener: () => void): () => void
+  /** Manual sync surface; consumed by the sync UI, not by the task list rows. */
+  sync: SyncFace
 }
 
 type TaskPanelProps = PropsLocale<'taskList'> & InjectFace<TaskFace>
@@ -77,14 +87,16 @@ function statusKey(status: TaskStatus): TaskKey {
 
 /** The stored title is derived from the content, so legacy rows without content fall back to it. */
 function contentOf(task: TaskRecord): string {
-  return task.notes.trim() || task.title
+  return task.source ? task.title : task.notes.trim() || task.title
 }
 
 export function TaskPanel({
   list, create, update, remove, readAttachments,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces,
-  sessionSnapshot, subscribeSessions, t,
+  sessionSnapshot, subscribeSessions, sync, calculateStatistics, t,
 }: TaskPanelProps) {
+  const [reportsOpen, setReportsOpen] = useState(false)
+  const reportButton = useRef<HTMLButtonElement>(null)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -98,6 +110,7 @@ export function TaskPanel({
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<TaskRecord | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
+  const [externalTitle, setExternalTitle] = useState('')
   const [content, setContent] = useState<TaskContent>(() => textContent(''))
   const [uploads, setUploads] = useState<TaskAttachmentUpload[]>([])
   const [attachmentBusy, setAttachmentBusy] = useState(false)
@@ -236,7 +249,8 @@ export function TaskPanel({
 
   const openEdit = (task: TaskRecord) => {
     setEditing(task)
-    setContent(task.content?.blocks.length ? task.content : textContent(task.notes.trim() || task.title))
+    setExternalTitle(task.title)
+    setContent(taskDocument(task))
     setUploads([])
     setAttachmentBusy(false)
     setContentValid(true)
@@ -259,7 +273,7 @@ export function TaskPanel({
   const submitSearch = () => { setQuery(searchText.trim()); setPage(1) }
   const clearSearch = () => { setSearchText(''); setQuery(''); setPage(1) }
 
-  const derivedTitle = deriveTaskTitle('', notes)
+  const derivedTitle = editing?.source ? externalTitle.trim() : deriveTaskTitle('', notes)
 
   /** Write the composer fields and return the saved row; a refusal is thrown for the caller to show. */
   const persist = async (): Promise<TaskRecord> => {
@@ -305,7 +319,7 @@ export function TaskPanel({
     setBusy(true)
     setError('')
     try {
-      saved = await persist()
+      saved = retainTaskSource(editing, await persist())
       if (!mounted.current) return
       setComposerOpen(false)
       setEditing(null)
@@ -408,16 +422,26 @@ export function TaskPanel({
   const workspaceLabel = (id: string | null): string => id === null ? t('noWorkspace') : workspaceNames.get(id) ?? id
   const workspaceReady = (id: string | null): boolean => id !== null && workspaceNames.has(id)
   const selectableInitialEntries = initialEntries.filter(entry => entry.kind !== 'nested_repository')
-  const canSave = Boolean(derivedTitle) && !attachmentBusy && contentValid
+  const canSave = Boolean(derivedTitle) && Array.from(derivedTitle).length <= 200 && !attachmentBusy && contentValid
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const pageSummary = t('pageSummary')
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
   const filtered = query !== '' || filter !== 'all' || workspaceFilter !== 'all'
 
+  if (reportsOpen) return <main className={css.page} data-report="true">
+    <div className={css.inner}>
+      <StatisticsCalendar calculate={calculateStatistics} t={t} close={() => {
+        setReportsOpen(false)
+        requestAnimationFrame(() => reportButton.current?.focus())
+      }} />
+    </div>
+  </main>
+
   return <main className={css.page}>
     <div className={css.inner}>
       <header className={css.header}>
         <h1>{t('title')}</h1>
+        <Button variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
         <button type="button" className={css.primary} onClick={openCreate}>{t('add')}</button>
       </header>
 
@@ -442,6 +466,8 @@ export function TaskPanel({
           <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}>{t('refresh')}</button>
         </div>
       </div>
+
+      {sync && <SyncControls face={sync} t={t} workspaces={workspaces} onComplete={refresh} />}
 
       {/* With the composer open its own copy is the visible one, so the banner
           stays quiet to avoid announcing the same failure twice. */}
@@ -472,6 +498,11 @@ export function TaskPanel({
                   aria-label={`${t('remove')}: ${content}`} title={t('remove')}>×</button>
               </div>
             </div>
+            {task.source && <div className={css.sourceLine}>
+              {safeSourceUrl(task.source.url) ? <a href={safeSourceUrl(task.source.url)!} target="_blank" rel="noopener noreferrer">{task.source.platform} · {task.source.number || task.source.remoteId}</a> : <span>{task.source.platform} · {task.source.number || task.source.remoteId}</span>}
+              <span>{t('lastSync')}: {task.source.lastSuccess === null ? t('notStarted') : formattedTime(task.source.lastSuccess)}</span>
+              {task.source.error && <span role="status">{t('syncFailed')} · {task.source.error.code}</span>}
+            </div>}
           </li>
         })}
       </ul>}
@@ -509,7 +540,8 @@ export function TaskPanel({
         <div className={css.dialogBody}>
           {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
           <form id="task-list-form" onSubmit={event => void save(event)}>
-            <div className={css.fullRow}>{t('notesLabel')}<TaskContentEditor value={content} uploads={uploads}
+            {editing?.source && <label className={css.fullRow}>{t('externalTitle')}<input value={externalTitle} maxLength={200} required onChange={event => setExternalTitle(event.target.value)} /></label>}
+            <div className={css.fullRow}>{t('notesLabel')}{editing?.source && <span> · {t('externalDescription')}</span>}<TaskContentEditor value={content} uploads={uploads}
               onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
               readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
               disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>

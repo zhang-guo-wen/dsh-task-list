@@ -1,0 +1,12 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": {
+    "Story": {
+      "id": "1152921504606846976123",
+      "workspace_id": "20000001",
+      "name": "Updated title",
+      "status": "open"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "StepPrevious": "open", "StepNext": "in_progress", "Name": "开始处理" },
+    { "StepPrevious": "in_progress", "StepNext": "done", "Name": "完成" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": {
+    "new": "新",
+    "in_progress": "处理中",
+    "resolved": "已解决"
+  }
+}

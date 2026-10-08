@@ -31,6 +31,25 @@ export interface SubtaskRecord {
   updatedAt: number
 }
 
+/** A safe error projection attached to a task source; never raw baseline or content. */
+export interface TaskSourceError {
+  code: string
+  problem: string
+  action: string
+}
+
+/** Remote identity and last-sync status shown on a task card; injected by the sync service. */
+export interface TaskSource {
+  platform: 'yunxiao' | 'tapd'
+  projectId: string
+  typeId: string
+  remoteId: string
+  number: string
+  url: string | null
+  lastSuccess: number | null
+  error: TaskSourceError | null
+}
+
 export interface TaskRecord {
   id: string
   title: string
@@ -53,6 +72,8 @@ export interface TaskRecord {
   updatedAt: number
   /** Rows of this task, oldest first; the list carries them with the page. */
   subtasks: SubtaskRecord[]
+  /** Optional sync-source badge; attached once per result page, never persisted on the task row. */
+  readonly source?: TaskSource
 }
 
 /** Rows the panel shows per page before the next request. */

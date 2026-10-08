@@ -1,0 +1,4 @@
+[
+  { "id": "field-subject", "name": "Subject", "format": "text", "type": "text", "required": true, "options": [] },
+  { "id": "field-status", "name": "Status", "format": "status", "type": "select", "required": false, "options": [] }
+]

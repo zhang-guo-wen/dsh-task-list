@@ -37,6 +37,14 @@ describe('panel layout', () => {
     expect(css).not.toMatch(/sessionMeta|createdMeta/)
   })
 
+  it('keeps phone rows to description and action without changing desktop columns', () => {
+    const mobile = /@media \(max-width: 760px\) \{([\s\S]*?)\n\}/.exec(css)?.[1]
+    expect(mobile).toContain('.rowLine { grid-template-columns: minmax(0, 1fr) auto; }')
+    expect(mobile).toContain('.statusChip, .workspaceMeta, .rowActions .delete, .doneState { display: none; }')
+    // The qualified delete selector also overrides hover/focus and touch styles.
+    expect(rule('.rowLine')).toContain('grid-template-columns: minmax(0, 1fr) 72px 128px auto')
+  })
+
   it('dims a completed card exactly like an ended row on the Automation tasks page', () => {
     // The row carries its status, so the stylesheet can reach a done card.
     expect(panel).toMatch(/<li className=\{css\.row\} data-priority=\{task\.priority\} data-status=\{task\.status\}/)
@@ -52,9 +60,10 @@ describe('panel layout', () => {
     expect(rule('.dialog form')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
     expect(rule('.fullRow')).toContain('grid-column: 1 / -1')
     // The content field, the toggle row, the worktree hint, and the read-only
-    // metadata section own their rows; every other field shares one.
+    // metadata section own their rows. The independent title adds one row only for external tasks.
     expect(panel).toContain("className={css.fullRow}>{t('notesLabel')}")
-    expect(panel.match(/css\.fullRow/g)).toHaveLength(4)
+    expect(panel).toContain("editing?.source && <label className={css.fullRow}>{t('externalTitle')}")
+    expect(panel.match(/css\.fullRow/g)).toHaveLength(5)
   })
 
   it('orders the composer content, workspace and agent, toggles, priority and status, tags, story points', () => {

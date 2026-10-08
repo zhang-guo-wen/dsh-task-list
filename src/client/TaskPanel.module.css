@@ -14,6 +14,11 @@
    960px column whose side padding shrinks with the panel, so moving between
    the two pages does not change the width of the list. */
 .inner { max-width: 960px; margin: 0 auto; padding: 0 clamp(24px, 4vw, 48px) 48px; }
+/* The report owns the panel height so its grid can fit one screen instead of
+   scrolling; the list keeps its natural height. Border-box matters here: without
+   it the bottom padding pushed the panel exactly one padding past its height and
+   every report showed a scrollbar. */
+.page[data-report='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 16px; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
 .primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button, .searchButton, .headerAction {
@@ -92,6 +97,16 @@
 .workspaceMeta {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c);
+}
+.sourceLine { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; min-width: 0; }
+.sourceLine a { color: inherit; }
+@media (max-width: 430px) {
+  .rowLine { grid-template-columns: minmax(0, 1fr) auto; }
+  .rowLine .content { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+  .rowLine .workspaceMeta { grid-column: 1 / -1; }
+  .rowLine .rowActions { justify-content: flex-end; }
+  .rowLine .statusChip { grid-row: 3; }
+  .rowLine .rowActions { grid-row: 3; }
 }
 .rowActions { display: flex; align-items: center; gap: 8px; }
 /* Available by default and only slightly different under the pointer. */
@@ -211,6 +226,10 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
   .workspaceMeta { display: none; }
 }
 @media (max-width: 760px) {
+  /* Phone rows keep only the description and existing task action. Hidden
+     metadata and deletion must stay out of both the grid and keyboard focus. */
+  .rowLine { grid-template-columns: minmax(0, 1fr) auto; }
+  .statusChip, .workspaceMeta, .rowActions .delete, .doneState { display: none; }
   .toolbarRight { width: 100%; margin-left: 0; }
   .toolbar select { flex: 1; max-width: none; }
   .searchBox { width: 100%; }

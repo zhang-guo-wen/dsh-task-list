@@ -1,0 +1,7 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "Workflow": { "id": "wf-bug-1", "workspace_id": "20000001", "system_name": "bugtrace", "is_default": "1", "type": "classic" } }
+  ]
+}

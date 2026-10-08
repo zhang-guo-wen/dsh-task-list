@@ -1,0 +1,15 @@
+{
+  "id": "1000000000000000001",
+  "serialNumber": "PROJ-1",
+  "subject": "Implement sync adapter",
+  "description": "<p>Body <strong>bold</strong></p>",
+  "formatType": "RICHTEXT",
+  "gmtModified": "2026-10-07T00:00:00+08:00",
+  "space": { "id": "space-1", "name": "Project One" },
+  "workitemType": { "id": "req-type-1", "name": "Requirement" },
+  "status": { "id": "doing", "name": "In Progress" },
+  "assignedTo": { "id": "user-1", "name": "Alice" },
+  "sprint": { "id": "sprint-1" },
+  "labels": [],
+  "customFieldValues": []
+}

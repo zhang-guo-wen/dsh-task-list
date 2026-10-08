@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-task-list",
+    "description": "A native task list with separate SQLite storage, search and paging, and one-click Start and Complete."
+  }
+}

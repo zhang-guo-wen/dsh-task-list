@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import type { TaskRecord } from '../src/types.ts'
+import type { ListTasksRequest, TaskPage, TaskRecord } from '../src/types.ts'
+import { syncError, syncRemoteError } from '../src/sync/errors.ts'
+import type { SyncFace } from '../src/client/sync/face.ts'
 import { apply } from '../src/client/index.tsx'
 import { TYPERT_REMOTE } from '../src/remote.ts'
 import { captureDraft } from '../src/client/capture.ts'
@@ -31,7 +33,12 @@ describe('client contribution', () => {
       expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
     ])
     expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual([
-      'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask',
+      'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask', 'calculateStatistics',
+      'startStatistics', 'getStatisticsRun', 'cancelStatistics',
+      'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
+      'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
+      'getSyncMetadata', 'testSyncConnection', 'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults',
+      'getSyncAuthState', 'beginSyncAuthorization', 'cancelSyncAuthorization', 'disconnectSyncAuthorization',
     ])
     cleanups.forEach(fn => fn())
     expect(offRemote).toHaveBeenCalledOnce()
@@ -498,5 +505,60 @@ describe('composer capture', () => {
     const face = register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0]
       .inject() as { create(request: Record<string, unknown>): Promise<unknown> }
     await expect(face.create({ title: 'x', notes: 'x' })).rejects.toThrow('task store is read-only')
+  })
+})
+
+describe('sync face', () => {
+  interface SyncPanelFace {
+    sync: SyncFace
+    list(request: ListTasksRequest): Promise<TaskPage>
+  }
+
+  function panelOf(ctx: Record<string, unknown>): SyncPanelFace {
+    return (ctx.slots as { register: { mock: { calls: Array<[Record<string, unknown>]> } } })
+      .register.mock.calls.find(call => call[0]!.name === 'main')?.[0]!.inject() as SyncPanelFace
+  }
+
+  function baseContext(remote: Record<string, unknown>): Record<string, unknown> {
+    return {
+      remote: { $mount: vi.fn(async () => vi.fn()), ...remote },
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
+      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+    }
+  }
+
+  it('maps sync methods to business values and preserves a structured RemoteError', async () => {
+    const dto = syncError('CredentialMissing', { scope: 'connection', field: 'tokenEnv' })
+    const listSyncConnections = vi.fn(async () => ({ ok: true as const, value: [{ id: 'c1', platform: 'tapd' }] }))
+    const startSync = vi.fn(async () => ({ ok: false as const, error: syncRemoteError(dto) }))
+    const ctx = baseContext({})
+    ctx.get = () => ({ listSyncConnections, startSync })
+    await apply(ctx as unknown as Context)
+    const face = panelOf(ctx)
+
+    await expect(face.sync.listSyncConnections()).resolves.toEqual([{ id: 'c1', platform: 'tapd' }])
+    expect(listSyncConnections).toHaveBeenCalledWith({})
+
+    const error = await face.sync.startSync().catch(error => error) as { code: string; details: unknown }
+    expect(error.code).toBe('task-list/sync')
+    expect(error.details).toEqual(dto)
+  })
+
+  it('turns a missing sync method into HostRestartRequired and keeps old CRUD working', async () => {
+    const listSyncConnections = vi.fn(async () => { throw new Error('taskList/listSyncConnections is not mounted') })
+    const listTasks = vi.fn(async () => ({ ok: true as const, value: { items: [], total: 0, page: 1, pageSize: 20 } }))
+    const ctx = baseContext({})
+    ctx.get = () => ({ listSyncConnections, listTasks })
+    await apply(ctx as unknown as Context)
+    const face = panelOf(ctx)
+
+    const error = await face.sync.listSyncConnections().catch(error => error) as { code: string; details: { code: string } }
+    expect(error.code).toBe('task-list/sync')
+    expect(error.details.code).toBe('HostRestartRequired')
+
+    await expect(face.list({ page: 1, pageSize: 20 })).resolves.toEqual({ items: [], total: 0, page: 1, pageSize: 20 })
+    expect(listTasks).toHaveBeenCalledWith({ page: 1, pageSize: 20 })
   })
 })

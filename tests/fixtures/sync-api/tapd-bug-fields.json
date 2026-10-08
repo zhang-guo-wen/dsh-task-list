@@ -1,0 +1,11 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": {
+    "title": { "label": "标题", "html_type": "text", "readonly": 0 },
+    "status": { "label": "状态", "html_type": "select", "readonly": 0, "options": { "new": "新", "in_progress": "处理中", "resolved": "已解决" } },
+    "description": { "label": "详细描述", "html_type": "rich_edit", "readonly": 0 },
+    "priority_label": { "label": "优先级", "html_type": "select", "readonly": 0, "options": { "urgent": "紧急", "high": "高", "medium": "中" } },
+    "label": { "label": "标签", "html_type": "multi_select", "readonly": 0 }
+  }
+}

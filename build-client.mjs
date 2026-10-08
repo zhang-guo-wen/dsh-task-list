@@ -64,8 +64,10 @@ const bundle = await rolldown({
   input: join(root, 'src', 'client', 'index.tsx'),
   platform: 'browser',
   transform: { define: { 'process.env.NODE_ENV': '"production"' } },
-  external: [/^react$/, /^react\//, /^@deepseek-ai\//],
-  plugins: [cssModulePlugin],
+  external: source => /^react(?:\/|$)/.test(source) || source.startsWith('@deepseek-ai/') && source !== '@deepseek-ai/dsh-typert-protocol',
+  plugins: [{ name: 'browser-remote-error', resolveId(source) {
+    if (source === '@deepseek-ai/dsh-typert-protocol') return join(root, 'src/client/sync/remote-error.ts')
+  } }, cssModulePlugin],
 })
 await bundle.write({ format: 'cjs', file: join(root, 'lib', 'client.js'), banner, footer, intro, sourcemap: false })
 console.log('lib/client.js written (ModuleLoader handoff bundle)')

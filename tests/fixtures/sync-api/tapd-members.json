@@ -1,0 +1,8 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "UserWorkspace": { "user": "alice", "name": "Alice" } },
+    { "UserWorkspace": { "user": "bob", "name": "Bob" } }
+  ]
+}

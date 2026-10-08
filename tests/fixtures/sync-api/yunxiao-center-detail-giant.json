@@ -1,0 +1,14 @@
+{
+  "id": "9223372036854775807123456789",
+  "serialNumber": "GIANT-1",
+  "subject": "Giant id item",
+  "description": "<p>body</p>",
+  "formatType": "RICHTEXT",
+  "gmtModified": "2026-10-07T01:02:03+08:00",
+  "space": { "id": "space-1", "name": "Project One" },
+  "workitemType": { "id": "req-type-1", "name": "Requirement" },
+  "status": { "id": "todo", "name": "To Do" },
+  "sprint": { "id": "sprint-1" },
+  "labels": [],
+  "customFieldValues": []
+}

@@ -11,6 +11,9 @@ import {
 
 import { ATTACHMENT_BYTE_LIMIT, contentAttachments, contentText, textContent, validateContent } from './content.ts'
 import type { TaskAttachmentUpload, TaskContent } from './types.ts'
+import { withSqliteTransaction } from './sqlite-transaction.ts'
+import { migrateSyncSchema } from './sync/schema.ts'
+import { statisticsSchema } from './statistics-store.ts'
 
 const statuses = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
 const priorities = new Set<TaskPriority>(['low', 'medium', 'high', 'urgent'])
@@ -19,7 +22,7 @@ const notesLimit = 20_000
 const subtaskNotesLimit = 2_000
 
 /** Current schema version; the store refuses anything newer. */
-const schemaVersion = 5
+const schemaVersion = 9
 /** Newest rows first inside each status group, with a stable id tie-break. */
 const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
 
@@ -222,8 +225,11 @@ export class TaskStore {
       if (version.user_version === 0) {
         const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
         if (existing.length) throw new Error('task database has unrecognized tables')
-        this.db.exec(`BEGIN;
-          CREATE TABLE tasks (
+      }
+      // The whole 0..6 migration runs in one transaction; any stage failing rolls every stage back.
+      withSqliteTransaction(this.db, () => {
+        if (version.user_version === 0) {
+          this.db.exec(`CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             notes TEXT NOT NULL DEFAULT '',
@@ -243,57 +249,47 @@ export class TaskStore {
             updated_at INTEGER NOT NULL
           ) STRICT;
           CREATE INDEX tasks_status_updated ON tasks(status, updated_at DESC);
-          ${subtaskSchema}
-          PRAGMA user_version = 4;
-          COMMIT;
-        `)
-      } else if (version.user_version === 1) {
-        this.db.exec(`BEGIN;
-          ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent'));
-          ALTER TABLE tasks ADD COLUMN story_points INTEGER CHECK(story_points IS NULL OR story_points BETWEEN 0 AND 1000);
-          ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
-          ALTER TABLE tasks ADD COLUMN workspace_id TEXT;
-          ALTER TABLE tasks ADD COLUMN started_at INTEGER;
-          ALTER TABLE tasks ADD COLUMN completed_at INTEGER;
-          ALTER TABLE tasks ADD COLUMN send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1));
-          ALTER TABLE tasks ADD COLUMN session_id TEXT;
-          ALTER TABLE tasks ADD COLUMN agent TEXT;
-          ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
-          ${subtaskSchema}
-          PRAGMA user_version = 4;
-          COMMIT;
-        `)
-      } else if (version.user_version === 2) {
-        this.db.exec(`BEGIN;
-          ALTER TABLE tasks ADD COLUMN send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1));
-          ALTER TABLE tasks ADD COLUMN session_id TEXT;
-          ALTER TABLE tasks ADD COLUMN agent TEXT;
-          ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
-          ${subtaskSchema}
-          PRAGMA user_version = 4;
-          COMMIT;
-        `)
-      } else if (version.user_version === 3) {
-        this.db.exec(`BEGIN;
-          ${subtaskSchema}
-          PRAGMA user_version = 4;
-          COMMIT;
-        `)
-      }
-      if (version.user_version < 5) {
-        this.db.exec(`BEGIN;
-          ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}';
-          CREATE TABLE task_attachments (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-            data BLOB NOT NULL
-          ) STRICT;
-          CREATE INDEX task_attachments_task ON task_attachments(task_id);`)
-        const rows = this.db.prepare('SELECT id, notes FROM tasks').all() as unknown as { id: string; notes: string }[]
-        const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
-        for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
-        this.db.exec(`PRAGMA user_version = ${schemaVersion}; COMMIT;`)
-      }
+          ${subtaskSchema}`)
+        } else if (version.user_version === 1) {
+          this.db.exec(`ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent'));
+            ALTER TABLE tasks ADD COLUMN story_points INTEGER CHECK(story_points IS NULL OR story_points BETWEEN 0 AND 1000);
+            ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE tasks ADD COLUMN workspace_id TEXT;
+            ALTER TABLE tasks ADD COLUMN started_at INTEGER;
+            ALTER TABLE tasks ADD COLUMN completed_at INTEGER;
+            ALTER TABLE tasks ADD COLUMN send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1));
+            ALTER TABLE tasks ADD COLUMN session_id TEXT;
+            ALTER TABLE tasks ADD COLUMN agent TEXT;
+            ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
+            ${subtaskSchema}`)
+        } else if (version.user_version === 2) {
+          this.db.exec(`ALTER TABLE tasks ADD COLUMN send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1));
+            ALTER TABLE tasks ADD COLUMN session_id TEXT;
+            ALTER TABLE tasks ADD COLUMN agent TEXT;
+            ALTER TABLE tasks ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1));
+            ${subtaskSchema}`)
+        } else if (version.user_version === 3) {
+          this.db.exec(subtaskSchema)
+        }
+        if (version.user_version < 5) {
+          this.db.exec(`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}';
+            CREATE TABLE task_attachments (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+              data BLOB NOT NULL
+            ) STRICT;
+            CREATE INDEX task_attachments_task ON task_attachments(task_id);`)
+          const rows = this.db.prepare('SELECT id, notes FROM tasks').all() as unknown as { id: string; notes: string }[]
+          const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
+          for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
+        }
+        if (version.user_version < 9) migrateSyncSchema(this.db)
+        // The statistics table is a rebuildable projection cache, not task data:
+        // an older build can ignore it and a newer one recreates it on demand.
+        // It therefore stays outside the versioned task schema, which keeps a
+        // downgrade from locking the task database out of an older build.
+        this.db.exec(statisticsSchema)
+      })
     } catch (error) {
       try { this.db.exec('ROLLBACK') } catch { /* no active transaction */ }
       this.db.close()
@@ -348,6 +344,19 @@ export class TaskStore {
   get(id: string): TaskRecord | null {
     const row = this.db.prepare(`${select} WHERE id = ?`).get(idOf(id)) as unknown as TaskRow | undefined
     return row ? this.attachSubtasks([taskOf(row)])[0]! : null
+  }
+
+  /**
+   * Task completions inside one half-open instant range, for the statistics report.
+   * @param from - inclusive lower bound on `completed_at`.
+   * @param to - exclusive upper bound on `completed_at`.
+   * @returns one entry per completed task, oldest first.
+   */
+  listCompletions(from: number, to: number): { time: number; points: number }[] {
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || to <= from) return []
+    return this.db.prepare(`SELECT completed_at AS time, COALESCE(story_points, 0) AS points
+      FROM tasks WHERE completed_at IS NOT NULL AND completed_at >= ? AND completed_at < ?
+      ORDER BY completed_at`).all(from, to) as unknown as { time: number; points: number }[]
   }
 
   /** Rows of one task, oldest first. */
@@ -449,8 +458,7 @@ export class TaskStore {
       if (data.length !== node.bytes) throw new Error('attachment size mismatch')
       pending.set(upload.id, data)
     }
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
+    return withSqliteTransaction(this.db, () => {
       for (const node of referenced) {
         const existing = this.db.prepare('SELECT task_id AS taskId, length(data) AS bytes FROM task_attachments WHERE id = ?').get(node.id) as { taskId: string; bytes: number } | undefined
         if (existing && (existing.taskId !== id || pending.has(node.id))) throw new Error('attachment belongs to another task or is immutable')
@@ -462,12 +470,8 @@ export class TaskStore {
       const keep = new Set(referenced.map(node => node.id))
       const rows = this.db.prepare('SELECT id FROM task_attachments WHERE task_id = ?').all(id) as unknown as { id: string }[]
       for (const row of rows) if (!keep.has(row.id)) this.db.prepare('DELETE FROM task_attachments WHERE id = ?').run(row.id)
-      this.db.exec('COMMIT')
       return result
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
+    })
   }
 
   readAttachments(id: string, version: number): TaskAttachmentUpload[] {
@@ -482,8 +486,22 @@ export class TaskStore {
   }
 
   delete(id: string, version: number): void {
-    const result = this.db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(idOf(id), versionOf(version))
-    if (result.changes !== 1) throw new Error('task missing or changed; refresh and retry')
+    const taskId = idOf(id)
+    const taskVersion = versionOf(version)
+    withSqliteTransaction(this.db, () => {
+      const now = Date.now()
+      // Cancel any prepared (not-yet-dispatched) sync intents for this task's link, and detach
+      // dispatched/unknown evidence so the link row (whose task_id is SET NULL) keeps its proof.
+      const link = this.db.prepare('SELECT id FROM sync_links WHERE task_id = ?').get(taskId) as { id: string } | undefined
+      if (link) {
+        this.db.prepare(`UPDATE sync_write_intents SET phase = 'cancelled', task_id = NULL, updated_at = ?
+          WHERE link_id = ? AND phase = 'prepared'`).run(now, link.id)
+        this.db.prepare(`UPDATE sync_write_intents SET task_id = NULL, updated_at = ?
+          WHERE link_id = ? AND phase IN ('dispatched', 'unknown')`).run(now, link.id)
+      }
+      const result = this.db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(taskId, taskVersion)
+      if (result.changes !== 1) throw new Error('task missing or changed; refresh and retry')
+    })
   }
 
   createSubtask(input: CreateSubtaskRequest): SubtaskRecord {

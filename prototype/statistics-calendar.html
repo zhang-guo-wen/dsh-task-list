@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>报表统计 · 交互原型</title>
+<style>
+:root{color-scheme:light;
+  --dsw-alias-bg-base:#fff;--dsw-alias-border-l3:#e4e7ec;--dsw-alias-label-primary:#171b24;--dsw-alias-label-secondary:#5c6473;
+  --dsw-alias-label-tertiary:#868e9c;--dsw-alias-label-primary-foreground:#fff;--dsw-alias-state-success-primary:#2c9b54;--dsw-alias-interactive-bg-hover:#f2f4f7;
+  --dsw-alias-state-business-primary:#326dca;--canvas:#f4f5f7;--surface:#fafbfc;--line:#e4e7ec;--heat-base:#fff;--hairline:#eceef2;
+  --shadow:0 1px 2px #1018280a,0 8px 24px #1018280d}
+[data-theme=dark]{color-scheme:dark;
+  --dsw-alias-bg-base:#1d2027;--dsw-alias-border-l3:#3a3f4a;--dsw-alias-label-primary:#eef0f4;--dsw-alias-label-secondary:#a8b0bd;
+  --dsw-alias-label-tertiary:#8b93a1;--dsw-alias-label-primary-foreground:#14171d;--dsw-alias-state-success-primary:#5fbe85;--dsw-alias-interactive-bg-hover:#2a2e37;
+  --dsw-alias-state-business-primary:#94b0ff;--canvas:#15181d;--surface:#20242b;--line:#3a3f4a;--heat-base:#1d2027;--hairline:#2b303a;
+  --shadow:0 1px 2px #0004,0 8px 24px #0006}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;display:flex;flex-direction:column;background:var(--canvas);color:var(--dsw-alias-label-primary);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+button{font:inherit;cursor:pointer;color:inherit}
+.bar{flex:none;height:40px;padding:0 22px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:var(--dsw-alias-bg-base);font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.bar strong{color:var(--dsw-alias-label-primary);font-weight:600}
+.theme{border:1px solid var(--line);border-radius:7px;background:var(--dsw-alias-bg-base);padding:3px 9px;font-size:12px}
+.panel{flex:1;min-height:0;width:100%;max-width:1000px;margin:0 auto;display:flex;flex-direction:column;padding:16px clamp(20px,3.4vw,40px) 14px}
+.head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
+.head h1{margin:0;font-size:18px;line-height:24px;font-weight:500}
+.btn{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 13px;border:1px solid var(--line);border-radius:8px;background:var(--dsw-alias-bg-base);white-space:nowrap;font-size:13px;font-weight:500;transition:background .14s,opacity .14s}
+.btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.btn.primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-label-primary)}
+.toolbar{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.seg{display:inline-flex;padding:3px;gap:2px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.seg button{height:26px;min-width:44px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px}
+.seg button[aria-pressed=true]{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:var(--shadow)}
+#date{height:32px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--dsw-alias-bg-base);color:inherit;font:inherit}
+
+/* The metric totals are a read-only legend: no pointer affordance, and pointing
+   at one never changes what the grid draws. */
+.totals{flex:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;margin-bottom:12px}
+.total{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border:1px solid var(--line);border-radius:11px;background:var(--dsw-alias-bg-base)}
+.total .k{font-size:11px;line-height:1.3;color:var(--dsw-alias-label-tertiary)}
+.total .v{font-size:20px;line-height:1.2;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+
+/* Hovering one cell explains that bucket with every metric. */
+.tip{position:fixed;z-index:20;min-width:158px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--dsw-alias-bg-base);box-shadow:var(--shadow);font-size:12px;pointer-events:none}
+.tip[hidden]{display:none}
+.tip .tip-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.tip .tip-head b{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.tip .tip-group{display:grid;grid-template-columns:max-content 1fr;column-gap:14px;row-gap:2px}
+.tip .tip-group+.tip-group{margin-top:5px;padding-top:5px;border-top:1px solid var(--hairline)}
+.tip .tip-group em{font-style:normal;color:var(--dsw-alias-label-tertiary)}
+.tip .tip-group b{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.tip .tip-note{margin-top:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+
+#calendar{flex:1;min-height:0;display:flex;flex-direction:column}
+.weekdays{flex:none;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:5px}
+.weekdays span{font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:center}
+.grid{flex:1;min-height:0;display:grid;gap:6px;grid-auto-rows:minmax(min-content,1fr)}
+.grid[data-period=day]{grid-template-columns:repeat(6,minmax(0,1fr))}
+.grid[data-period=month]{grid-template-columns:repeat(7,minmax(0,1fr))}
+.grid[data-period=year]{grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+
+.cell{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--dsw-alias-bg-base);text-align:left;font-variant-numeric:tabular-nums;transition:transform .12s,box-shadow .12s}
+.cell:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+.cell .h{display:flex;align-items:baseline;justify-content:space-between;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.cell .h b{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.cell .body{flex:1;display:grid;gap:3px;align-content:center}
+/* Label on the left edge, number on the right edge, with the numbers lined up
+   across rows inside one card. */
+.cell .group{display:grid;grid-template-columns:minmax(0,1fr) max-content;column-gap:8px;row-gap:2px;align-items:baseline}
+.stat{display:contents}
+.cell .group em{font-style:normal;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.cell .group b{font-weight:600;color:var(--dsw-alias-label-primary);font-size:15px;line-height:1.35;text-align:right}
+.cell .group+.group{margin-top:4px;padding-top:5px;border-top:1px solid var(--hairline)}
+.grid[data-period=year] .cell{padding:12px 16px;gap:4px}
+.grid[data-period=year] .cell .h b{font-size:15px}
+.grid[data-period=year] .cell .group{column-gap:12px}
+.grid[data-period=year] .cell .group em{font-size:13px}
+.grid[data-period=year] .cell .group b{font-size:17px}
+/* The month grid packs five or six weeks, so its cards run a step smaller. */
+.grid[data-period=month] .cell{padding:7px 9px;gap:2px}
+.grid[data-period=month] .cell .h{font-size:10.5px}
+.grid[data-period=month] .cell .h b{font-size:12px}
+.grid[data-period=month] .cell .group{column-gap:7px;row-gap:1px}
+.grid[data-period=month] .cell .group+.group{margin-top:2px;padding-top:3px}
+.grid[data-period=month] .cell .group em{font-size:10.5px}
+.grid[data-period=month] .cell .group b{font-size:13px;line-height:1.3}
+.cell[data-excluded]{background:transparent;border-style:dashed}
+.cell[data-excluded] .h b,.cell[data-excluded] .group em,.cell[data-excluded] .group b{color:var(--dsw-alias-label-tertiary)}
+.blank{border-radius:10px}
+
+.cell[data-level='1'],.swatch[data-level='1']{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 12%,var(--heat-base));border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 22%,var(--line))}
+.cell[data-level='2'],.swatch[data-level='2']{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 26%,var(--heat-base));border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 34%,var(--line))}
+.cell[data-level='3'],.swatch[data-level='3']{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 46%,var(--heat-base));border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 52%,var(--line))}
+.cell[data-level='4'],.swatch[data-level='4']{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 72%,var(--heat-base));border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 76%,var(--line))}
+.cell[data-level='4'] .h,.cell[data-level='4'] .h b,.cell[data-level='4'] .group em,.cell[data-level='4'] .group b{color:var(--dsw-alias-label-primary-foreground)}
+.cell[data-level='4'] .group+.group{border-top-color:color-mix(in srgb,var(--dsw-alias-label-primary-foreground) 32%,transparent)}
+
+.legend{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:8px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.swatch{display:block;width:13px;height:13px;border-radius:4px;border:1px solid var(--dsw-alias-border-l3)}
+.swatch[data-level='0']{background:var(--dsw-alias-bg-base)}
+.swatch[data-excluded]{background:transparent;border-style:dashed}
+@media(max-width:820px){
+  .totals{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .grid[data-period=day]{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .grid[data-period=year]{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<div class="bar"><span><strong>报表统计</strong> · HTML 交互原型 <span>/ 数据为模拟值，仅看样式</span></span><button class="theme" id="theme" aria-label="切换浅色与深色">深色</button></div>
+
+<main class="panel">
+  <div class="head"><h1>报表统计</h1><button class="btn">关闭</button></div>
+  <div class="toolbar">
+    <div class="seg" role="group" aria-label="统计周期">
+      <button data-view="day" aria-pressed="true">天</button>
+      <button data-view="month" aria-pressed="false">月</button>
+      <button data-view="year" aria-pressed="false">年</button>
+    </div>
+    <input id="date" type="date" aria-label="统计日期" value="2026-10-08" min="1970-01-01" max="9998-12-31">
+    <button class="btn primary" id="refresh">刷新</button>
+  </div>
+
+  <div class="totals" id="totals"></div>
+  <div id="calendar"></div>
+  <div class="legend">
+    <span>少</span><span class="swatch" data-level="0"></span><span class="swatch" data-level="1"></span><span class="swatch" data-level="2"></span><span class="swatch" data-level="3"></span><span class="swatch" data-level="4"></span><span>多</span>
+    <span class="swatch" data-excluded></span><span>未计入</span>
+  </div>
+</main>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+const YEAR = 2026
+const NOW = new Date(2026, 9, 8, 16, 20)
+/** Medium cell colour: a day of 6e8 tokens, scaled to the bucket each view shows. */
+const MEDIUM_DAY_TOKENS = 6e8
+/** Bands are ratios of the bucket's medium value, so 1x reads as the same colour in every view. */
+const BANDS = [0.5, 1.5, 3]
+/** Always shown in the heat cells; every other metric appears while its card is hovered. */
+const ALWAYS_VISIBLE = ['prompts', 'tokens']
+
+const GROUPS = [
+  { metrics: [
+    { key: 'sessions', label: '新建会话', short: '会话' },
+    { key: 'prompts', label: '用户发送次数', short: '发送' },
+    { key: 'tokens', label: '消耗 token', short: 'tok' },
+  ] },
+  { metrics: [
+    { key: 'tasks', label: '完成的任务数量', short: '完成任务' },
+    { key: 'points', label: '完成的故事点数量', short: '故事点' },
+  ] },
+]
+const METRICS = GROUPS.flatMap(group => group.metrics)
+const KEYS = ['sessions', 'prompts', 'tokens', 'tasks', 'points']
+const fmt = new Intl.NumberFormat()
+function compact(value) {
+  const magnitude = Math.abs(value)
+  if (magnitude < 1e6) return fmt.format(value)
+  const billions = magnitude >= 1e9
+  return `${Number((value / (billions ? 1e9 : 1e6)).toFixed(billions ? 2 : 1))}${billions ? 'B' : 'M'}`
+}
+function metricText(key, value) { return key === 'tokens' ? compact(value) : fmt.format(value) }
+
+// Deterministic sample corpus: one entry per hour of the year so every view
+// aggregates the same numbers instead of inventing independent ones.
+function seed(n) { let x = n; return () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x / 0x7fffffff } }
+const random = seed(20261008)
+const STORY_POINTS = [1, 2, 3, 5, 8, 13]
+/** Real months are not equally busy; this keeps the year view worth reading. */
+const MONTH_LOAD = [0.55, 0.72, 1.25, 1.65, 0.92, 1.1, 0.58, 0.48, 1.35, 1.8, 1.0, 0.66]
+const corpus = new Map()
+for (let month = 0; month < 12; month++) {
+  for (let day = 1; day <= 31; day++) {
+    const date = new Date(YEAR, month, day)
+    if (date.getMonth() !== month) continue
+    let dayLoad = (0.6 + random() * 0.8) * MONTH_LOAD[month]
+    if (date.getDay() === 0 || date.getDay() === 6) dayLoad *= 0.5
+    for (let hour = 0; hour < 24; hour++) {
+      const curve = hour < 8 ? 0.15 : hour < 12 ? 0.9 : hour < 19 ? 1 : hour < 23 ? 0.6 : 0.25
+      const weight = Math.max(0, dayLoad * curve * (0.6 + random() * 0.8))
+      const tasks = hour < 7 ? 0 : Math.round(weight * (0.8 + random() * 1.2))
+      let points = 0
+      for (let index = 0; index < tasks; index++) points += STORY_POINTS[Math.floor(random() * 4)] ?? 1
+      corpus.set(`${month}-${day}-${hour}`, {
+        sessions: Math.round(weight * 6.5),
+        prompts: Math.round(weight * 7.5),
+        tokens: Math.round(weight * 92_000_000),
+        tasks,
+        points,
+      })
+    }
+  }
+}
+const empty = () => ({ sessions: 0, prompts: 0, tokens: 0, tasks: 0, points: 0 })
+function add(a, b) { const total = empty(); for (const key of KEYS) total[key] = a[key] + b[key]; return total }
+function hourOf(month, day, hour) { return corpus.get(`${month}-${day}-${hour}`) ?? empty() }
+function dayOf(month, day) { let total = empty(); for (let hour = 0; hour < 24; hour++) total = add(total, hourOf(month, day, hour)); return total }
+function monthOf(month) { let total = empty(); for (let day = 1; day <= 31; day++) total = add(total, dayOf(month, day)); return total }
+function yearOf() { let total = empty(); for (let month = 0; month < 12; month++) total = add(total, monthOf(month)); return total }
+
+/** Same rule as the Host: the current hour and everything after it are excluded. */
+function isExcluded(month, day, hour) {
+  return new Date(YEAR, month, day, hour).getTime() >= new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate(), NOW.getHours()).getTime()
+}
+
+let period = 'day'
+let selected = { year: NOW.getFullYear(), month: NOW.getMonth(), day: NOW.getDate() }
+/** The grid always draws these two; a cell's hover card carries the rest. */
+const shownKeys = () => new Set(ALWAYS_VISIBLE)
+
+/** Bucket size the view draws, so the absolute scale stays comparable across views. */
+function mediumFor(view) {
+  if (view === 'day') return MEDIUM_DAY_TOKENS / 24
+  if (view === 'month') return MEDIUM_DAY_TOKENS
+  return MEDIUM_DAY_TOKENS * 30
+}
+function heatLevel(tokens, medium) {
+  if (tokens <= 0) return 0
+  const ratio = tokens / medium
+  if (ratio < BANDS[0]) return 1
+  if (ratio < BANDS[1]) return 2
+  if (ratio < BANDS[2]) return 3
+  return 4
+}
+
+function cellHtml(label, data, excluded, title, medium) {
+  const shown = shownKeys()
+  const groups = GROUPS.map(group => {
+    const metrics = group.metrics.filter(item => shown.has(item.key))
+    if (metrics.length === 0) return ''
+    const stats = metrics.map(item => `<span class="stat"><em>${item.short}</em><b>${excluded ? '—' : metricText(item.key, data[item.key])}</b></span>`).join('')
+    return `<div class="group">${stats}</div>`
+  }).join('')
+  // The cell carries its own figures so the hover card can show every metric,
+  // including those the grid is not currently drawing.
+  const payload = KEYS.map(key => ` data-${key}="${data[key]}"`).join('')
+  const attributes = excluded ? ' data-excluded="true"' : ` data-level="${heatLevel(data.tokens, medium)}"`
+  return `<div class="cell"${attributes}${payload} data-label="${title}" aria-label="${title}"><div class="h"><b>${label}</b></div><div class="body">${groups}</div></div>`
+}
+
+function drawDay() {
+  const entries = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    data: hourOf(selected.month, selected.day, hour),
+    excluded: isExcluded(selected.month, selected.day, hour),
+  }))
+  const medium = mediumFor('day')
+  return `<div class="grid" data-period="day" data-columns="6">${entries.map(entry => {
+    const label = `${String(entry.hour).padStart(2, '0')}:00`
+    return cellHtml(label, entry.data, entry.excluded, `${selected.month + 1}月${selected.day}日 ${label}`, medium)
+  }).join('')}</div>`
+}
+
+function drawMonth() {
+  const month = selected.month
+  const lead = (new Date(YEAR, month, 1).getDay() + 6) % 7
+  const days = new Date(YEAR, month + 1, 0).getDate()
+  const weeks = Math.ceil((lead + days) / 7)
+  const medium = mediumFor('month')
+  const blanks = Array.from({ length: lead }, () => '<div class="blank"></div>').join('')
+  const cells = Array.from({ length: days }, (_, index) => {
+    const day = index + 1
+    const excluded = new Date(YEAR, month, day).getTime() > NOW.getTime()
+    return cellHtml(`${day}号`, dayOf(month, day), excluded, `${month + 1}月${day}日`, medium)
+  }).join('')
+  const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map(day => `<span>${day}</span>`).join('')
+  return `<div class="weekdays" aria-hidden="true">${weekdays}</div><div class="grid" data-period="month" data-columns="7" data-weeks="${weeks}">${blanks}${cells}</div>`
+}
+
+function drawYear() {
+  const medium = mediumFor('year')
+  const cells = Array.from({ length: 12 }, (_, month) => {
+    const excluded = month > NOW.getMonth()
+    return cellHtml(`${month + 1}月`, monthOf(month), excluded, `${YEAR}年${month + 1}月`, medium)
+  }).join('')
+  return `<div class="grid" data-period="year" data-columns="3">${cells}</div>`
+}
+
+function periodTotals() {
+  if (period === 'day') return dayOf(selected.month, selected.day)
+  if (period === 'month') return monthOf(selected.month)
+  return yearOf()
+}
+
+function drawTotals() {
+  const totals = periodTotals()
+  document.querySelector('#totals').innerHTML = METRICS.map(item => `
+    <div class="total" data-metric="${item.key}">
+      <span class="k">${item.label}</span>
+      <span class="v">${metricText(item.key, totals[item.key])}</span>
+    </div>`).join('')
+}
+
+function drawCalendar() {
+  hideTip()
+  document.querySelector('#calendar').innerHTML = period === 'day' ? drawDay() : period === 'month' ? drawMonth() : drawYear()
+}
+
+function drawToolbar() {
+  const input = document.querySelector('#date')
+  input.type = period === 'day' ? 'date' : period === 'month' ? 'month' : 'number'
+  input.value = period === 'day'
+    ? `${YEAR}-${String(selected.month + 1).padStart(2, '0')}-${String(selected.day).padStart(2, '0')}`
+    : period === 'month' ? `${YEAR}-${String(selected.month + 1).padStart(2, '0')}` : String(YEAR)
+}
+
+function draw() { drawToolbar(); drawTotals(); drawCalendar() }
+
+document.querySelectorAll('.seg button').forEach(button => button.addEventListener('click', () => {
+  period = button.dataset.view
+  document.querySelectorAll('.seg button').forEach(item => item.setAttribute('aria-pressed', String(item === button)))
+  draw()
+}))
+// The metric totals are a read-only legend: nothing here responds to the pointer.
+
+// Hovering one cell explains that bucket with every metric, laid out like the cards.
+const tip = document.querySelector('#tip')
+function hideTip() { tip.hidden = true }
+function showTip(cell) {
+  const excluded = cell.dataset.excluded === 'true'
+  const head = `<div class="tip-head"><b>${cell.dataset.label}</b>${excluded ? '<span>未计入</span>' : ''}</div>`
+  const groups = GROUPS.map(group => {
+    const rows = group.metrics.map(item => `<em>${item.label}</em><b>${excluded ? '—' : metricText(item.key, Number(cell.dataset[item.key] ?? 0))}</b>`).join('')
+    return `<div class="tip-group">${rows}</div>`
+  }).join('')
+  tip.innerHTML = head + groups
+  tip.hidden = false
+  const rect = cell.getBoundingClientRect()
+  const box = tip.getBoundingClientRect()
+  const above = rect.top - box.height - 8
+  tip.style.top = `${above < 8 ? Math.min(rect.bottom + 8, window.innerHeight - box.height - 8) : above}px`
+  tip.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - box.width / 2, window.innerWidth - box.width - 8))}px`
+}
+document.querySelector('#calendar').addEventListener('mouseover', event => {
+  const cell = event.target.closest('.cell')
+  if (cell) showTip(cell)
+})
+document.querySelector('#calendar').addEventListener('mouseleave', hideTip)
+document.querySelector('#calendar').addEventListener('mouseout', event => {
+  if (!event.relatedTarget || !event.relatedTarget.closest?.('.cell')) hideTip()
+})
+document.querySelector('#refresh').addEventListener('click', event => {
+  const button = event.currentTarget
+  button.textContent = '统计中…'
+  setTimeout(() => { button.textContent = '刷新'; draw() }, 400)
+})
+document.querySelector('#date').addEventListener('change', event => {
+  const parts = String(event.target.value).split('-').map(Number)
+  if (!parts[0]) return
+  selected = { year: parts[0], month: (parts[1] ?? 1) - 1, day: parts[2] ?? 1 }
+  draw()
+})
+document.querySelector('#theme').addEventListener('click', event => {
+  const dark = document.documentElement.dataset.theme === 'dark'
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark'
+  event.currentTarget.textContent = dark ? '深色' : '浅色'
+})
+draw()
+</script>
+</body>
+</html>

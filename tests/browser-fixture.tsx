@@ -11,11 +11,29 @@ import type { TaskRecord, TaskAttachmentUpload } from '../src/types.ts'
 
 let tasks: TaskRecord[] = []
 const attachments = new Map<string, TaskAttachmentUpload[]>()
+let attachmentReads = 0
+let failAttachmentReads = false
 const snapshot = { items: [{ workspaceId: 'ws-test', title: '测试工作区' }] }
 const subscribe = () => () => {}
 let sessionSnapshot = { items: [{ id: 'session-current', title: '当前中文会话' }, { id: 'session-other', title: '另一个中文会话' }] }
 const sessionListeners = new Set<() => void>()
+let syncConnections: any[] = []
+let statisticsCalls = 0
+let failStatistics = false
 const face = {
+  calculateStatistics: async (request: any) => {
+    statisticsCalls++
+    if (failStatistics) throw new Error('统计读取失败测试')
+    const cutoff = new Date(request.start)
+    cutoff.setDate(8)
+    cutoff.setHours(11)
+    const hour = new Date(request.start)
+    hour.setDate(8)
+    hour.setHours(10)
+    return { ...request, cutoff: cutoff.getTime(), calculatedAt: cutoff.getTime() + 36 * 60000, missingUsageCalls: 0,
+      hours: [{ hour: hour.getTime(), sessions: 2, prompts: 5, tokens: 12345, completedTasks: 3, completedPoints: 8 }],
+      totals: { sessions: 2, prompts: 5, tokens: 12345, completedTasks: 3, completedPoints: 8 } }
+  },
   list: async () => ({ items: tasks, total: tasks.length, page: 1, pageSize: 20 }),
   create: async (request: any) => {
     const row = { ...request, notes: contentText(request.content), id: crypto.randomUUID(), version: 1, subtasks: [], createdAt: Date.now(), startedAt: null, completedAt: null }
@@ -30,10 +48,19 @@ const face = {
     return row
   },
   remove: async (request: any) => { tasks = tasks.filter(task => task.id !== request.id); return { deleted: true } },
-  readAttachments: async (request: any) => attachments.get(request.id) ?? [],
+  readAttachments: async (request: any) => {
+    attachmentReads++
+    if (failAttachmentReads) throw new Error('附件读取失败测试')
+    return attachments.get(request.id) ?? []
+  },
   listAgents: async () => [], workspaceSnapshot: () => snapshot, subscribeWorkspaces: subscribe,
   sessionSnapshot: () => sessionSnapshot,
   subscribeSessions: (listener: () => void) => { sessionListeners.add(listener); return () => { sessionListeners.delete(listener) } },
+  sync: {
+    listSyncConnections: async () => syncConnections, listSyncRules: async () => [],
+    listSyncRuns: async () => ({ items: [], total: 0, page: 1, pageSize: 1 }),
+    createSyncConnection: async (input: any) => { const row = { ...input, id: 'test-connection', revision: 1, instance: 'tapd:2001', credentialPresent: false }; syncConnections = [row]; return row },
+  },
 }
 let input = { draft: '', phase: 'plain', attachmentIds: [] as DraftAttachmentId[], draftRev: 1 }
 const listeners = new Set<() => void>()
@@ -72,7 +99,11 @@ createRoot(document.getElementById('root')!).render(<>
   </div>
 </>)
 Object.assign(window, { fixture: {
+  statisticsCalls: () => statisticsCalls,
+  failStatistics: (fail: boolean) => { failStatistics = fail },
   tasks: () => tasks,
+  attachmentReads: () => attachmentReads,
+  failAttachmentReads: (fail: boolean) => { failAttachmentReads = fail },
   renameSession: (id: string, title: string) => {
     sessionSnapshot = { items: sessionSnapshot.items.map(row => row.id === id ? { ...row, title } : row) }
     sessionListeners.forEach(listener => listener())
@@ -81,6 +112,7 @@ Object.assign(window, { fixture: {
     sessionSnapshot = { items: sessionSnapshot.items.filter(row => row.id !== id) }
     sessionListeners.forEach(listener => listener())
   },
+  addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },
   captures: () => captureRequests,
   input: () => input,
   failCapture: (fail: boolean) => { failCapture = fail },

@@ -37,6 +37,9 @@
 .attachments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
 .attachments li { min-width: 0; display: flex; align-items: center; gap: 10px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 10px; background: var(--dsw-alias-bg-base); }
 .fileIcon { display: flex; flex: none; width: 32px; align-items: center; justify-content: center; }
+.attachments .imageThumbnail { flex: none; width: 64px; height: 64px; padding: 0; overflow: hidden; border: 1px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-tint, var(--dsw-alias-bg-base)); }
+.imageThumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.thumbnailStatus { padding: 4px; white-space: normal; font-size: 10px; line-height: 1.4; color: var(--dsw-alias-label-tertiary); }
 .fileInfo { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; padding: 0; border: 0; background: transparent; text-align: left; color: inherit; font: inherit; cursor: pointer; }
 .fileName { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
 .fileInfo:hover .fileName { color: var(--dsw-alias-state-business-primary); }

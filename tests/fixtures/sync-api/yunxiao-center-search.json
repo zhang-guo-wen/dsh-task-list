@@ -1,0 +1,11 @@
+[
+  {
+    "id": "1000000000000000001",
+    "serialNumber": "PROJ-1",
+    "subject": "Implement sync adapter",
+    "space": { "id": "space-1", "name": "Project One" },
+    "workitemType": { "id": "req-type-1", "name": "Requirement" },
+    "status": { "id": "doing", "name": "In Progress" },
+    "gmtModified": "2026-10-07T00:00:00+08:00"
+  }
+]

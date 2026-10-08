@@ -1,0 +1,73 @@
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import assert from 'node:assert/strict'
+const { chromium } = await import(pathToFileURL(process.env.DSH_TASK_PLAYWRIGHT).href)
+const root = resolve(import.meta.dirname, '../.browser-test')
+const browser = await chromium.launch({ channel: 'msedge', headless: true })
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('https://task-fixture.test/**', async route => {
+    const name = route.request().url().endsWith('fixture.js') ? 'fixture.js' : 'index.html'
+    await route.fulfill({ contentType: name.endsWith('.js') ? 'text/javascript' : 'text/html', body: await readFile(resolve(root, name)) })
+  })
+  await page.goto('https://task-fixture.test/index.html')
+  const sync = page.getByRole('button', { name: '同步', exact: true })
+  await sync.waitFor()
+  assert.equal(await sync.isDisabled(), true)
+  await page.getByText('请先在同步设置中启用连接和规则。', { exact: true }).waitFor()
+  const trigger = page.getByRole('button', { name: '同步设置', exact: true })
+  await trigger.click()
+  const dialog = page.getByRole('dialog', { name: '同步设置' })
+  await dialog.waitFor()
+  await dialog.getByRole('tab', { name: /连接/ }).waitFor()
+  await dialog.getByRole('button', { name: '新增连接', exact: true }).click()
+  await dialog.getByRole('button', { name: '平台', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'TAPD', exact: true }).click()
+  await dialog.getByRole('button', { name: '鉴权方式', exact: true }).click()
+  await page.getByRole('menuitem', { name: '手动 API 凭据', exact: true }).click()
+  await page.getByRole('textbox', { name: '连接名称' }).fill('My TAPD')
+  await page.getByRole('textbox', { name: '公司 ID' }).fill('2001')
+  await dialog.getByRole('button', { name: '保存连接', exact: true }).click()
+  await page.getByText('设置已保存，不会自动同步。', { exact: true }).waitFor()
+  await page.screenshot({ path: resolve(root, 'sync-settings-light.png') })
+  // Menu gets Escape before the enclosing native modal.
+  // Saved connections lock the platform picker; exercise the connection menu instead.
+  await dialog.getByRole('button', { name: '配置: My TAPD', exact: true }).click()
+  await page.getByRole('button', { name: '鉴权方式', exact: true }).click()
+  await page.keyboard.press('Escape')
+  assert.equal(await dialog.isVisible(), true)
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
+  await trigger.click()
+  await page.evaluate(() => {
+    const style = document.documentElement.style
+    style.setProperty('--dsw-alias-label-primary', '#eee')
+    style.setProperty('--dsw-alias-bg-base', '#181a20')
+    style.setProperty('--dsw-alias-border-l3', '#45474d')
+    style.setProperty('--dsw-alias-label-secondary', '#aaa')
+  })
+  await page.screenshot({ path: resolve(root, 'sync-settings-dark.png') })
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.screenshot({ path: resolve(root, 'sync-settings-narrow.png') })
+  assert.equal(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true)
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  await page.evaluate(() => window.fixture.addExternal())
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await page.getByRole('button', { name: '编辑: 独立远端标题', exact: true }).click()
+  await page.getByRole('textbox', { name: '外部任务标题', exact: true }).fill('保留独立标题')
+  const editor = page.getByRole('textbox', { name: '内容（必填）' })
+  assert.equal((await editor.innerText()).trim(), '')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
+  assert.equal(await page.evaluate(() => window.fixture.tasks()[0].title), '保留独立标题')
+  assert.equal(await page.evaluate(() => window.fixture.tasks()[0].notes), '')
+  assert.equal(await page.evaluate(() => document.querySelector('main').scrollWidth <= document.querySelector('main').clientWidth + 1), true)
+  await page.screenshot({ path: resolve(root, 'sync-source-narrow.png') })
+  assert.deepEqual(errors, [])
+  console.log('Sync browser fixture passed: native settings/save/no scope/menu Escape/return focus/light-dark/390px. No real Host or platform writes.')
+} finally { await browser.close() }

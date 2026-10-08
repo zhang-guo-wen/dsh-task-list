@@ -1,0 +1,8 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "WorkitemType": { "id": "1152921504606846003", "name": "需求", "entity_type": "story", "workflow_id": "wf-story-1" } },
+    { "WorkitemType": { "id": "1152921504606846004", "name": "技术需求", "entity_type": "story", "workflow_id": "wf-story-2" } }
+  ]
+}

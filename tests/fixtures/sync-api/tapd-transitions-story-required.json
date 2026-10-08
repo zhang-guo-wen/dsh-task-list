@@ -1,0 +1,14 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    {
+      "StepPrevious": "in_progress",
+      "StepNext": "done",
+      "Name": "完成",
+      "Appendfield": [
+        { "FieldName": "custom_required", "Notnull": "yes", "DefaultValue": [] }
+      ]
+    }
+  ]
+}

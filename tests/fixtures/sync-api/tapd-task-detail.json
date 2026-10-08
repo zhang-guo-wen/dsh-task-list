@@ -1,0 +1,20 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    {
+      "Task": {
+        "id": "1152921504606846978333",
+        "workspace_id": "20000001",
+        "name": "Write regression tests",
+        "status": "open",
+        "owner": "alice",
+        "iteration_id": "1152921504606846001",
+        "priority_label": "Middle",
+        "label": "test",
+        "modified": "2026-10-07 15:00:00",
+        "description": "<p>Task body</p>"
+      }
+    }
+  ]
+}

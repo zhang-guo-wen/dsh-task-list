@@ -14,20 +14,27 @@ import type {
   SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
 } from '../types.ts'
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
+import { createSyncFace, type SyncRemoteService } from './sync/face.ts'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { TaskCapture } from './TaskCapture.tsx'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentMarkdown, textContent } from '../content.ts'
 import { attachmentFile, fileUpload } from './rich-text.ts'
+import { taskDocument, taskDraft } from './task-content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { persistRichTask, type TaskStorageCapabilities } from './task-persistence.ts'
+import type { StatisticsRequest, StatisticsRunOptions, StatisticsRunState, StatisticsSnapshot } from '../statistics.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap { taskList: TaskKey }
 }
 
 interface RemoteService {
+  calculateStatistics(request: StatisticsRequest): Promise<RemoteResult<StatisticsSnapshot>>
+  startStatistics(request: StatisticsRequest & { refresh?: boolean }): Promise<RemoteResult<{ jobId: string }>>
+  getStatisticsRun(request: { jobId: string }): Promise<RemoteResult<StatisticsRunState | null>>
+  cancelStatistics(request: { jobId: string }): Promise<RemoteResult<{ cancelled: boolean }>>
   capabilities(request: Record<string, never>): Promise<RemoteResult<TaskStorageCapabilities>>
   readTaskAttachments(request: { id: string; version: number }): Promise<RemoteResult<TaskAttachmentUpload[]>>
   listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskPage>>
@@ -83,6 +90,22 @@ async function unwrap<T>(call: Promise<RemoteResult<T>>): Promise<T> {
   return result.value
 }
 
+/** How often the browser asks a running sweep for its counters. */
+const STATISTICS_POLL_MS = 200
+
+function abortError(): DOMException {
+  return new DOMException('The operation was aborted', 'AbortError')
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError())
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve() }, ms)
+    function onAbort(): void { clearTimeout(timer); reject(abortError()) }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function TaskIcon({ size }: { size: number }) {
   return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
     <rect x="3" y="2.5" width="14" height="15" rx="2" />
@@ -98,8 +121,8 @@ export async function apply(ctx: Context): Promise<void> {
   ctx.effect(() => () => off(), 'task-list: remote mount')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'task-list: dictionaries')
   const t = ctx.locale.bind(NS)
-  const remote = (): RemoteService => {
-    const service = ctx.get(`remote.${REMOTE_NAMESPACE}`) as RemoteService | undefined
+  const remote = (): RemoteService & SyncRemoteService => {
+    const service = ctx.get(`remote.${REMOTE_NAMESPACE}`) as (RemoteService & SyncRemoteService) | undefined
     if (!service) throw new Error('taskList namespace is not mounted')
     return service
   }
@@ -136,6 +159,30 @@ export async function apply(ctx: Context): Promise<void> {
     }
   }
   const face: TaskFace = {
+    calculateStatistics: async (request, options = {}) => {
+      const service = remote()
+      const started = await unwrap(service.startStatistics(options.refresh === true ? { ...request, refresh: true } : request))
+      let settled = false
+      try {
+        for (;;) {
+          if (options.signal?.aborted) throw abortError()
+          const run = await unwrap(service.getStatisticsRun({ jobId: started.jobId }))
+          if (run === null) throw new Error('statistics run is no longer available')
+          options.onProgress?.({ processed: run.processed, total: run.total, reused: run.reused })
+          if (run.status === 'completed') {
+            if (!run.snapshot) throw new Error('statistics run finished without a result')
+            settled = true
+            return run.snapshot
+          }
+          if (run.status === 'cancelled') throw abortError()
+          if (run.status === 'failed') throw new Error(run.error ?? 'statistics failed')
+          await delay(STATISTICS_POLL_MS, options.signal)
+        }
+      } finally {
+        // A closed dialog or a superseded run must stop the host sweep too.
+        if (!settled) await service.cancelStatistics({ jobId: started.jobId }).catch(() => undefined)
+      }
+    },
     list: request => unwrap(remote().listTasks(request)),
     readAttachments: request => unwrap(remote().readTaskAttachments(request)),
     create: request => persistRichTask(request.content, () => unwrap(remote().capabilities({})),
@@ -172,7 +219,7 @@ export async function apply(ctx: Context): Promise<void> {
         ? pickDefaultWorkspace(ctx.workspaces.list.getSnapshot().items, t('defaultWorkspaceName'))
         : workspaceFor(task.workspaceId)
       if (workspace === undefined) throw new Error('task workspace is unavailable')
-      const document = task.content?.blocks.length ? task.content : textContent(task.notes.trim() || task.title.trim())
+      const document = taskDocument(task)
       const nodes = contentAttachments(document)
       // Read before creating a session, so stale tasks or missing bytes do not launch empty sessions.
       const uploads = nodes.length ? await unwrap(remote().readTaskAttachments({ id: task.id, version: task.version })) : []
@@ -198,7 +245,7 @@ export async function apply(ctx: Context): Promise<void> {
         }
         // The title is derived from the content, so the draft carries the content
         // only; a legacy row without content still falls back to its stored title.
-        const content = contentMarkdown(document).trim() || (files.length ? '' : task.title.trim())
+        const content = taskDraft(task)
         const input = ctx.conversation.input.for(scope)
         const drafts = files.length ? conversation().createDrafts(sessionId as Parameters<ConversationController['createDrafts']>[0], files) : []
         try {
@@ -216,6 +263,7 @@ export async function apply(ctx: Context): Promise<void> {
     },
     workspaceSnapshot: () => ctx.workspaces.list.getSnapshot(),
     subscribeWorkspaces: listener => ctx.workspaces.list.subscribe(listener),
+    sync: createSyncFace(() => remote()),
   }
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'task-list', locale: NS, inject: () => face }, TaskPanel))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

@@ -9,7 +9,8 @@
     ".": "./lib/index.mjs",
     "./client": "./lib/client.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*": "./locale/*"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -38,7 +39,9 @@
     }
   },
   "files": [
+    "locale",
     "lib",
+    "docs/sync-capabilities.md",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -47,6 +50,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
+    "test:metadata": "node --test tests/plugin-metadata.test.mjs",
     "build": "tsdown -c tsdown.config.ts && node build-client.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
@@ -59,8 +63,8 @@
     "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-conversation": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-layout": ">=0.2.0-rc.1",
-    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-primitives": ">=0.2.0-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-sidebar": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": ">=0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-workspace": ">=0.2.0-rc.1",
@@ -147,8 +151,13 @@
     "@lexical/selection": "0.49.0",
     "@lexical/table": "0.49.0",
     "@lexical/utils": "0.49.0",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/user-event": "14.6.1",
     "@types/node": "^26.5.0",
     "@types/react": "~18.3.1",
+    "@types/react-dom": "18.3.7",
+    "jsdom": "26.1.0",
     "lexical": "0.49.0",
     "lightningcss": "^1.32.0",
     "react": "^18.3.1",
@@ -157,5 +166,8 @@
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "parse5": "8.0.1"
   }
 }

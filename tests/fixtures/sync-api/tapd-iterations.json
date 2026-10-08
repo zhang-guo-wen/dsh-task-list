@@ -1,0 +1,8 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    { "Iteration": { "id": "1152921504606846001", "name": "Sprint 1" } },
+    { "Iteration": { "id": "1152921504606846002", "name": "Sprint 2" } }
+  ]
+}

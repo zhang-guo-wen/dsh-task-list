@@ -1,0 +1,20 @@
+{
+  "status": 1,
+  "info": "success",
+  "data": [
+    {
+      "Bug": {
+        "id": "1152921504606846977999",
+        "workspace_id": "20000001",
+        "title": "Fix crash on save",
+        "status": "in_progress",
+        "current_owner": "bob",
+        "iteration_id": "1152921504606846002",
+        "priority_label": "high",
+        "label": "bug",
+        "modified": "2026-10-07 14:00:00",
+        "description": "<p>Bug body</p>"
+      }
+    }
+  ]
+}
