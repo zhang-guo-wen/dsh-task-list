@@ -441,7 +441,7 @@ export function TaskPanel({
     <div className={css.inner}>
       <header className={css.header}>
         <h1>{t('title')}</h1>
-        <Button variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
+        <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
         <button type="button" className={css.primary} onClick={openCreate}>{t('add')}</button>
       </header>
 

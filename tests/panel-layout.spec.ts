@@ -45,6 +45,23 @@ describe('panel layout', () => {
     expect(rule('.rowLine')).toContain('grid-template-columns: minmax(0, 1fr) 72px 128px auto')
   })
 
+  it('keeps phone descriptions on one line with the action beside them', () => {
+    const content = /^\.content\s*\{([^}]*)\}/m.exec(css)?.[1]
+    expect(content).toContain('white-space: nowrap')
+    expect(content).toContain('text-overflow: ellipsis')
+    expect(css).not.toMatch(/\.rowLine\s+\.content\s*\{/)
+    expect(css).not.toMatch(/\.rowLine\s+\.rowActions\s*\{/)
+  })
+
+  it('hides only the report entry at the existing phone breakpoint', () => {
+    expect(panel).toContain('<Button className={css.reportButton} variant="outline" ref={reportButton}')
+    const mobileRule = /@media \(max-width: 760px\) \{[\s\S]*?\n\}/.exec(css)?.[0]
+    expect(mobileRule).toContain('.reportButton { display: none; }')
+    // Outside the phone rule the native button keeps its desktop display and action.
+    expect(css.replace(mobileRule ?? '', '')).not.toMatch(/\.reportButton\s*\{/)
+    expect(panel).toContain("onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>")
+  })
+
   it('dims a completed card exactly like an ended row on the Automation tasks page', () => {
     // The row carries its status, so the stylesheet can reach a done card.
     expect(panel).toMatch(/<li className=\{css\.row\} data-priority=\{task\.priority\} data-status=\{task\.status\}/)

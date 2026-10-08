@@ -22,7 +22,7 @@ This plugin brings task management into Harness:
 
 ![Task list in Harness with status and workspace filters, search, and Start/Complete actions](<docs/screenshots/task-list.jpg>)
 
-On desktop, each row shows task content, status, and workspace, with direct **Start** or **Complete** actions. On phones (up to 760px wide), rows keep only the content and available action; status, workspace, and deletion are hidden. This screenshot comes from actual use; appearance may vary with the installed version.
+On desktop, each row shows task content, status, and workspace, with direct **Start** or **Complete** actions. On phones (up to 760px wide), rows keep the description on one line (ellipsis for long text) with the available action on the right; status, workspace, and deletion are hidden. This screenshot comes from actual use; appearance may vary with the installed version.
 
 ## Manual Yunxiao / TAPD sync
 
@@ -86,6 +86,8 @@ Restart the corresponding Harness host and refresh the page, then select **Task 
 4. Save messages you are not ready to send with `Ctrl+S` / `Cmd+S` in the conversation composer.
 
 ### Statistics report
+
+The report button is hidden on phones (viewport width up to 760px); it remains available on wider screens.
 
 Click **Statistics report** next to **New task** to open a separate report page. **Close** returns to the task list with filters, search, and paging preserved. Choose **Day**, **Month**, or **Year** and a date, then click **Calculate statistics**. Compact fixed heatmaps show hours in **6 columns × 4 rows**, days in **7 columns × 5 rows**, or months in **3 columns × 4 rows**. Month cells run sequentially from day 1, without weekday alignment; unused slots remain blank. Switch **New sessions**, **User sends**, and **Tokens consumed** to compare values and intensity; hover or focus a cell to see all three counts.
 
