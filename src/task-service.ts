@@ -10,9 +10,9 @@ import type { AuthRequest } from './sync/oauth-validation.ts'
 import type { SyncService } from './sync/service.ts'
 import type {
   CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
-  DeleteResult, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListRunsRequest, MetadataScope,
-  Page, SafeConnection, SafeItemResult, SafeRun, StartSyncResult, SyncMetadata, SyncRule,
-  TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  DeleteResult, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest,
+  ListRunsRequest, MetadataScope, OrganizationChoice, Page, SafeConnection, SafeItemResult, SafeRun,
+  StartSyncResult, SyncMetadata, SyncRule, TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
 } from './sync/dto.ts'
 import { type StatisticsRequest, type StatisticsRunState, type StatisticsSnapshot } from './statistics.ts'
 import { statisticsRunRequest, type StatisticsService } from './statistics-service.ts'
@@ -109,7 +109,7 @@ export class TaskService extends TypertRemoteService {
 
   @Remote('listSyncConnections')
   async listSyncConnections(request: EmptyRequest): Promise<SafeConnection[]> {
-    const connections = this.sync.listSyncConnections()
+    const connections = await this.sync.listSyncConnections()
     return this.authorization ? Promise.all(connections.map(connection => this.authorization!.decorate(connection))) : connections
   }
 
@@ -120,14 +120,24 @@ export class TaskService extends TypertRemoteService {
 
   @Remote('updateSyncConnection')
   async updateSyncConnection(request: UpdateConnectionRequest): Promise<SafeConnection> {
-    const connection = this.sync.updateSyncConnection(request)
+    const connection = await this.sync.updateSyncConnection(request)
     return this.authorization ? this.authorization.decorate(connection) : connection
   }
 
   @Remote('deleteSyncConnection')
   async deleteSyncConnection(request: DeleteConnectionRequest): Promise<DeleteResult> {
-    if (this.authorization) { await this.authorization.deleteConnection(request); return { deleted: true } }
+    if (this.authorization) {
+      await this.authorization.deleteConnection(request)
+      await this.sync.forgetSecret(request.id)
+      return { deleted: true }
+    }
     return this.sync.deleteSyncConnection(request)
+  }
+
+  /** Organizations a 云效 token can see; the typed token is used once and not stored. */
+  @Remote('listSyncOrganizations')
+  async listSyncOrganizations(request: ListOrganizationsRequest): Promise<OrganizationChoice[]> {
+    return this.sync.listSyncOrganizations(request)
   }
 
   @Remote('listSyncRules')

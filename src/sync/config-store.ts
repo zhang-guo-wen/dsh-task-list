@@ -35,8 +35,18 @@ function validateRegionHost(mode: 'center' | 'region', regionHost: string | null
   }
 }
 
-function validateCenterOrganizationId(mode: 'center' | 'region', organizationId: string | null | undefined): void {
-  if (mode === 'center' && (!organizationId || !organizationId.trim() || organizationId.length > ID_LIMIT || CONTROL.test(organizationId))) {
+/**
+ * A center organization is what reaches the API, so a normal connection must
+ * carry one — but a 云效 OAuth connection may be saved first and pick its
+ * organization from the account's own list afterwards.
+ */
+function validateCenterOrganizationId(mode: 'center' | 'region', organizationId: string | null | undefined, oauth: boolean): void {
+  const malformed = organizationId !== null && organizationId !== undefined && (organizationId.length > ID_LIMIT || CONTROL.test(organizationId))
+  if (oauth) {
+    if (malformed) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'organizationId' }))
+    return
+  }
+  if (mode === 'center' && (malformed || !organizationId || !organizationId.trim())) {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'organizationId' }))
   }
 }
@@ -70,6 +80,7 @@ interface RuleRow {
   connection_id: string
   instance: string
   project_id: string
+  project_name: string | null
   enabled: number
   workspace_id: string | null
   filters: string
@@ -128,6 +139,7 @@ function toSyncRule(row: RuleRow): SyncRule {
     revision: row.revision,
     connectionId: row.connection_id,
     projectId: row.project_id,
+    projectName: row.project_name ?? null,
     enabled: row.enabled === 1,
     workspaceId: row.workspace_id,
     filters: parseStored<SyncRuleFilters>(row.filters, 'filters'),
@@ -157,7 +169,7 @@ export class SyncConfigStore {
   createConnection(input: CreateConnectionRequest): SafeConnection {
     const id = randomUUID()
     validateName('connection', input.name)
-    if (input.platform === 'yunxiao') { validateEnvName('connection', 'tokenEnv', input.tokenEnv); validateRegionHost(input.mode, input.regionHost); validateCenterOrganizationId(input.mode, input.organizationId) }
+    if (input.platform === 'yunxiao') { validateEnvName('connection', 'tokenEnv', input.tokenEnv); validateRegionHost(input.mode, input.regionHost); validateCenterOrganizationId(input.mode, input.organizationId, (input.authentication ?? { mode: 'manual' }).mode === 'oauth') }
     else { validateEnvName('connection', 'userEnv', input.userEnv); validateEnvName('connection', 'passwordEnv', input.passwordEnv) }
     const authentication = parseConnectionAuth(input.authentication ?? { mode: 'manual' })
     const instance = instanceOf(input)
@@ -204,7 +216,7 @@ export class SyncConfigStore {
     const companyId = input.companyId !== undefined ? input.companyId : row.company_id
     const userEnv = input.userEnv !== undefined ? input.userEnv : row.user_env
     const passwordEnv = input.passwordEnv !== undefined ? input.passwordEnv : row.password_env
-    if (row.platform === 'yunxiao') { validateRegionHost(mode as 'center' | 'region', regionHost); validateCenterOrganizationId(mode as 'center' | 'region', organizationId) }
+    if (row.platform === 'yunxiao') { validateRegionHost(mode as 'center' | 'region', regionHost); validateCenterOrganizationId(mode as 'center' | 'region', organizationId, authentication.mode === 'oauth') }
     const instance = row.platform === 'yunxiao'
       ? instanceOf({ platform: 'yunxiao', mode: mode as 'center' | 'region', organizationId: organizationId!, regionHost })
       : instanceOf({ platform: 'tapd', companyId: companyId! })
@@ -286,9 +298,9 @@ export class SyncConfigStore {
     const id = randomUUID()
     withSqliteTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO sync_rules
-        (id, revision, connection_id, instance, project_id, enabled, workspace_id, filters, mappings)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`).run(
-        id, input.connectionId, instance, input.projectId, input.enabled ? 1 : 0,
+        (id, revision, connection_id, instance, project_id, project_name, enabled, workspace_id, filters, mappings)
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id, input.connectionId, instance, input.projectId, input.projectName ?? null, input.enabled ? 1 : 0,
         input.workspaceId, JSON.stringify(input.filters), JSON.stringify(input.mappings),
       )
     })
@@ -310,13 +322,14 @@ export class SyncConfigStore {
       if (duplicate) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'projectId' }))
     }
     const enabled = input.enabled === undefined ? row.enabled === 1 : input.enabled
+    const projectName = input.projectName !== undefined ? input.projectName : row.project_name
     const workspaceId = input.workspaceId !== undefined ? input.workspaceId : row.workspace_id
     const filters = input.filters === undefined ? row.filters : JSON.stringify(input.filters)
     const mappings = input.mappings === undefined ? row.mappings : JSON.stringify(input.mappings)
     withSqliteTransaction(this.db, () => {
-      const result = this.db.prepare(`UPDATE sync_rules SET project_id = ?, enabled = ?, workspace_id = ?, filters = ?, mappings = ?,
+      const result = this.db.prepare(`UPDATE sync_rules SET project_id = ?, project_name = ?, enabled = ?, workspace_id = ?, filters = ?, mappings = ?,
         revision = revision + 1 WHERE id = ? AND revision = ?`).run(
-        projectId, enabled ? 1 : 0, workspaceId, filters, mappings, input.id, input.revision,
+        projectId, projectName, enabled ? 1 : 0, workspaceId, filters, mappings, input.id, input.revision,
       )
       if (result.changes !== 1) throw syncRemoteError(syncError('LocalVersionConflict', { scope: 'rule' }))
     })

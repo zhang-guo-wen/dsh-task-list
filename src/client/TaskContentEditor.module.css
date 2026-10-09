@@ -1,7 +1,7 @@
 .wrapper { min-width: 0; margin-top: 8px; color: var(--dsw-alias-label-primary); }
 .surface { border: 1px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-base); transition: border-color .15s; }
 .surface:focus-within, .surface[data-dragging] { border-color: var(--dsw-alias-state-business-primary); }
-.toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-tint, var(--dsw-alias-bg-base)); border-radius: 12px 12px 0 0; }
+.toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); border-radius: 12px 12px 0 0; }
 .toolGroup { display: flex; flex: none; align-items: center; gap: 2px; }
 .toolGroup + .toolGroup { border-left: 1px solid var(--dsw-alias-border-l3); padding-left: 6px; }
 .toolbar .toolButton, .toolbar .attachButton, .attachments .removeButton { flex: none; width: 30px; height: 30px; padding: 0; border-radius: 6px; color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary)); }
@@ -37,7 +37,7 @@
 .attachments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
 .attachments li { min-width: 0; display: flex; align-items: center; gap: 10px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 10px; background: var(--dsw-alias-bg-base); }
 .fileIcon { display: flex; flex: none; width: 32px; align-items: center; justify-content: center; }
-.attachments .imageThumbnail { flex: none; width: 64px; height: 64px; padding: 0; overflow: hidden; border: 1px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-tint, var(--dsw-alias-bg-base)); }
+.attachments .imageThumbnail { flex: none; width: 64px; height: 64px; padding: 0; overflow: hidden; border: 1px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-base); }
 .imageThumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .thumbnailStatus { padding: 4px; white-space: normal; font-size: 10px; line-height: 1.4; color: var(--dsw-alias-label-tertiary); }
 .fileInfo { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; padding: 0; border: 0; background: transparent; text-align: left; color: inherit; font: inherit; cursor: pointer; }
@@ -46,7 +46,7 @@
 .fileInfo small { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .hint, .error { margin: 8px 0 0; font-size: 11px; line-height: 1.6; }
 .hint { color: var(--dsw-alias-label-tertiary); }
-.error { color: var(--dsw-alias-label-error); }
+.error { color: var(--dsw-alias-state-error-primary); }
 @media (max-width: 560px) {
   .toolbar { flex-wrap: wrap; gap: 6px; padding: 6px; }
   .toolbar .toolButton, .toolbar .attachButton { width: 28px; height: 28px; }

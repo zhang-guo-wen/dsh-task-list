@@ -3,7 +3,7 @@ import type { RemoteKey } from './types.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 
 /** Schema version the sync tables land in; the store refuses anything newer. */
-export const SYNC_SCHEMA_VERSION = 9
+export const SYNC_SCHEMA_VERSION = 10
 
 /**
  * Stable, unique serialization of a remote identity. Ids stay strings and may
@@ -48,6 +48,7 @@ CREATE TABLE sync_rules (
   connection_id TEXT NOT NULL REFERENCES sync_connections(id),
   instance TEXT NOT NULL,
   project_id TEXT NOT NULL,
+  project_name TEXT,
   enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
   workspace_id TEXT,
   filters TEXT NOT NULL,
@@ -262,6 +263,10 @@ export function migrateSyncSchema(db: DatabaseSync): void {
     migrateV6ToV7(db)
     migrateV7ToV8(db)
     if (!tableColumns(db, 'sync_connections').has('authentication')) db.exec(`ALTER TABLE sync_connections ADD COLUMN authentication TEXT NOT NULL DEFAULT '{"mode":"manual"}'`)
+    // v10 records the display label of a rule's project beside its id, so the
+    // roster can name it without a platform request; existing rows keep NULL and
+    // fall back to the id until they are saved again.
+    if (!tableColumns(db, 'sync_rules').has('project_name')) db.exec('ALTER TABLE sync_rules ADD COLUMN project_name TEXT')
   }
   db.exec(`PRAGMA user_version = ${SYNC_SCHEMA_VERSION}`)
 }

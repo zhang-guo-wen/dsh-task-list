@@ -1,11 +1,11 @@
 import { DOC_KEYS, SYNC_ERRORS, syncError, syncRemoteError } from './errors.ts'
 import type {
-  CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
-  DeleteResult, DocKey, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListRunsRequest,
-  MetadataScope, OptionalFieldCandidate, Option, Page, SafeConnection, SafeItemCategory, SafeItemResult, SafeRun,
-  SafeRunCounts, SafeRunPhase, SafeRunStatus, StartSyncResult, SyncErrorCode, SyncErrorDto,
-  SyncErrorScope, SyncMetadata, SyncMethod, SyncRequest, SyncResponse, SyncRule, SyncRuleFilters,
-  TestConnectionResult, TypeCapabilities, TypeMapping, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  ConnectionSecret, CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
+  DeleteResult, DocKey, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest,
+  ListRunsRequest, MetadataScope, OptionalFieldCandidate, Option, OrganizationChoice, Page, SafeConnection,
+  SafeItemCategory, SafeItemResult, SafeRun, SafeRunCounts, SafeRunPhase, SafeRunStatus, StartSyncResult,
+  SyncErrorCode, SyncErrorDto, SyncErrorScope, SyncMetadata, SyncMethod, SyncRequest, SyncResponse, SyncRule,
+  SyncRuleFilters, TestConnectionResult, TypeCapabilities, TypeMapping, UpdateConnectionRequest, UpdateSyncRuleRequest,
 } from './dto.ts'
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../types.ts'
 import type { TaskStatus } from '../types.ts'
@@ -71,6 +71,19 @@ function text(scope: SyncErrorScope, value: unknown, field: string, max: number,
   return normalized
 }
 
+/** A 云效 OAuth connection may be saved before its organization is chosen. */
+function organizationIdText(scope: SyncErrorScope, value: unknown, oauth: boolean): string {
+  return oauth ? boundedText(scope, value ?? '', 'organizationId', ID_LIMIT) : text(scope, value, 'organizationId', ID_LIMIT, true)
+}
+
+/**
+ * A stored display label for a remote resource. Absence is `null`, and the
+ * owning surface falls back to the id rather than inventing a name.
+ */
+function optionalProjectName(scope: SyncErrorScope, value: unknown): string | null {
+  return value === undefined || value === null ? null : boundedText(scope, value, 'projectName', NAME_LIMIT)
+}
+
 /** Length-bounded, control-free text that may be empty (used for summaries). */
 function boundedText(scope: SyncErrorScope, value: unknown, field: string, max: number): string {
   if (typeof value !== 'string' || value.length > max || CONTROL.test(value)) fail(scope, field)
@@ -134,9 +147,35 @@ export function parseConnectionAuth(value: unknown): import('./dto.ts').Connecti
   }
 }
 
-const YUNXIAO_CREATE_KEYS = new Set(['platform', 'name', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'enabled', 'authentication'])
-const TAPD_CREATE_KEYS = new Set(['platform', 'name', 'companyId', 'userEnv', 'passwordEnv', 'enabled', 'authentication'])
-const UPDATE_CONNECTION_KEYS = new Set(['id', 'revision', 'name', 'enabled', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'companyId', 'userEnv', 'passwordEnv', 'authentication'])
+const YUNXIAO_CREATE_KEYS = new Set(['platform', 'name', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'enabled', 'authentication', 'secret'])
+const TAPD_CREATE_KEYS = new Set(['platform', 'name', 'companyId', 'userEnv', 'passwordEnv', 'enabled', 'authentication', 'secret'])
+const UPDATE_CONNECTION_KEYS = new Set(['id', 'revision', 'name', 'enabled', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'companyId', 'userEnv', 'passwordEnv', 'authentication', 'secret'])
+/** Upper bounds for one typed credential; a platform token never approaches these. */
+const SECRET_LIMIT = 4096
+
+/**
+ * Parse a user-typed credential. Values are length-checked and platform-tagged
+ * here so the Host never stores a credential for the wrong platform; the value
+ * itself is only ever handed to the Host credential store.
+ */
+function parseConnectionSecret(scope: SyncErrorScope, value: unknown): ConnectionSecret {
+  const object = parseObject(scope, value, 'secret')
+  closedKeys(scope, object, new Set(['platform', 'token', 'user', 'password']), 'secret')
+  const platform = object.platform
+  if (platform === 'yunxiao') {
+    closedKeys(scope, object, new Set(['platform', 'token']), 'secret')
+    return { platform: 'yunxiao', token: text(scope, object.token, 'secret.token', SECRET_LIMIT, false) }
+  }
+  if (platform === 'tapd') {
+    closedKeys(scope, object, new Set(['platform', 'user', 'password']), 'secret')
+    return {
+      platform: 'tapd',
+      user: text(scope, object.user, 'secret.user', SECRET_LIMIT, false),
+      password: text(scope, object.password, 'secret.password', SECRET_LIMIT, false),
+    }
+  }
+  fail(scope, 'secret.platform')
+}
 
 function parseCreateConnection(value: unknown): CreateConnectionRequest {
   const scope: SyncErrorScope = 'connection'
@@ -150,18 +189,18 @@ function parseCreateConnection(value: unknown): CreateConnectionRequest {
     let mode: 'center' | 'region'
     if (object.mode === 'center' || object.mode === 'region') mode = object.mode
     else fail(scope, 'mode')
-    const organizationId = text(scope, object.organizationId, 'organizationId', ID_LIMIT, true)
+    const organizationId = organizationIdText(scope, object.organizationId, object.authentication !== undefined && parseConnectionAuth(object.authentication).mode === 'oauth')
     const regionHost = mode === 'region'
       ? text(scope, object.regionHost, 'regionHost', ID_LIMIT, true)
       : object.regionHost === undefined || object.regionHost === null ? null : text(scope, object.regionHost, 'regionHost', ID_LIMIT, true)
     const tokenEnv = envName(scope, object.tokenEnv, 'tokenEnv')
-    return { platform: 'yunxiao', name, mode, organizationId, regionHost, tokenEnv, enabled, ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}) }
+    return { platform: 'yunxiao', name, mode, organizationId, regionHost, tokenEnv, enabled, ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}), ...(object.secret !== undefined ? { secret: parseConnectionSecret(scope, object.secret) } : {}) }
   }
   closedKeys(scope, object, TAPD_CREATE_KEYS, 'createSyncConnection')
   const companyId = text(scope, object.companyId, 'companyId', ID_LIMIT, true)
   const userEnv = envName(scope, object.userEnv, 'userEnv')
   const passwordEnv = envName(scope, object.passwordEnv, 'passwordEnv')
-  return { platform: 'tapd', name, companyId, userEnv, passwordEnv, enabled, ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}) }
+  return { platform: 'tapd', name, companyId, userEnv, passwordEnv, enabled, ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}), ...(object.secret !== undefined ? { secret: parseConnectionSecret(scope, object.secret) } : {}) }
 }
 
 function parseUpdateConnection(value: unknown): UpdateConnectionRequest {
@@ -182,12 +221,13 @@ function parseUpdateConnection(value: unknown): UpdateConnectionRequest {
     if (object.mode !== 'center' && object.mode !== 'region') fail(scope, 'mode')
     out.mode = object.mode
   }
-  if (object.organizationId !== undefined) out.organizationId = text(scope, object.organizationId, 'organizationId', ID_LIMIT, true)
+  if (object.organizationId !== undefined) out.organizationId = organizationIdText(scope, object.organizationId, object.authentication !== undefined && parseConnectionAuth(object.authentication).mode === 'oauth')
   if (object.regionHost !== undefined) out.regionHost = object.regionHost === null ? null : text(scope, object.regionHost, 'regionHost', ID_LIMIT, true)
   if (object.tokenEnv !== undefined) out.tokenEnv = envName(scope, object.tokenEnv, 'tokenEnv')
   if (object.companyId !== undefined) out.companyId = text(scope, object.companyId, 'companyId', ID_LIMIT, true)
   if (object.userEnv !== undefined) out.userEnv = envName(scope, object.userEnv, 'userEnv')
   if (object.passwordEnv !== undefined) out.passwordEnv = envName(scope, object.passwordEnv, 'passwordEnv')
+  if (object.secret !== undefined) out.secret = parseConnectionSecret(scope, object.secret)
   return out
 }
 
@@ -205,8 +245,8 @@ function parseDeleteConnection(value: unknown): DeleteConnectionRequest {
 
 const FILTER_KEYS = new Set(['assignees', 'typeIds', 'iterationIds', 'statusIds'])
 const TYPE_MAPPING_KEYS = new Set(['typeId', 'category', 'readStates', 'writeStates', 'optionalFields', 'fieldIds', 'valueMaps'])
-const CREATE_RULE_KEYS = new Set(['connectionId', 'projectId', 'workspaceId', 'enabled', 'filters', 'mappings'])
-const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'workspaceId', 'enabled', 'filters', 'mappings'])
+const CREATE_RULE_KEYS = new Set(['connectionId', 'projectId', 'projectName', 'workspaceId', 'enabled', 'filters', 'mappings'])
+const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'projectName', 'workspaceId', 'enabled', 'filters', 'mappings'])
 
 function parseFilters(scope: SyncErrorScope, value: unknown): SyncRuleFilters {
   const object = parseObject(scope, value, 'filters')
@@ -305,6 +345,7 @@ function parseCreateRule(value: unknown): CreateSyncRuleRequest {
   return {
     connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
     projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
+    projectName: optionalProjectName(scope, object.projectName),
     workspaceId: object.workspaceId === undefined || object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true),
     enabled: object.enabled === undefined ? false : bool(scope, object.enabled, 'enabled'),
     filters: parseFilters(scope, object.filters),
@@ -321,6 +362,7 @@ function parseUpdateRule(value: unknown): UpdateSyncRuleRequest {
     revision: int(scope, object.revision, 'revision', 1, Number.MAX_SAFE_INTEGER),
   }
   if (object.projectId !== undefined) out.projectId = text(scope, object.projectId, 'projectId', ID_LIMIT, true)
+  if (object.projectName !== undefined) out.projectName = optionalProjectName(scope, object.projectName)
   if (object.workspaceId !== undefined) out.workspaceId = object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true)
   if (object.enabled !== undefined) out.enabled = bool(scope, object.enabled, 'enabled')
   if (object.filters !== undefined) out.filters = parseFilters(scope, object.filters)
@@ -386,6 +428,26 @@ function parseEmpty(scope: SyncErrorScope, value: unknown, method: SyncMethod): 
   return {}
 }
 
+/** List the organizations a token can see; the token is transient and never stored by this call. */
+function parseListOrganizations(value: unknown): ListOrganizationsRequest {
+  const scope: SyncErrorScope = 'connection'
+  const object = parseObject(scope, value, 'listSyncOrganizations')
+  closedKeys(scope, object, new Set(['token', 'connectionId']), 'listSyncOrganizations')
+  if (object.token === undefined && object.connectionId === undefined) fail(scope, 'token')
+  return {
+    ...(object.token !== undefined ? { token: text(scope, object.token, 'token', SECRET_LIMIT, false) } : {}),
+    ...(object.connectionId !== undefined ? { connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false) } : {}),
+  }
+}
+
+/** One organization row of the closed `listSyncOrganizations` result. */
+function parseOrganizationChoice(value: unknown): OrganizationChoice {
+  const scope: SyncErrorScope = 'connection'
+  const object = parseObject(scope, value, 'organization')
+  closedKeys(scope, object, new Set(['id', 'name']), 'organization')
+  return { id: text(scope, object.id, 'organization.id', ID_LIMIT, false), name: text(scope, object.name, 'organization.name', NAME_LIMIT, true) }
+}
+
 /** Parse and validate one wire request into its method-discriminated closed schema. */
 export function parseSyncRequest(method: SyncMethod, value: unknown): SyncRequest {
   switch (method) {
@@ -403,6 +465,7 @@ export function parseSyncRequest(method: SyncMethod, value: unknown): SyncReques
     case 'getSyncRun': return { method, request: parseGetSyncRun(value) }
     case 'listSyncRuns': return { method, request: parseListRuns(value) }
     case 'listSyncItemResults': return { method, request: parseListItemResults(value) }
+    case 'listSyncOrganizations': return { method, request: parseListOrganizations(value) }
     default: return fail('config', 'method')
   }
 }
@@ -476,7 +539,8 @@ function parseSafeConnection(value: unknown): SafeConnection {
     if (mode !== 'center' && mode !== 'region') fail(scope, 'connection.mode')
     return {
       ...base, platform: 'yunxiao', mode,
-      organizationId: text(scope, object.organizationId, 'organizationId', ID_LIMIT, true),
+      /* An OAuth connection is readable before its organization is chosen. */
+      organizationId: boundedText(scope, object.organizationId, 'organizationId', ID_LIMIT),
       regionHost: object.regionHost === null ? null : text(scope, object.regionHost, 'regionHost', ID_LIMIT, true),
       tokenEnv: envName(scope, object.tokenEnv, 'tokenEnv'),
     }
@@ -490,7 +554,7 @@ function parseSafeConnection(value: unknown): SafeConnection {
   }
 }
 
-const RULE_OUTPUT_KEYS = new Set(['id', 'revision', 'connectionId', 'projectId', 'enabled', 'workspaceId', 'filters', 'mappings'])
+const RULE_OUTPUT_KEYS = new Set(['id', 'revision', 'connectionId', 'projectId', 'projectName', 'enabled', 'workspaceId', 'filters', 'mappings'])
 
 function parseSyncRule(value: unknown): SyncRule {
   const scope: SyncErrorScope = 'rule'
@@ -501,6 +565,7 @@ function parseSyncRule(value: unknown): SyncRule {
     revision: int(scope, object.revision, 'revision', 0, Number.MAX_SAFE_INTEGER),
     connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
     projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
+    projectName: optionalProjectName(scope, object.projectName),
     enabled: bool(scope, object.enabled, 'enabled'),
     workspaceId: object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true),
     filters: parseFilters(scope, object.filters),
@@ -739,6 +804,7 @@ export function parseSyncResponse(method: SyncMethod, value: unknown): SyncRespo
     case 'getSyncRun': return { method, response: parseSafeRun(value) }
     case 'listSyncRuns': return { method, response: parsePage(value, parseSafeRun, 'run', 'listSyncRuns') }
     case 'listSyncItemResults': return { method, response: parsePage(value, parseSafeItemResult, 'item', 'listSyncItemResults') }
+    case 'listSyncOrganizations': return { method, response: arrayOf('connection', value, 'listSyncOrganizations', parseOrganizationChoice) }
     default: return fail('config', 'method')
   }
 }

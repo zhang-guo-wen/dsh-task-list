@@ -22,7 +22,7 @@ const notesLimit = 20_000
 const subtaskNotesLimit = 2_000
 
 /** Current schema version; the store refuses anything newer. */
-const schemaVersion = 9
+const schemaVersion = 10
 /** Newest rows first inside each status group, with a stable id tie-break. */
 const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
 
@@ -283,7 +283,7 @@ export class TaskStore {
           const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
           for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
         }
-        if (version.user_version < 9) migrateSyncSchema(this.db)
+        if (version.user_version < schemaVersion) migrateSyncSchema(this.db)
         // The statistics table is a rebuildable projection cache, not task data:
         // an older build can ignore it and a newer one recreates it on demand.
         // It therefore stays outside the versioned task schema, which keeps a

@@ -130,13 +130,13 @@ describe('parseSyncRequest closed request parsing', () => {
     expect(item.key.id).toBe(giant)
   })
 
-  it('parses all 14 methods into discriminated requests', () => {
-    expect(SYNC_METHODS).toHaveLength(14)
+  it('parses all 15 methods into discriminated requests', () => {
+    expect(SYNC_METHODS).toHaveLength(15)
     const expected: SyncMethod[] = [
       'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
       'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
       'getSyncMetadata', 'testSyncConnection',
-      'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults',
+      'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults', 'listSyncOrganizations',
     ]
     expect([...SYNC_METHODS].sort()).toEqual([...expected].sort())
 

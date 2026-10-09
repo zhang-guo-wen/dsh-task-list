@@ -5,9 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { TaskPanel, WorktreeNotGitError } from '../src/client/TaskPanel.tsx'
 import { local } from './fixtures/sync.ts'
 import { RuleSettings } from '../src/client/sync/RuleSettings.tsx'
-import { SyncSettings } from '../src/client/sync/SyncSettings.tsx'
+import { SyncSection } from '../src/client/sync/SyncSection.tsx'
 import { mappingReady, RuleFields } from '../src/client/sync/RuleFields.tsx'
-import { SyncControls } from '../src/client/sync/SyncControls.tsx'
+import { SyncActions, SyncStatus } from '../src/client/sync/SyncControls.tsx'
+import { useSyncPanel } from '../src/client/sync/use-sync-panel.ts'
 import { zh } from '../src/client/locales.ts'
 import type { TaskKey } from '../src/client/locales.ts'
 import type { SyncFace } from '../src/client/sync/face.ts'
@@ -26,18 +27,40 @@ function face(): SyncFace {
     startSync: async () => ({ runId: 'run1', existing: false }),
   } as SyncFace
 }
+/**
+ * The task list's sync surface as TaskPanel composes it: one panel state behind
+ * the header's split block and the status region under the toolbar.
+ */
+function SyncHarness({ api, onCreate = () => {} }: { api: SyncFace; onCreate?: () => void }) {
+  const panel = useSyncPanel(api, () => {})
+  return <><SyncActions addLabel={zh.add} onCreate={onCreate} panel={panel} t={t} /><SyncStatus panel={panel} t={t} /></>
+}
+/** Open the header's trailing menu and activate Sync. */
+async function clickSyncRow() {
+  fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: '同步' }))
+}
+/** Stable roster object: useSyncExternalStore requires an unchanging snapshot. */
+const noWorkspaces = { items: [] as readonly { workspaceId: string; title: string }[] }
+function section(api: SyncFace, workspaces: { items: readonly { workspaceId: string; title: string }[] } = noWorkspaces) {
+  return <SyncSection sync={api} t={t} close={() => {}}
+    workspaceSnapshot={() => workspaces} subscribeWorkspaces={() => () => {}} />
+}
 
 describe('manual sync controls', () => {
-  it('a rapid second click cannot dispatch a second run; save/query never starts one', async () => {
+  it('a rapid second activation cannot dispatch a second run; settings never start one', async () => {
     const api = face()
     let calls = 0
     let release!: (value: { runId: string; existing: boolean }) => void
     api.startSync = () => { calls++; return new Promise(resolve => { release = resolve }) }
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
-    const button = await screen.findByRole('button', { name: '同步', exact: true })
-    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
-    expect(calls).toBe(0)
-    fireEvent.click(button); fireEvent.click(button)
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
+    await waitFor(() => expect(calls).toBe(1))
+    // The row is disabled while the run is being requested, so reopening the
+    // menu cannot reach the Host a second time.
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    const row = await screen.findByRole('menuitem', { name: '同步中' })
+    fireEvent.click(row)
     expect(calls).toBe(1)
     release({ runId: 'run1', existing: false })
     await screen.findByText('同步完成')
@@ -46,24 +69,54 @@ describe('manual sync controls', () => {
     const api = face()
     api.listSyncRuns = async () => ({ items: [completed], total: 1, page: 1, pageSize: 1 })
     const start = vi.fn(api.startSync); api.startSync = start
-    const first = render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
+    const first = render(<SyncHarness api={api} />)
     await screen.findByText('同步完成'); first.unmount()
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
+    render(<SyncHarness api={api} />)
     await screen.findByText('同步完成')
     expect(start).not.toHaveBeenCalled()
   })
-  it('no enabled scope disables sync and shows the scope explanation', async () => {
+  it('an unconfigured click points at the settings page and never starts a run', async () => {
+    const api = face(); api.listSyncConnections = async () => []
+    const start = vi.fn(api.startSync); api.startSync = start
+    render(<SyncHarness api={api} />)
+    expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
+    expect(screen.queryByText(/双方都改动时/)).toBeNull()
+    await clickSyncRow()
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+    expect(start).not.toHaveBeenCalled()
+  })
+  it('connections without an enabled rule point at the settings page too', async () => {
     const api = face(); api.listSyncRules = async () => []
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
-    await screen.findByText('请先在同步设置中启用连接和规则。')
-    expect((screen.getByRole('button', { name: '同步', exact: true }) as HTMLButtonElement).disabled).toBe(true)
+    const start = vi.fn(api.startSync); api.startSync = start
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
+    await screen.findByText('请在「设置 → 任务同步」中启用连接和规则。')
+    expect(start).not.toHaveBeenCalled()
+  })
+  it('the refused prompt can be dismissed and leaves the page clean again', async () => {
+    const api = face(); api.listSyncConnections = async () => []
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+    fireEvent.click(screen.getByRole('button', { name: '知道了' }))
+    expect(screen.queryByText(/还没有同步连接/)).toBeNull()
+  })
+  it('the trailing menu closes on Escape and returns focus to its handle', async () => {
+    const user = userEvent.setup()
+    render(<SyncHarness api={face()} />)
+    const handle = screen.getByRole('button', { name: '更多操作' })
+    await user.click(handle)
+    await screen.findByRole('menuitem', { name: '同步' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: '同步' })).toBeNull())
+    expect(document.activeElement).toBe(handle)
   })
   it('result pagination queries page two without starting another run', async () => {
     const api = face(); const pages: number[] = []
     api.listSyncRuns = async () => ({ items: [completed], total: 1, page: 1, pageSize: 1 })
     api.listSyncItemResults = async request => { pages.push(request.page); return { items: [], total: 21, page: request.page, pageSize: 20 } }
     const start = vi.fn(api.startSync); api.startSync = start
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
+    render(<SyncHarness api={api} />)
     fireEvent.click(await screen.findByRole('button', { name: '下一页' }))
     await waitFor(() => expect(pages).toEqual([1, 2]))
     expect(start).not.toHaveBeenCalled()
@@ -71,7 +124,8 @@ describe('manual sync controls', () => {
   it('structured credential errors are localized without displaying a secret or raw provider message', async () => {
     const api = face()
     api.listSyncConnections = async () => { throw { code: 'task-list/sync', message: 'secret-provider-body', details: { code: 'CredentialMissing', docKey: 'credentials' } } }
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
     await screen.findByText(/宿主缺少凭据/)
     expect(document.body.textContent).not.toContain('secret-provider-body')
   })
@@ -103,14 +157,16 @@ describe('manual sync controls', () => {
     await screen.findByRole('menuitem', { name: 'New project' })
     expect(screen.queryByRole('menuitem', { name: 'Old project' })).toBeNull()
   })
-  it('a rejected read-only connection test never displays success even when credentials exist', async () => {
+  it('the roster row owns the enable switch, not the editor', async () => {
     const api = face()
-    api.testSyncConnection = async () => ({ ok: false, credentialPresent: true, error: { code: 'AuthDenied', scope: 'connection', problem: '', cause: '', action: '', docKey: 'permissions', retryable: false } })
-    render(<SyncSettings face={api} t={t} workspaces={[]} onClose={() => {}} onSaved={() => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: '配置: TAPD' }))
-    fireEvent.click(screen.getByRole('button', { name: '测试只读连接' }))
-    await screen.findByText('AuthDenied')
-    expect(screen.queryByText('只读连接测试成功，不代表有回写权限。')).toBeNull()
+    render(section(api))
+    // The list row carries the switch...
+    const toggle = await screen.findByRole('switch', { name: '启用连接' })
+    expect(toggle).toBeDefined()
+    // ...and the editor that row opens does not duplicate it.
+    fireEvent.click(screen.getByRole('button', { name: '配置: TAPD' }))
+    await screen.findByLabelText('公司 ID')
+    expect(screen.queryByRole('switch', { name: '启用连接' })).toBeNull()
   })
   it('contradictory read and write targets cannot enable a rule', () => {
     const states = [{ id: 'open', label: 'Open' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }]
@@ -131,6 +187,7 @@ describe('manual sync controls', () => {
       sessionSnapshot: () => sessions, subscribeSessions: () => () => {},
       probeWorktree: async () => {}, listInitialEntries: async () => [], initializeGit: async () => {},
       start: async (row: any) => { started.push(row); if (started.length === 1) throw new WorktreeNotGitError('Workspace', 'C:/test', 'not Git') }, t,
+      sync: { listSyncRuns: async () => ({ items: [], total: 0, page: 1, pageSize: 1 }) },
     }
     render(<TaskPanel {...props} />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑: Independent title' }))
@@ -142,43 +199,94 @@ describe('manual sync controls', () => {
     expect(started[1].source?.remoteId).toBe('123')
     expect(started[1].title).toBe('Independent title')
   })
-  it('native settings Escape closes the dialog and returns focus to its trigger', async () => {
-    const user = userEvent.setup()
-    render(<SyncControls face={face()} t={t} workspaces={[]} onComplete={() => {}} />)
-    const trigger = screen.getByRole('button', { name: '同步设置' })
-    await user.click(trigger)
-    await screen.findByRole('dialog')
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(document.activeElement).toBe(trigger)
+  it('the list header offers one split block: create on the body, Sync in the menu', async () => {
+    const api = face(); api.listSyncConnections = async () => []
+    const emptyTasks = { items: [] as readonly unknown[] }
+    const props: any = {
+      list: async () => ({ items: [], total: 0, page: 1, pageSize: 20 }),
+      workspaceSnapshot: () => emptyTasks, subscribeWorkspaces: () => () => {},
+      sessionSnapshot: () => emptyTasks, subscribeSessions: () => () => {},
+      listAgents: async () => [], sync: api, t,
+    }
+    render(<TaskPanel {...props} />)
+    fireEvent.click(await screen.findByRole('button', { name: '新建任务' }))
+    await screen.findByRole('dialog', { name: '新建任务' })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    // No standing explanation of sync, and no settings entry, on the list page.
+    expect(screen.queryByRole('button', { name: '任务同步' })).toBeNull()
+    expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
+    expect(screen.queryByText(/双方都改动时/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '同步' }))
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+  })
+  it('the settings page is an inline section, not a modal, and keeps its two tabs', async () => {
+    render(section(face()))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const tabs = await screen.findByRole('tab', { name: /连接/ })
+    expect(tabs.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: /规则/ })).toBeDefined()
   })
   it('settings saves a disabled connection without executing sync', async () => {
     const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
     let saved: unknown
     api.createSyncConnection = async request => { saved = request; return { ...request, id: 'new', revision: 1, credentialPresent: false, instance: 'tapd:1' } as any }
     const start = vi.fn(api.startSync); api.startSync = start
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: '同步设置' }))
-    await screen.findByRole('dialog')
+    render(section(api))
     fireEvent.click(await screen.findByRole('button', { name: '新增连接' }))
     fireEvent.click(screen.getByRole('button', { name: '平台' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'TAPD' }))
-    fireEvent.click(screen.getByRole('button', { name: '鉴权方式' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: '手动 API 凭据' }))
-    fireEvent.change(screen.getByLabelText('连接名称'), { target: { value: 'Work' } })
     fireEvent.change(screen.getByLabelText('公司 ID'), { target: { value: '2001' } })
-    fireEvent.change(screen.getByLabelText('API 用户环境变量名'), { target: { value: 'TAPD_USER' } })
-    fireEvent.change(screen.getByLabelText('API 密码环境变量名'), { target: { value: 'TAPD_PASS' } })
+    fireEvent.change(screen.getByLabelText('API 用户'), { target: { value: 'TAPD_USER' } })
+    fireEvent.change(screen.getByLabelText('API 密码'), { target: { value: 'TAPD_PASS' } })
     fireEvent.click(screen.getByRole('button', { name: '保存连接' }))
-    await waitFor(() => expect(saved).toEqual({ platform: 'tapd', name: 'Work', companyId: '2001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false, authentication: { mode: 'manual' } }))
+    await waitFor(() => expect(saved).toEqual({
+      platform: 'tapd', name: 'TAPD · 2001', companyId: '2001', userEnv: 'TASK_LIST_TAPD_USER', passwordEnv: 'TASK_LIST_TAPD_PASSWORD',
+      enabled: false, authentication: { mode: 'manual' }, secret: { platform: 'tapd', user: 'TAPD_USER', password: 'TAPD_PASS' },
+    }))
     expect(start).not.toHaveBeenCalled()
+  })
+  it('a typed token lists organizations and the picked id is saved with the credential', async () => {
+    const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
+    api.listSyncOrganizations = async request => {
+      expect(request).toEqual({ token: 'pat-secret' })
+      return [{ id: 'org-1', name: '示例企业' }] as any
+    }
+    let saved: any
+    api.createSyncConnection = async request => { saved = request; return { ...request, id: 'new', revision: 1, credentialPresent: true, instance: 'org-1' } as any }
+    render(section(api))
+    fireEvent.click(await screen.findByRole('button', { name: '新增连接' }))
+    fireEvent.click(screen.getByRole('button', { name: '鉴权方式' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '手动填写（个人访问令牌）' }))
+    fireEvent.change(screen.getByLabelText('个人访问令牌'), { target: { value: 'pat-secret' } })
+    // Opening the organization menu is what fetches the list.
+    fireEvent.click(screen.getByRole('button', { name: '组织' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '示例企业' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存连接' }))
+    await waitFor(() => expect(saved).toEqual({
+      platform: 'yunxiao', name: '云效 · 示例企业', mode: 'center', regionHost: null, organizationId: 'org-1',
+      tokenEnv: 'TASK_LIST_YUNXIAO_TOKEN', enabled: false, authentication: { mode: 'manual' },
+      secret: { platform: 'yunxiao', token: 'pat-secret' },
+    }))
+  })
+  it('a failed organization read keeps the manual field and never invents an id', async () => {
+    const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
+    api.listSyncOrganizations = async () => { throw { code: 'task-list/sync', message: 'x', details: { code: 'AuthDenied', docKey: 'permissions' } } }
+    render(section(api))
+    fireEvent.click(await screen.findByRole('button', { name: '新增连接' }))
+    fireEvent.click(screen.getByRole('button', { name: '鉴权方式' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '手动填写（个人访问令牌）' }))
+    fireEvent.change(screen.getByLabelText('个人访问令牌'), { target: { value: 'bad' } })
+    fireEvent.click(screen.getByRole('button', { name: '组织' }))
+    await screen.findByText(/AuthDenied/)
+    expect(screen.getByRole('button', { name: '组织' })).toBeDefined()
   })
   it('results show pending as a subset of failures, never an invented percent', async () => {
     const api = face()
     const partial = { ...completed, status: 'partial' as const, counts: { ...completed.counts, failed: 2, pending: 1 }, discoveryComplete: false, unprocessedKnown: null }
     api.listSyncRuns = async () => ({ items: [partial], total: 1, page: 1, pageSize: 1 })
     api.getSyncRun = async () => partial
-    render(<SyncControls face={api} t={t} workspaces={[]} onComplete={() => {}} />)
+    render(<SyncHarness api={api} />)
     await screen.findByText(/待确认：1/)
     expect(screen.getByText(/发现未完成/).textContent).not.toContain('%')
   })

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { HostFixtureUnavailable, isHostSourceDir, resolveHostSourceDir } from './host-source.ts'
 
 const SOURCE_SEGMENTS = ['packages', 'client', 'ui-primitives', 'src']
-const REQUIRED_FILES = ['ImageLightbox.tsx', 'SegmentedTabs.tsx', 'Toast.tsx', 'Modal.tsx', 'Input.tsx', 'Checkbox.tsx', 'Menu.tsx', 'Button.tsx', 'Tooltip.tsx', 'FileTypeIcon.tsx', 'file-size.ts', join('icons', 'index.tsx')]
+const REQUIRED_FILES = ['ImageLightbox.tsx', 'SegmentedTabs.tsx', 'SegmentedControl.tsx', 'Toast.tsx', 'Modal.tsx', 'Input.tsx', 'Checkbox.tsx', 'Switch.tsx', 'Menu.tsx', 'Button.tsx', 'Tooltip.tsx', 'FileTypeIcon.tsx', 'file-size.ts', join('icons', 'index.tsx')]
 
 function writeSourceDir(dir: string) {
   for (const file of REQUIRED_FILES) {

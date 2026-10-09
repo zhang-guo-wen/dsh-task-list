@@ -7,14 +7,16 @@
 .header h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
 .header h1:focus { outline: none; }
 .toolbar { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+/* The Host's segmented control draws its own track, indicator and radii; only the
+   slot in this toolbar belongs to the report. */
+.periods { flex: none; }
 /* The step arrows flank the date so 上一/下一 reads as one control. */
 .stepper { display: inline-flex; align-items: center; gap: 4px; }
-.periods { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 9px; background: var(--dsw-alias-bg-elevated, #fafbfc); }
 .toolbar input { box-sizing: border-box; height: 32px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 8px; background: var(--dsw-alias-bg-base, #fff); color: inherit; font: inherit; }
 /* The progress text sits in the toolbar and is always present, so a reload never
    changes the report's height. */
 .progress { flex: 1 1 96px; min-width: 0; margin-left: 4px; text-align: right; font-size: 12px; line-height: 1.4; color: var(--dsw-alias-label-tertiary, #81858c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.error { flex: none; margin: 0 0 8px; color: var(--dsw-alias-label-error, #a32929); overflow-wrap: anywhere; }
+.error { flex: none; margin: 0 0 8px; color: var(--dsw-alias-state-error-primary, #ef4444); overflow-wrap: anywhere; }
 
 /* The metric totals are a read-only legend: they carry no pointer affordance and
    never change what the grid draws. A cell's hover card holds every metric. */

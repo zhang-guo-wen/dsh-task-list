@@ -98,7 +98,10 @@ export class OAuthManager {
   begin(connection: OAuthConnection): Promise<BeginAuthResult> { return this.track(this.beginInner(connection)) }
   private async beginInner(connection: OAuthConnection): Promise<BeginAuthResult> {
     if (this.disposed || this.withdrawing.has(connection.id) || this.preparing.has(connection.id) || this.attempts.has(connection.id)) fail()
-    if (!/^[a-z0-9-]{1,100}$/u.test(connection.id) || !connection.instance.trim() || !Number.isInteger(connection.revision) || connection.revision < 1) fail()
+    if (!/^[a-z0-9-]{1,100}$/u.test(connection.id) || !Number.isInteger(connection.revision) || connection.revision < 1) fail()
+    // A 云效 grant is account-scoped, so signing in before its organization is
+    // known is legitimate; a TAPD grant is instance-bound and still requires one.
+    if (connection.platform === 'tapd' && !connection.instance.trim()) fail()
     if (connection.platform === 'tapd' && !this.options.tapdAppConfig) fail()
     const controller = new AbortController()
     this.controllers.add(controller); this.preparing.add(connection.id)
@@ -238,7 +241,12 @@ export class OAuthManager {
     const grant = await this.options.store.read(connectionId)
     const project = await this.options.store.read(connectionId + '-project')
     const error = this.failures.get(connectionId) ?? null
-    return { connectionId, status: attempt ? 'waiting' : grant ? grant.expiresAt > this.options.now() ? 'authorized' : 'expired' : error ? 'failed' : 'signed-out', attemptId: attempt?.id ?? null, expiresAt: attempt?.expiresAt ?? grant?.expiresAt ?? null, accountLabel: grant?.accountLabel ?? null, resourceIds: [...new Set([...(grant?.resourceIds ?? []), ...(project?.resourceIds ?? [])])], projectAccess: project && project.expiresAt > this.options.now() && project.resourceIds.length > 0 ? 'ready' : 'unverified', error }
+    // A completed exchange outranks a leftover attempt: the official page can
+    // finish while the polling client is closed, and reporting "waiting" for a
+    // sign-in that already succeeded leaves the editor stuck forever.
+    const live = grant !== null && grant.expiresAt > this.options.now()
+    if (live && attempt !== undefined) this.clearAttempt(attempt)
+    return { connectionId, status: live ? 'authorized' : attempt !== undefined ? 'waiting' : grant !== null ? 'expired' : error !== null ? 'failed' : 'signed-out', attemptId: live ? null : attempt?.id ?? null, expiresAt: live ? grant.expiresAt : attempt?.expiresAt ?? grant?.expiresAt ?? null, accountLabel: grant?.accountLabel ?? null, resourceIds: [...new Set([...(grant?.resourceIds ?? []), ...(project?.resourceIds ?? [])])], projectAccess: project && project.expiresAt > this.options.now() && project.resourceIds.length > 0 ? 'ready' : 'unverified', error }
   }
   async cancel(connectionId: string, attemptId: string): Promise<void> {
     const attempt = this.attempts.get(connectionId)

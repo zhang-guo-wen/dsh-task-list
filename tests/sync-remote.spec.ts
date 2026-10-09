@@ -77,6 +77,11 @@ function thrown(fn: () => unknown): { code: string; details: { code: string } } 
   try { fn(); return null } catch (error) { return error as { code: string; details: { code: string } } }
 }
 
+/** The async counterpart of {@link thrown}: connection writes now await the Host credential store. */
+async function rejected(fn: () => Promise<unknown>): Promise<{ code: string; details: { code: string } } | null> {
+  try { await fn(); return null } catch (error) { return error as { code: string; details: { code: string } } }
+}
+
 const mapping = {
   typeId: 'story', category: 'story',
   readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
@@ -87,7 +92,7 @@ const mapping = {
 describe('RPC descriptor contract', () => {
   it('exposes sync, authorization, legacy and statistics methods on the taskList namespace', () => {
     const methods = TYPERT_REMOTE.descriptors.map(row => row.method)
-    expect(methods).toHaveLength(31)
+    expect(methods).toHaveLength(32)
     for (const method of SYNC_METHODS) expect(methods).toContain(method)
     for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask']) {
       expect(methods).toContain(method)
@@ -113,12 +118,12 @@ describe('RPC descriptor contract', () => {
 })
 
 describe('SyncService connections and rules', () => {
-  it('creates a disabled connection and returns a safe DTO without raw/env values/baseline/intent', () => {
+  it('creates a disabled connection and returns a safe DTO without raw/env values/baseline/intent', async () => {
     const s = setup()
     const { service } = build(s, noAdapter())
-    const created = service.createSyncConnection(tapdInput)
+    const created = await service.createSyncConnection(tapdInput)
     expect(created.enabled).toBe(false)
-    const listed = service.listSyncConnections()
+    const listed = await service.listSyncConnections()
     expect(listed).toHaveLength(1)
     expect(listed[0]!.platform).toBe('tapd')
     expect(listed[0]!.userEnv).toBe('TAPD_USER')
@@ -130,10 +135,10 @@ describe('SyncService connections and rules', () => {
     )
   })
 
-  it('creates rules whose safe DTO carries no baseline or intent', () => {
+  it('creates rules whose safe DTO carries no baseline or intent', async () => {
     const s = setup()
     const { service } = build(s, noAdapter())
-    const connection = service.createSyncConnection(tapdInput)
+    const connection = await service.createSyncConnection(tapdInput)
     const rule = service.createSyncRule({
       connectionId: connection.id, projectId: '20000001', workspaceId: null, enabled: false,
       filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [mapping],
@@ -145,14 +150,14 @@ describe('SyncService connections and rules', () => {
     expect(json).not.toContain('raw')
   })
 
-  it('rejects a stale revision with a structured LocalVersionConflict error', () => {
+  it('rejects a stale revision with a structured LocalVersionConflict error', async () => {
     const s = setup()
     const { service } = build(s, noAdapter())
-    const created = service.createSyncConnection(tapdInput)
-    const updateError = thrown(() => service.updateSyncConnection({ id: created.id, revision: 999, name: 'X' }))
+    const created = await service.createSyncConnection(tapdInput)
+    const updateError = await rejected(() => service.updateSyncConnection({ id: created.id, revision: 999, name: 'X' }))
     expect(updateError?.code).toBe('task-list/sync')
     expect(updateError?.details.code).toBe('LocalVersionConflict')
-    const deleteError = thrown(() => service.deleteSyncConnection({ id: created.id, revision: 999 }))
+    const deleteError = await rejected(() => service.deleteSyncConnection({ id: created.id, revision: 999 }))
     expect(deleteError?.details.code).toBe('LocalVersionConflict')
   })
 })
@@ -168,12 +173,12 @@ describe('read-only queries and configuration', () => {
     expect(s.store.list().total).toBe(0)
   })
 
-  it('saving configuration never starts a sync run', () => {
+  it('saving configuration never starts a sync run', async () => {
     const s = setup()
     const { service } = build(s, noAdapter())
-    service.createSyncConnection(tapdInput)
+    await service.createSyncConnection(tapdInput)
     service.createSyncRule({
-      connectionId: service.listSyncConnections()[0]!.id, projectId: 'p', workspaceId: null, enabled: false,
+      connectionId: (await service.listSyncConnections())[0]!.id, projectId: 'p', workspaceId: null, enabled: false,
       filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [mapping],
     })
     expect(service.listSyncRuns({ page: 1, pageSize: 20 }).total).toBe(0)
@@ -208,7 +213,7 @@ describe('metadata and connection test', () => {
       const transport = new SyncTransport({ fetch: globalThis.fetch, clock: s.clock, beforeRequest: context.beforeRequest })
       return createYunxiaoAdapter(connection, transport, {})
     })
-    const created = service.createSyncConnection({ platform: 'yunxiao', name: 'Y', mode: 'center', organizationId: 'org', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false })
+    const created = await service.createSyncConnection({ platform: 'yunxiao', name: 'Y', mode: 'center', organizationId: 'org', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false })
     const result = await service.testSyncConnection({ connectionId: created.id })
     expect(result.ok).toBe(false)
     expect(result.credentialPresent).toBe(false)

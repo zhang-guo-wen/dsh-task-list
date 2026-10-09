@@ -21,6 +21,9 @@
 .page[data-report='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 16px; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
+/* The list header's right end: the report button and the create/sync split
+   block, kept on one baseline. */
+.titleActions { display: flex; flex: none; align-items: center; gap: 8px; }
 .primary, .filter, .selected, .textButton, .rowActions button, .dialogActions button, .searchButton, .headerAction {
   font: inherit; cursor: pointer;
 }
@@ -199,7 +202,7 @@
 .initEntryName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .initEntries small { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 11px; white-space: nowrap; }
 .initLoading, .initError { margin: 8px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.initError { color: var(--dsw-alias-label-error, #a32929); }
+.initError { color: var(--dsw-alias-state-error-primary, #ef4444); }
 .initWarning { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 13px; }
 .dialogActions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialogActions button { height: 32px; padding: 0 12px; border-radius: 16px; font-size: 13px; }
@@ -231,5 +234,8 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
 /* A dialog narrower than two usable columns falls back to one field per row. */
 @media (max-width: 560px) {
   .dialog form, .metaSection { grid-template-columns: minmax(0, 1fr); }
+  /* The title keeps its own line; the actions stay together at the right. */
+  .header { flex-wrap: wrap; }
+  .titleActions { width: 100%; justify-content: flex-end; }
 }
 @media (prefers-reduced-motion: reduce) { .row { transition: none; } }

@@ -17,7 +17,8 @@ import { contentText, textContent } from '../content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { TaskContentEditor } from './TaskContentEditor.tsx'
 import type { SyncFace } from './sync/face.ts'
-import { SyncControls } from './sync/SyncControls.tsx'
+import { SyncActions, SyncStatus } from './sync/SyncControls.tsx'
+import { useSyncPanel } from './sync/use-sync-panel.ts'
 
 import { StatisticsCalendar } from './StatisticsCalendar.tsx'
 import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
@@ -27,7 +28,7 @@ interface WorkspaceSnapshot {
 }
 
 /** One Session offered by the session picker. */
-export interface SessionOption { id: string; title: string }
+export interface SessionOption { id: string; title: string; archived: boolean; subagent: boolean; blank: boolean }
 export interface SessionSnapshot { items: readonly SessionOption[] }
 
 export class WorktreeNotGitError extends Error {
@@ -138,6 +139,13 @@ export function TaskPanel({
   const agentPrefilled = useRef(false)
   const sessionState = useSyncExternalStore(subscribeSessions, sessionSnapshot)
   const sessionNames = new Map(sessionState.items.map(row => [row.id, row.title]))
+  // Mirror the Host sidebar's own visibility rule for the picker: internal
+  // subagent runs, retired blank entries, and archived Sessions are not offered.
+  // A Session already linked to this task is still echoed even when hidden.
+  const selectableSessions = sessionState.items.filter(row => !row.archived && !row.subagent && !row.blank)
+  const linkedSession = sessionState.items.find(row => row.id === sessionId)
+  const echoedLinkedSession = linkedSession !== undefined && (linkedSession.archived || linkedSession.subagent || linkedSession.blank)
+    ? linkedSession : undefined
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
   const workspaces = workspaceState.items
   const workspaceNames = new Map(workspaces.map(row => [row.workspaceId, row.title]))
@@ -170,6 +178,10 @@ export function TaskPanel({
       if (mounted.current && generation.current === current) setLoading(false)
     }
   }, [list, filter, query, workspaceFilter, defaultWorkspaceId, page, pageSize])
+
+  // Sync lives on this page as the header's trailing menu row; its results and
+  // refusals render below the toolbar, and nothing is drawn while it is idle.
+  const syncPanel = useSyncPanel(sync, refresh)
 
   // Any change to the request identity (status, phrase, workspace, paging)
   // re-runs this effect and loads the matching page.
@@ -441,8 +453,12 @@ export function TaskPanel({
     <div className={css.inner}>
       <header className={css.header}>
         <h1>{t('title')}</h1>
-        <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
-        <button type="button" className={css.primary} onClick={openCreate}>{t('add')}</button>
+        <div className={css.titleActions}>
+          <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
+          {/* One right-hand block: the body creates a task, the trailing caret
+              opens the menu holding Sync. */}
+          <SyncActions addLabel={t('add')} onCreate={openCreate} panel={syncPanel} t={t} />
+        </div>
       </header>
 
       <div className={css.toolbar}>
@@ -467,7 +483,10 @@ export function TaskPanel({
         </div>
       </div>
 
-      {sync && <SyncControls face={sync} t={t} workspaces={workspaces} onComplete={refresh} />}
+      {/* Sync's own output only: a refused click's prompt, a failure, or a run's
+          results. Idle, it renders nothing — the standing description of what
+          sync does lives on its settings page. */}
+      <SyncStatus panel={syncPanel} t={t} />
 
       {/* With the composer open its own copy is the visible one, so the banner
           stays quiet to avoid announcing the same failure twice. */}
@@ -575,8 +594,9 @@ export function TaskPanel({
               <div className={css.fieldBlock}>
                 <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
                   <option value="">{t('noSession')}</option>
+                  {echoedLinkedSession && <option value={echoedLinkedSession.id}>{echoedLinkedSession.title}{echoedLinkedSession.archived ? ` · ${t('sessionArchived')}` : ''}</option>}
                   {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
-                  {sessionState.items.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
+                  {selectableSessions.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
                 </select></label>
                 <p className={css.fieldHint}>{t('sessionIdHint')}</p>
               </div>

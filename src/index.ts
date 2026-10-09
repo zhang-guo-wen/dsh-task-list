@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { isAbsolute, join } from 'node:path'
-import { HostSyncCredentialStore, type HostCredentialProvider } from './sync/credential-provider.ts'
+import { HostManualSecretStore, HostSyncCredentialStore, type HostCredentialProvider } from './sync/credential-provider.ts'
 import { SyncAuthorizationService } from './sync/authorization-service.ts'
 import { createOAuthCallbackHandler } from './sync/oauth-route.ts'
 import { OAUTH_CALLBACK_PATH } from './sync/oauth.ts'
@@ -18,7 +18,7 @@ import { SyncRunStore } from './sync/run-store.ts'
 import { SyncExecutor } from './sync/executor.ts'
 import { SyncService } from './sync/service.ts'
 import { SyncTransport } from './sync/transport.ts'
-import { createYunxiaoAdapter } from './sync/adapters/yunxiao.ts'
+import { createYunxiaoAdapter, listYunxiaoOrganizations } from './sync/adapters/yunxiao.ts'
 import { createTapdAdapter } from './sync/adapters/tapd.ts'
 import type { AdapterFactory, Clock } from './sync/types.ts'
 
@@ -62,14 +62,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     return credentials?.resolve ? (await credentials.resolve(ref))?.value ?? null : process.env[ref] ?? null
   } }
   const authorization = new SyncAuthorizationService(authOptions)
+  // The typed-credential store and organization discovery need the same Host
+  // services as the OAuth store, so they appear with it rather than at import.
+  const secrets = { store: null as HostManualSecretStore | null }
   const authFiber = ctx.inject(['credentials', 'webServer'], authCtx => {
     const credentials = authCtx.get('credentials') as Credentials
     const webServer = authCtx.get('webServer') as WebServer
     if (typeof credentials?.readRecord !== 'function' || typeof credentials?.modifyRecord !== 'function' || typeof credentials?.deleteRecord !== 'function' || webServer.host !== '127.0.0.1') return
     authOptions.store = new HostSyncCredentialStore(credentials)
+    secrets.store = new HostManualSecretStore(credentials)
     authOptions.callbackBaseUrl = `http://127.0.0.1:${webServer.port}`
     const off = webServer.register({ kind: 'exact', path: OAUTH_CALLBACK_PATH, handler: createOAuthCallbackHandler(authorization, authOptions.callbackBaseUrl) })
-    authCtx.effect(() => () => { off(); authOptions.store = null; authOptions.callbackBaseUrl = null })
+    authCtx.effect(() => () => { off(); authOptions.store = null; authOptions.callbackBaseUrl = null; secrets.store = null })
   })
   const links = new SyncLinkStore(store.db, store, realClock)
   const runs = new SyncRunStore(store.db, realClock)
@@ -78,7 +82,16 @@ export function apply(ctx: Context, config: Config = {}): void {
   // resolve inside the adapter factory and never enter a DTO.
   const adapterFactory: AdapterFactory = async (connection, context) => {
     if (connection.authentication?.mode === 'oauth') {
-      if (connection.platform !== 'tapd' || !context.projectId) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection', field: 'authentication' }))
+      if (connection.platform === 'yunxiao') {
+        // The OAuth access token is the open platform's own credential; it
+        // travels in `x-yunxiao-token`, exactly as a personal access token does.
+        context.beforeRequest()
+        const token = await authorization.yunxiaoToken(connection)
+        if (token === null) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'authentication' }))
+        const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
+        return createYunxiaoAdapter(connection, transport, undefined, { kind: 'yunxiao', token })
+      }
+      if (!context.projectId) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection', field: 'authentication' }))
       context.beforeRequest()
       const token = await authorization.projectToken(connection, context.projectId, context.beforeRequest)
       context.beforeRequest()
@@ -86,12 +99,21 @@ export function apply(ctx: Context, config: Config = {}): void {
       return createTapdAdapter(connection, transport, {}, { kind: 'tapd-project', token, projectIds: [context.projectId] })
     }
     const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
-    return connection.platform === 'yunxiao'
-      ? createYunxiaoAdapter(connection, transport)
-      : createTapdAdapter(connection, transport)
+    // A credential typed in the settings page wins over the referenced
+    // environment variable; both are resolved here, so neither ever enters a DTO.
+    const stored = secrets.store ? await secrets.store.read(connection.id) : null
+    if (connection.platform === 'yunxiao') {
+      return createYunxiaoAdapter(connection, transport, undefined, stored?.platform === 'yunxiao' ? { kind: 'yunxiao', token: stored.token } : undefined)
+    }
+    return createTapdAdapter(connection, transport, {}, stored?.platform === 'tapd' ? { kind: 'tapd', user: stored.user, password: stored.password } : undefined)
   }
   const executor = new SyncExecutor({ tasks: store, config: configStore, links, runs, adapterFactory, clock: realClock })
-  const sync = new SyncService({ tasks: store, config: configStore, links, runs, executor, adapterFactory })
+  const sync = new SyncService({
+    tasks: store, config: configStore, links, runs, executor, adapterFactory,
+    secrets: () => secrets.store ?? undefined,
+    organizations: async token => listYunxiaoOrganizations(token, new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} }), AbortSignal.timeout(30_000)),
+    oauthToken: async id => { const connection = configStore.getConnection(id); return connection === null ? null : authorization.yunxiaoToken(connection) },
+  })
   // Session projections are cached in this plugin's own database; the session
   // read surface is resolved per request, so a later-mounted persistence
   // backend is picked up without reloading the plugin.

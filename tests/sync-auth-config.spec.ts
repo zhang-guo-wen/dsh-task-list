@@ -29,7 +29,8 @@ describe('non-secret connection authorization config', () => {
     migrateSyncSchema(db)
     const columns = db.prepare('PRAGMA table_info(sync_connections)').all() as any[]
     expect(columns.some(column => column.name === 'authentication')).toBe(true)
-    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 9 })
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect((db.prepare('PRAGMA table_info(sync_rules)').all() as any[]).some(column => column.name === 'project_name')).toBe(true)
     tasks.close()
   })
 })

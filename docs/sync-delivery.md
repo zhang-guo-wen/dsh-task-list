@@ -1,6 +1,20 @@
 # 云效 / TAPD 同步代码交付
 
-## 当前状态更新（2026-10-08 授权优先设置）
+## 当前状态更新（2026-10-08 凭据直填与组织下拉）
+
+连接编辑页按反馈重做：① 去掉「返回列表」按钮，表单改为一张带边框的卡片，底部是「取消 / 保存连接」（左侧保留只读测试）；② 去掉连接名称字段（按「平台 · 组织/公司」自动生成），组织/公司 ID 不再需要手记——云效新增 `listSyncOrganizations` RPC，用官方 `GET https://openapi-rdc.aliyuncs.com/users/joinedOrgs` 列出当前令牌加入的组织并做下拉，调用失败时同一格保留手填/粘贴；TAPD 支持粘贴工作台地址自动取出公司 ID；③ 凭据改为在页面直接手写，由 `HostManualSecretStore` 存入宿主凭据存储（记录键 `task-list/connection-<id>-secret`），不写任务数据库、不回显、不再要求配环境变量，环境变量仍作为兼容回退。
+
+验证：`npm test` 548/548、`npm run typecheck`、`npm run build` 通过；真实浏览器 fixture（Edge headless）覆盖无「返回列表」、粘贴地址解析、保存回列表与浅深色/390px。
+
+## 旧状态更新（2026-10-08 同步入口与设置位置调整）
+
+用户要求的三处界面调整已实现：① 任务页头部右侧只剩一块合并按钮——左半「新建任务」、右侧箭头下拉里的「同步」；② 未配置连接时点击「同步」不启动运行，只提示到设置页添加连接，任务页不再常显同步说明文字；③ 同步设置从任务列表的方案内弹窗改为宿主设置面板里的一页「任务同步」（`settings.section`，id `task-list-sync`）。
+
+实现：新增 `src/client/sync/use-sync-panel.ts`（头部菜单与结果区共享状态，点击时才读取连接/规则范围）、`src/client/sync/SyncSection.tsx`（内联设置页，替代原 `SyncSettings.tsx` 弹窗）；`SyncControls.tsx` 改为导出 `SyncActions` 与 `SyncStatus`。新增运行时依赖声明 `@deepseek-ai/dsh-client-ui-settings`（dev + peer + `dsh.client.inject`，仅类型导入，产物中无运行时 require）。
+
+验证：`npm test` 543/543（39 文件）通过；`npm run typecheck` 通过；`npm run build` 已更新 `lib/client.js`；真实浏览器 fixture 回归通过（头部合并按钮/菜单同步/未配置提示/内联设置页/保存/菜单 Escape 与焦点返回/浅深色/390px，Edge headless）。真实账号授权与业务写入仍未联调。
+
+## 旧状态更新（2026-10-08 授权优先设置）
 
 以下旧交付记录保留历史，不代表当前版本或安装状态。当前基础HEAD `2bcbab3abc8352f7a259a5de6d9a7c4377308332`、插件0.6.0、schema9，仍为未提交工作区。实际Web3082已安装链接到本工作区；本会话重载Web以加载OAuthRPC/回调，桌面profile未改变。最新完整测试498/498（35文件，13:17）；类型检查与构建通过。连接/规则两页、三步规则、默认官方授权和手动备用已实现。详细授权支持/限制以[能力矩阵](sync-capabilities.md)为准，真实平台账号授权及业务读写未联调。
 

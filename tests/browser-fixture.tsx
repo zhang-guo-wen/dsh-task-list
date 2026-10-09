@@ -5,6 +5,7 @@ import { fileUpload } from '../src/client/rich-text.ts'
 import type { DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { TaskPanel } from '../src/client/TaskPanel.tsx'
 import { TaskCapture } from '../src/client/TaskCapture.tsx'
+import { SyncSection } from '../src/client/sync/SyncSection.tsx'
 import { zh } from '../src/client/locales.ts'
 import { contentText } from '../src/content.ts'
 import type { TaskRecord, TaskAttachmentUpload } from '../src/types.ts'
@@ -15,7 +16,12 @@ let attachmentReads = 0
 let failAttachmentReads = false
 const snapshot = { items: [{ workspaceId: 'ws-test', title: '测试工作区' }] }
 const subscribe = () => () => {}
-let sessionSnapshot = { items: [{ id: 'session-current', title: '当前中文会话' }, { id: 'session-other', title: '另一个中文会话' }] }
+let sessionSnapshot = { items: [
+  { id: 'session-current', title: '当前中文会话', archived: false, subagent: false, blank: false },
+  { id: 'session-other', title: '另一个中文会话', archived: false, subagent: false, blank: false },
+  { id: 'session-subagent', title: '内部子代理会话', archived: false, subagent: true, blank: false },
+  { id: 'session-blank', title: '未使用的新会话', archived: false, subagent: false, blank: true },
+] }
 const sessionListeners = new Set<() => void>()
 let syncConnections: any[] = []
 let statisticsCalls = 0
@@ -98,6 +104,10 @@ createRoot(document.getElementById('root')!).render(<>
       releaseAttachment: (id: DraftAttachmentId) => draftFiles.delete(id), t } as any} />
   </div>
 </>)
+// The sync settings page as the host settings panel mounts it (inline section,
+// not a task-list modal); the fixture column mimics the panel's content width.
+createRoot(document.getElementById('settings-root')!).render(
+  <SyncSection {...{ sync: face.sync, workspaceSnapshot: () => snapshot, subscribeWorkspaces: subscribe, t, close: () => {} } as any} />)
 Object.assign(window, { fixture: {
   statisticsCalls: () => statisticsCalls,
   failStatistics: (fail: boolean) => { failStatistics = fail },
@@ -110,6 +120,10 @@ Object.assign(window, { fixture: {
   },
   removeSession: (id: string) => {
     sessionSnapshot = { items: sessionSnapshot.items.filter(row => row.id !== id) }
+    sessionListeners.forEach(listener => listener())
+  },
+  setArchived: (id: string, archived: boolean) => {
+    sessionSnapshot = { items: sessionSnapshot.items.map(row => row.id === id ? { ...row, archived } : row) }
     sessionListeners.forEach(listener => listener())
   },
   addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },

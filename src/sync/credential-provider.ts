@@ -1,14 +1,25 @@
 import { syncError, syncRemoteError } from './errors.ts'
+import type { ConnectionSecret } from './dto.ts'
 import type { OAuthGrant, SyncCredentialStore } from './oauth-types.ts'
+/** Opaque JSON payload stored using the Host's supported credential record kind. */
+export interface HostGrantRecord {
+  kind: 'grant'
+  payload: unknown
+}
 /** Structural Host-only service contract. No runtime import is exposed to the browser. */
 export interface HostCredentialProvider {
   readRecord(key: string): Promise<unknown>
-  modifyRecord(key: string, mutate: (record: unknown) => Promise<unknown>): Promise<unknown>
+  modifyRecord(key: string, mutate: (record: unknown) => Promise<HostGrantRecord>): Promise<unknown>
   deleteRecord(key: string): Promise<void>
 }
 function key(id: string): string {
   if (!/^[a-z0-9-]{1,100}$/u.test(id)) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'id' }))
   return `task-list/connection-${id}`
+}
+/** Record key of one connection's user-typed credentials; separate from the OAuth grant record. */
+function secretKey(id: string): string {
+  if (!/^[a-z0-9-]{1,100}$/u.test(id)) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'id' }))
+  return `task-list/connection-${id}-secret`
 }
 function invalid(): never { throw syncRemoteError(syncError('StorageFailure', { scope: 'connection' })) }
 function decode(record: unknown): OAuthGrant | null {
@@ -22,7 +33,10 @@ function decode(record: unknown): OAuthGrant | null {
   if (Object.keys(value).some(field => !allowed.includes(field))) invalid()
   if (value.platform !== 'yunxiao' && value.platform !== 'tapd') invalid()
   if (value.purpose !== 'yunxiao-api' && value.purpose !== 'tapd-user' && value.purpose !== 'tapd-project') invalid()
-  for (const field of ['instance', 'accessToken', 'clientId', 'tokenEndpoint']) if (typeof value[field] !== 'string' || !String(value[field]).trim() || String(value[field]).length > 16384) invalid()
+  for (const field of ['accessToken', 'clientId', 'tokenEndpoint']) if (typeof value[field] !== 'string' || !String(value[field]).trim() || String(value[field]).length > 16384) invalid()
+  // `instance` is identity metadata, and a 云效 authorization is account-scoped:
+  // it may legitimately be recorded before its organization is chosen.
+  if (typeof value.instance !== 'string' || value.instance.length > 16384) invalid()
   if (value.refreshToken !== null && (typeof value.refreshToken !== 'string' || !value.refreshToken.trim())) invalid()
   if (!Number.isSafeInteger(value.connectionRevision) || Number(value.connectionRevision) < 1 || !Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) < 0) invalid()
   if (value.accountLabel !== null && (typeof value.accountLabel !== 'string' || value.accountLabel.length > 200)) invalid()
@@ -42,4 +56,51 @@ export class HostSyncCredentialStore implements SyncCredentialStore {
     return decode(record)
   }
   async remove(id: string): Promise<void> { await this.provider.deleteRecord(key(id)) }
+}
+
+/** Host-side port for one connection's user-typed credentials. */
+export interface ManualSecretStore {
+  read(id: string): Promise<ConnectionSecret | null>
+  write(id: string, secret: ConnectionSecret): Promise<void>
+  remove(id: string): Promise<void>
+}
+
+/** Largest accepted secret; a platform token never approaches it. */
+const SECRET_LIMIT = 4096
+
+function decodeSecret(record: unknown): ConnectionSecret | null {
+  if (record === undefined || record === null) return null
+  if (typeof record !== 'object' || Array.isArray(record)) invalid()
+  const row = record as { kind?: unknown; payload?: unknown }
+  if (row.kind !== 'grant' || !row.payload || typeof row.payload !== 'object' || Array.isArray(row.payload)) invalid()
+  const value = row.payload as Record<string, unknown>
+  if (value.platform === 'yunxiao') {
+    if (Object.keys(value).some(field => field !== 'platform' && field !== 'token')) invalid()
+    if (typeof value.token !== 'string' || !value.token.trim() || value.token.length > SECRET_LIMIT) invalid()
+    return { platform: 'yunxiao', token: value.token }
+  }
+  if (value.platform === 'tapd') {
+    if (Object.keys(value).some(field => field !== 'platform' && field !== 'user' && field !== 'password')) invalid()
+    for (const field of ['user', 'password']) {
+      const text = value[field]
+      if (typeof text !== 'string' || !text.trim() || text.length > SECRET_LIMIT) invalid()
+    }
+    return { platform: 'tapd', user: value.user as string, password: value.password as string }
+  }
+  invalid()
+}
+
+/**
+ * User-typed credentials live in the Host credential store, never in the task
+ * database: the connection row keeps only non-secret configuration, and no
+ * read path ever returns these values to the browser. The Host stores the
+ * plugin-owned payload as a grant record under a separate manual-secret key.
+ */
+export class HostManualSecretStore implements ManualSecretStore {
+  constructor(private readonly provider: HostCredentialProvider) {}
+  async read(id: string): Promise<ConnectionSecret | null> { return decodeSecret(await this.provider.readRecord(secretKey(id))) }
+  async write(id: string, secret: ConnectionSecret): Promise<void> {
+    await this.provider.modifyRecord(secretKey(id), async () => ({ kind: 'grant', payload: decodeSecret({ kind: 'grant', payload: secret }) }))
+  }
+  async remove(id: string): Promise<void> { await this.provider.deleteRecord(secretKey(id)) }
 }

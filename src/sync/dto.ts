@@ -1,18 +1,29 @@
 import type { TaskStatus } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 
-/** The 14 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4). */
+/** The 15 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4/orgs1). */
 export const SYNC_METHODS = [
   'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
   'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
   'getSyncMetadata', 'testSyncConnection',
   'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults',
+  'listSyncOrganizations',
 ] as const
 export type SyncMethod = (typeof SYNC_METHODS)[number]
 
 // --- Connections ---
 
 export type ConnectionAuth = { mode: 'manual' } | { mode: 'oauth'; appId?: string; appSecretRef?: string; callbackUrl?: string }
+
+/**
+ * A user-typed credential value. It travels from the browser to the Host over
+ * the loopback Remote and lands in the Host credential store — never in the
+ * task database, a DTO result, or a log.
+ */
+export type ConnectionSecret =
+  | { platform: 'yunxiao'; token: string }
+  | { platform: 'tapd'; user: string; password: string }
+
 export interface SafeConnectionBase {
   /** Non-secret authentication configuration; omitted legacy values mean manual. */
   authentication?: ConnectionAuth
@@ -65,6 +76,8 @@ export interface SyncRule {
   revision: number
   connectionId: string
   projectId: string
+  /** Display label captured when the rule was written; null means the id is shown. */
+  projectName: string | null
   enabled: boolean
   workspaceId: string | null
   filters: SyncRuleFilters
@@ -203,7 +216,7 @@ export interface Page<T> {
 
 export type EmptyRequest = Record<string, never>
 
-export type CreateConnectionRequest = ({ authentication?: ConnectionAuth } & (
+export type CreateConnectionRequest = ({ authentication?: ConnectionAuth; secret?: ConnectionSecret } & (
   | { platform: 'yunxiao'; name: string; mode: 'center' | 'region'; organizationId: string; regionHost: string | null; tokenEnv: string; enabled: boolean }
   | { platform: 'tapd'; name: string; companyId: string; userEnv: string; passwordEnv: string; enabled: boolean }
 
@@ -211,6 +224,7 @@ export type CreateConnectionRequest = ({ authentication?: ConnectionAuth } & (
 
 export interface UpdateConnectionRequest {
   authentication?: ConnectionAuth
+  secret?: ConnectionSecret
   id: string
   revision: number
   name?: string
@@ -224,6 +238,20 @@ export interface UpdateConnectionRequest {
   passwordEnv?: string
 }
 
+/** One organization the authorized account belongs to (id + display name only). */
+export interface OrganizationChoice {
+  id: string
+  name: string
+}
+
+export interface ListOrganizationsRequest {
+  /** A freshly typed personal access token; omitted to use the connection's stored one. */
+  token?: string
+  /** Saved connection whose stored credential lists the organizations. */
+  connectionId?: string
+}
+
+
 export interface DeleteConnectionRequest {
   id: string
   revision: number
@@ -232,6 +260,7 @@ export interface DeleteConnectionRequest {
 export interface CreateSyncRuleRequest {
   connectionId: string
   projectId: string
+  projectName?: string | null
   workspaceId: string | null
   enabled: boolean
   filters: SyncRuleFilters
@@ -242,6 +271,7 @@ export interface UpdateSyncRuleRequest {
   id: string
   revision: number
   projectId?: string
+  projectName?: string | null
   workspaceId?: string | null
   enabled?: boolean
   filters?: SyncRuleFilters
@@ -284,6 +314,7 @@ export type SyncRequest =
   | { method: 'getSyncRun'; request: GetSyncRunRequest }
   | { method: 'listSyncRuns'; request: ListRunsRequest }
   | { method: 'listSyncItemResults'; request: ListItemResultsRequest }
+  | { method: 'listSyncOrganizations'; request: ListOrganizationsRequest }
 
 // --- Response DTOs (returned by services, produced by fixtures) ---
 
@@ -316,3 +347,4 @@ export type SyncResponse =
   | { method: 'getSyncRun'; response: SafeRun }
   | { method: 'listSyncRuns'; response: Page<SafeRun> }
   | { method: 'listSyncItemResults'; response: Page<SafeItemResult> }
+  | { method: 'listSyncOrganizations'; response: OrganizationChoice[] }

@@ -61,6 +61,22 @@ describe('statistics report', () => {
     expect((container.querySelectorAll('[data-period="day"] [data-cell]')[9] as HTMLElement).textContent).toContain('49.9M')
   })
 
+  it('switches the period with the host segmented control', async () => {
+    const { container } = await open()
+    const periods = screen.getByRole('tablist', { name: zh.statisticsPeriod })
+    const tabs = within(periods).getAllByRole('tab')
+    expect(tabs.map(tab => tab.textContent)).toEqual([zh.statisticsDay, zh.statisticsMonth, zh.statisticsYear])
+    expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
+    // Each tab names the panel it drives, and that panel is the grid the report draws.
+    const panel = screen.getByRole('tabpanel')
+    expect(panel.id).toBe(tabs[0]!.getAttribute('aria-controls'))
+    expect(panel.getAttribute('aria-labelledby')).toBe(tabs[0]!.id)
+    expect(within(panel).getByRole('group', { name: zh.statisticsDay })).toBeTruthy()
+    // The report no longer hand-rolls the switch out of pressed buttons; the host
+    // control owns the track, the indicator and the focus ring.
+    expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
+  })
+
   it('explains the hovered bucket with every metric in a floating card', async () => {
     const { container } = await open()
     expect(screen.queryByRole('tooltip')).toBeNull()
@@ -80,7 +96,7 @@ describe('statistics report', () => {
 
   it('lays a month out under a Monday-first weekday header', async () => {
     const { container } = await open()
-    await userEvent.click(screen.getByRole('button', { name: zh.statisticsMonth }))
+    await userEvent.click(screen.getByRole('tab', { name: zh.statisticsMonth }))
     await waitFor(() => expect(container.querySelector('[data-period="month"]')).toBeTruthy())
     const weekdays = container.querySelectorAll('[data-weekday]')
     expect([...weekdays].map(node => node.textContent)).toEqual(zh.statisticsWeekdays.split(','))
@@ -92,7 +108,7 @@ describe('statistics report', () => {
   it('reloads on a period change and reads logs again only for an explicit refresh', async () => {
     const { calls } = await open()
 
-    await userEvent.click(screen.getByRole('button', { name: zh.statisticsMonth }))
+    await userEvent.click(screen.getByRole('tab', { name: zh.statisticsMonth }))
     await waitFor(() => expect(calls).toHaveLength(2))
     expect(calls[1]!.run.refresh).toBe(false)
     expect(new Date(calls[1]!.request.start).getDate()).toBe(1)

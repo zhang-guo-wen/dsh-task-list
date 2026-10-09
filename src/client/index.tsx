@@ -7,14 +7,17 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type {
   CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
   SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
 } from '../types.ts'
+import type { ListOrganizationsRequest, OrganizationChoice } from '../sync/dto.ts'
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
 import { createSyncFace, type SyncRemoteService } from './sync/face.ts'
+import { SyncSection } from './sync/SyncSection.tsx'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { TaskCapture } from './TaskCapture.tsx'
@@ -32,6 +35,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 interface RemoteService {
   calculateStatistics(request: StatisticsRequest): Promise<RemoteResult<StatisticsSnapshot>>
+  listSyncOrganizations(request: ListOrganizationsRequest): Promise<RemoteResult<OrganizationChoice[]>>
   startStatistics(request: StatisticsRequest & { refresh?: boolean }): Promise<RemoteResult<{ jobId: string }>>
   getStatisticsRun(request: { jobId: string }): Promise<RemoteResult<StatisticsRunState | null>>
   cancelStatistics(request: { jobId: string }): Promise<RemoteResult<{ cancelled: boolean }>>
@@ -54,7 +58,11 @@ interface AgentPresetService {
 /** Projection of the Session Controller catalog the picker needs. */
 interface SessionListLike {
   ids: readonly string[]
-  byId: Record<string, { displayTitle?: string } | undefined>
+  byId: Record<string, { displayTitle?: string; origin?: string; blank?: boolean } | undefined>
+}
+
+interface WorkspaceArchiveSnapshotLike {
+  archivedSessionIds: readonly string[]
 }
 
 interface WorktreeStartResult { sessionId: string; workspaceId: string }
@@ -129,17 +137,32 @@ export async function apply(ctx: Context): Promise<void> {
   const conversation = () => ctx.conversation as ConversationController
   const agentPresets = (): AgentPresetService => ctx.remote.agentPresets as unknown as AgentPresetService
   const workspaceFor = (id: string | null) => ctx.workspaces.list.getSnapshot().items.find(item => item.workspaceId === id)
-  // The Session catalog snapshot changes identity on every publish, so project
-  // it once per snapshot: useSyncExternalStore requires a stable reference.
-  let sessionCache: { source: unknown; value: SessionSnapshot } = { source: undefined, value: { items: [] } }
+  // Project the Session catalog and archive registry together. Archived sessions
+  // are hidden from new selections but remain available for an existing task's
+  // linked-session value to render in the editor. The archive set is re-read on
+  // every render, and the panel already re-renders on Workspace snapshot changes,
+  // so archiving a session while the composer is open drops it on the next pass.
+  const noArchives: readonly string[] = []
+  // Compare archive sets by content, so a caller publishing a fresh array with
+  // the same membership cannot invalidate the projection identity that
+  // useSyncExternalStore depends on.
+  const sameArchiveSet = (left: readonly string[], right: readonly string[]): boolean =>
+    left === right || (left.length === right.length && left.every((id, index) => id === right[index]))
+  let sessionCache: { source: unknown; archives: readonly string[]; value: SessionSnapshot } = { source: undefined, archives: noArchives, value: { items: [] } }
   const sessionSnapshot = (): SessionSnapshot => {
     const snapshot = ctx.sessions.list.getSnapshot() as unknown as SessionListLike | undefined
-    if (sessionCache.source !== snapshot) {
+    const archiveSnapshot = ctx.workspaces.list.getSnapshot() as unknown as WorkspaceArchiveSnapshotLike | undefined
+    const archivedSessionIds = archiveSnapshot?.archivedSessionIds ?? noArchives
+    if (sessionCache.source !== snapshot || !sameArchiveSet(sessionCache.archives, archivedSessionIds)) {
       const ids = snapshot?.ids ?? []
       const byId = snapshot?.byId ?? {}
+      const archived = new Set(archivedSessionIds)
       sessionCache = {
         source: snapshot,
-        value: { items: ids.map(id => ({ id, title: byId[id]?.displayTitle?.trim() || t('sessionUntitled') })) },
+        archives: archivedSessionIds,
+        // `subagent` and `blank` mirror the Host sidebar's own visibility rule:
+        // internal subagent runs and retired blank entries never become picker rows.
+        value: { items: ids.map(id => ({ id, title: byId[id]?.displayTitle?.trim() || t('sessionUntitled'), archived: archived.has(id), subagent: byId[id]?.origin === 'subagent', blank: byId[id]?.blank === true })) },
       }
     }
     return sessionCache.value
@@ -266,6 +289,12 @@ export async function apply(ctx: Context): Promise<void> {
     sync: createSyncFace(() => remote()),
   }
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'task-list', locale: NS, inject: () => face }, TaskPanel))
+  // Sync settings are one page of the host's settings panel rather than a modal
+  // of the task list: the same face and workspace roster, rendered inline.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section', id: 'task-list-sync', order: 26, label: () => t('syncSettings'), locale: NS,
+    inject: () => ({ sync: face.sync, workspaceSnapshot: face.workspaceSnapshot, subscribeWorkspaces: face.subscribeWorkspaces }),
+  }, SyncSection))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
   }, TaskIcon))

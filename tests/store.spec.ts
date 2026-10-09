@@ -81,7 +81,7 @@ describe('independent task database', () => {
       storyPoints: null, tags: [], workspaceId: null, startedAt: null, completedAt: null,
       sendImmediately: false, sessionId: null, agent: null, useWorktree: false, subtasks: [],
     })])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     migrated.close()
   })
 
@@ -123,7 +123,7 @@ describe('independent task database', () => {
 
     const migrated = new TaskStore(file)
     expect(migrated.list().items.map(row => row.title)).toEqual(['Existing'])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     const subtask = migrated.createSubtask({ taskId: task.id, notes: 'Added after migration' })
     expect(migrated.get(task.id)?.subtasks.map(row => row.id)).toEqual([subtask.id])
     migrated.close()
@@ -299,7 +299,7 @@ describe('schema6 migration and safety', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     expect(migrated.get(task.id)).toEqual(task)
     expect(migrated.readAttachments(task.id, task.version)).toEqual([{ id: attachment.id, data: 'YWJj' }])
     migrated.close()
@@ -311,11 +311,11 @@ describe('schema6 migration and safety', () => {
     store.create({ title: 'Keep' })
     store.close()
     const future = new DatabaseSync(file)
-    future.exec('PRAGMA user_version = 10;')
+    future.exec('PRAGMA user_version = 11;')
     future.close()
-    expect(() => new TaskStore(file)).toThrow('unsupported task database version: 10')
+    expect(() => new TaskStore(file)).toThrow('unsupported task database version: 11')
     const check = new DatabaseSync(file)
-    expect((check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(11)
     expect((check.prepare('SELECT COUNT(*) AS c FROM tasks').get() as { c: number }).c).toBe(1)
     check.close()
   })
@@ -409,7 +409,7 @@ describe('schema7 migration from schema6', () => {
     downgradeToOldV6(file, { secondRun: true })
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     // rich content and attachment bytes survive unchanged
     expect(migrated.get(built.taskId)?.content).toEqual(rich)
     expect(migrated.readAttachments(built.taskId, 1)).toEqual([{ id: attachment.id, data: 'YWJj' }])
@@ -438,12 +438,12 @@ describe('schema7 migration from schema6', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     expect(migrated.list().total).toBe(1)
     migrated.close()
 
     const again = new TaskStore(file)
-    expect((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     expect(again.list().total).toBe(1)
     again.close()
   })
@@ -534,7 +534,7 @@ describe('schema8 migration from schema7', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     const migratedColumns = (migrated.db.prepare('PRAGMA table_info(sync_run_items)').all() as { name: string }[]).map(row => row.name)
     expect(migratedColumns).toContain('pending')
     const pendingByCanonical = new Map((migrated.db.prepare('SELECT canonical, pending FROM sync_run_items').all() as { canonical: string; pending: number }[]).map(row => [row.canonical, row.pending]))
@@ -582,7 +582,7 @@ describe('schema8 migration from schema7', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
     const canonical = serializeRemoteKey(shared)
     const pendingFor = (runId: string) => (migrated.db.prepare('SELECT pending FROM sync_run_items WHERE run_id = ? AND canonical = ?').get(runId, canonical) as { pending: number }).pending
     const errorFor = (runId: string) => {

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { StatisticsProgress, StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
 import {
@@ -31,6 +31,9 @@ const METRICS = GROUPS.flat()
 /** Drawn in every heat cell; every other metric appears while its card is hovered. */
 const ALWAYS_SHOWN: readonly MetricKey[] = ['prompts', 'tokens']
 const periodKeys = { day: 'statisticsDay', month: 'statisticsMonth', year: 'statisticsYear' } as const
+/** Period switch order; the id base also names its tabs and the panel they own. */
+const PERIODS = ['day', 'month', 'year'] as const
+const PERIOD_ID = 'statistics-period'
 /** Delay before a period or date change reloads, so typing a year runs once. */
 const RELOAD_DEBOUNCE_MS = 200
 /** How long the pointer must rest on a cell before its hover card opens. */
@@ -215,16 +218,16 @@ export function StatisticsCalendar({ calculate, close, t }: PropsLocale<'taskLis
       <Button variant="outline" onClick={close}>{t('statisticsClose')}</Button>
     </header>
     <div className={css.toolbar}>
-      <div className={css.periods} role="group" aria-label={t('statisticsPeriod')}>
-        {(['day', 'month', 'year'] as const).map(item => <Button key={item} size="sm" variant={period === item ? 'outline' : 'ghost'}
-          aria-pressed={period === item} disabled={busy} onClick={() => {
-            if (item === period) return
-            // Keep the same day visible when the period changes, so 天→月 lands on that month.
-            setPeriod(item)
-            setValue(periodValue(item, anchorOf(value)))
-            closeTip()
-          }}>{t(periodKeys[item])}</Button>)}
-      </div>
+      {/* The Host's own segmented control: it carries the themed track, the sliding
+          selection indicator and the focus ring, so the switch reads in both themes. */}
+      <SegmentedControl id={PERIOD_ID} value={period} label={t('statisticsPeriod')} className={css.periods} disabled={busy}
+        options={PERIODS.map(item => ({ value: item, label: t(periodKeys[item]) }))}
+        onChange={next => {
+          // Keep the same day visible when the period changes, so 天→月 lands on that month.
+          setPeriod(next)
+          setValue(periodValue(next, anchorOf(value)))
+          closeTip()
+        }} />
       <div className={css.stepper}>
         <Button variant="ghost" size="sm" aria-label={stepLabel(-1)} disabled={busy || !valid} onClick={() => step(-1)}>←</Button>
         <input type={period === 'day' ? 'date' : period === 'month' ? 'month' : 'number'} aria-label={t('statisticsDate')}
@@ -247,7 +250,8 @@ export function StatisticsCalendar({ calculate, close, t }: PropsLocale<'taskLis
           <span className={css.totalValue}>{metricText(item.key, snapshot.totals[item.key])}</span>
         </div>)}
       </div>
-      <div className={css.calendar}>
+      {/* The period switch owns this panel: the grid it labels is the tab's target. */}
+      <div className={css.calendar} role="tabpanel" id={`${PERIOD_ID}-${period}-panel`} aria-labelledby={`${PERIOD_ID}-${period}`}>
         {view === 'month' && <div className={css.weekdays} aria-hidden="true">{weekdays.map(day => <span key={day} data-weekday>{day}</span>)}</div>}
         <div className={css.grid} data-period={view} data-columns={columns} data-weeks={view === 'month' ? weeks : undefined}
           role="group" aria-label={t('statisticsDay')} onMouseOver={hoverCell} onMouseLeave={closeTip}>

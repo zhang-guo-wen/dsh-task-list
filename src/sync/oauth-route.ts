@@ -16,6 +16,22 @@ export function createOAuthCallbackHandler(manager: { callback(url: URL): Promis
     let url: URL
     try { url = new URL(req.url, expected.origin) } catch { reply(400, '授权回调无效'); return }
     if (url.origin !== expected.origin || url.pathname !== OAUTH_CALLBACK_PATH) { reply(400, '授权回调无效'); return }
-    try { await manager.callback(url); reply(200, '授权已完成') } catch { reply(400, '授权未完成或已失效') }
+    try { await manager.callback(url); reply(200, '授权已完成') } catch (error) {
+      // The page names the plugin's own failure code and nothing else: it is the
+      // only channel the browser has back to the operator, and it must never
+      // carry a token, authorization code, or upstream body.
+      reply(400, `授权未完成或已失效（${failureCode(error)}）`)
+    }
   }
+}
+
+/** The plugin's structured error code of a rejected callback, or `unknown`. */
+function failureCode(error: unknown): string {
+  if (error !== null && typeof error === 'object') {
+    const details = (error as { details?: { code?: unknown } }).details
+    if (details !== undefined && typeof details.code === 'string') return details.code
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string') return code
+  }
+  return 'unknown'
 }

@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, Checkbox, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SafeConnection, SyncMetadata, SyncRule, TypeMapping } from '../../sync/dto.ts'
 import type { SyncFace } from './face.ts'
-import type { WorkspaceChoice } from './SyncSettings.tsx'
-import { CandidateChecks, Choice, mappingReady, RuleFields } from './RuleFields.tsx'
+import type { WorkspaceChoice } from './SyncSection.tsx'
+import { projectIdFrom } from './ConnectionSettings.tsx'
+import { MultiChoice, Choice, mappingReady, RuleFields } from './RuleFields.tsx'
 import { SyncFailure, type SyncTranslate } from './SyncResults.tsx'
 import css from './Sync.module.css'
 const emptyFilters = () => ({ assignees: [], typeIds: [], iterationIds: [], statusIds: [] } as SyncRule['filters'])
 
-export function RuleSettings({ rule, connections, face, workspaces, t, onBack, onSaved }: { rule: SyncRule | null; connections: SafeConnection[]; face: SyncFace; workspaces: readonly WorkspaceChoice[]; t: SyncTranslate; onBack: () => void; onSaved: () => Promise<void> }) {
+export function RuleSettings({ rule, connections, face, workspaces, t, onBack, onSaved, onDeleted }: { rule: SyncRule | null; connections: SafeConnection[]; face: SyncFace; workspaces: readonly WorkspaceChoice[]; t: SyncTranslate; onBack: () => void; onSaved: () => Promise<void>; onDeleted?: () => Promise<void> }) {
   const [step, setStep] = useState(1)
   const [connectionId, setConnectionId] = useState(rule?.connectionId ?? connections[0]?.id ?? '')
   const [projectId, setProjectId] = useState(rule?.projectId ?? '')
@@ -19,6 +20,7 @@ export function RuleSettings({ rule, connections, face, workspaces, t, onBack, o
   const [loading, setLoading] = useState(false)
   const [enabled, setEnabled] = useState(rule?.enabled ?? false)
   const [busy, setBusy] = useState(false)
+  const [armed, setArmed] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const generation = useRef(0)
   const mounted = useRef(true)
@@ -60,40 +62,53 @@ export function RuleSettings({ rule, connections, face, workspaces, t, onBack, o
     if (saving.current || !scopeReady || enabled && !ready) return
     saving.current = true; setBusy(true); setError(null)
     try {
-      const values = { projectId, workspaceId: workspaceId || null, enabled, filters, mappings }
+      // The project's display name travels with the rule, so the roster can name
+      // it later without asking the platform again.
+      const projectName = metadata?.projects.find(item => item.id === projectId)?.label.trim() || null
+      const values = { projectId, projectName, workspaceId: workspaceId || null, enabled, filters, mappings }
       if (rule) await face.updateSyncRule({ id: rule.id, revision: rule.revision, ...values })
       else await face.createSyncRule({ connectionId, ...values })
       await onSaved(); if (mounted.current) onBack()
     } catch (failure) { if (mounted.current) setError(failure) }
     finally { saving.current = false; if (mounted.current) setBusy(false) }
   }
+  /** Two-step removal: the button arms on the first click, deletes on the second. */
+  const remove = async () => {
+    if (!rule || !onDeleted || busy) return
+    if (!armed) { setArmed(true); return }
+    setBusy(true); setError(null)
+    try {
+      await face.deleteSyncRule({ id: rule.id, revision: rule.revision })
+      await onDeleted()
+    } catch (failure) { setError(failure) }
+    finally { if (mounted.current) setBusy(false) }
+  }
   return <section className={css.editor}>
-    <div className={css.sectionHeading}><Button size="sm" onClick={onBack}>{t('syncBack')}</Button><h3>{t(rule ? 'edit' : 'syncNewRule')}</h3></div>
+    <h3 className={css.editorTitle}>{t(rule ? 'edit' : 'syncNewRule')}</h3>
     <ol className={css.steps} aria-label={t('syncRule')}>
       {(['syncStepScope', 'syncStepMapping', 'syncStepConfirm'] as const).map((key, index) => <li key={key} aria-current={step === index + 1 ? 'step' : undefined} data-active={step === index + 1}>{t(key)}</li>)}
     </ol>
     {error !== null && <SyncFailure error={error} t={t} />}
+    <div className={css.editorBox}>
     {step === 1 && <>
       <div className={css.formGrid}>
         <Choice label={t('syncConnection')} value={connectionId} options={connections.map(item => ({ id: item.id, label: item.name }))} disabled={Boolean(rule)} onChange={changeConnection} />
-        {connection?.authentication?.mode === 'oauth' && <label>{t('syncProjectId')}<Input aria-label={t('syncProjectId')} value={projectId} disabled={loading} onChange={event => { generation.current++; setProjectId(event.target.value); setMetadata(null); setFilters(emptyFilters()); setMappings([]); setEnabled(false) }} /></label>}
-        <Choice label={t('syncProject')} value={projectId} options={metadata?.projects ?? (rule ? [{ id: rule.projectId, label: rule.projectId }] : [])} disabled={loading} onChange={id => { setProjectId(id); setFilters(emptyFilters()); setMappings([]); setEnabled(false); void load(connectionId, id) }} />
-        <Choice label={t('workspace')} value={workspaceId} options={[{ id: '', label: t('noWorkspace') }, ...workspaces.map(item => ({ id: item.workspaceId, label: item.title }))]} onChange={setWorkspaceId} />
+        {metadata === null
+          ? <label>{t('syncProjectId')}<Input aria-label={t('syncProjectId')} placeholder={t('syncProjectHint')} value={projectId} disabled={loading}
+            onChange={event => { generation.current++; setProjectId(projectIdFrom(event.target.value, connection?.platform)); setFilters(emptyFilters()); setMappings([]); setEnabled(false) }} /></label>
+          : <Choice label={t('syncProject')} value={projectId} options={metadata.projects} disabled={loading} onChange={id => { setProjectId(id); setFilters(emptyFilters()); setMappings([]); setEnabled(false); void load(connectionId, id) }} />}
       </div>
       <Button disabled={!connection || loading} onClick={() => void load(connectionId, projectId)}>{loading ? t('loading') : t('syncLoadMetadata')}</Button>
-      {metadata && projectId && <>
-        <CandidateChecks label={t('syncTypes')} options={metadata.types} selected={filters.typeIds} onChange={chooseTypes} />
-        <details className={css.alternative}><summary>{t('syncProjectGroup')}</summary>
-          <CandidateChecks label={t('syncAssignees')} options={metadata.members} selected={filters.assignees} onChange={assignees => setFilters({ ...filters, assignees })} />
-          <CandidateChecks label={t('syncIterations')} options={metadata.iterations} selected={filters.iterationIds} onChange={iterationIds => setFilters({ ...filters, iterationIds })} />
-          <CandidateChecks label={t('syncStatuses')} options={[...new Map(metadata.typeCapabilities.flatMap(cap => cap.readStates).map(state => [state.id, state])).values()]} selected={filters.statusIds} onChange={statusIds => setFilters({ ...filters, statusIds })} />
-        </details>
-      </>}
-      <p>{t('syncFilterHint')}</p>
+      {metadata && projectId && <div className={css.formGrid}>
+        <MultiChoice label={t('syncTypes')} options={metadata.types} selected={filters.typeIds} onChange={chooseTypes} empty={t('syncChoose')} />
+        <MultiChoice label={t('syncAssignees')} options={metadata.members} selected={filters.assignees} onChange={assignees => setFilters({ ...filters, assignees })} empty={t('syncChoose')} />
+        <MultiChoice label={t('syncIterations')} options={metadata.iterations} selected={filters.iterationIds} onChange={iterationIds => setFilters({ ...filters, iterationIds })} empty={t('syncChoose')} />
+        <MultiChoice label={t('syncStatuses')} options={[...new Map(metadata.typeCapabilities.flatMap(cap => cap.readStates).map(state => [state.id, state])).values()]} selected={filters.statusIds} onChange={statusIds => setFilters({ ...filters, statusIds })} empty={t('syncChoose')} />
+      </div>}
       {!scopeReady && <p>{t('syncScopeRequired')}</p>}
     </>}
     {step === 2 && <>
-      {mappings.map(mapping => { const capability = metadata?.typeCapabilities.find(cap => cap.typeId === mapping.typeId); return capability && <RuleFields key={mapping.typeId} t={t} mapping={mapping} capability={capability} tapd={connection?.platform === 'tapd'} onChange={next => { setMappings(previous => previous.map(item => item.typeId === next.typeId ? next : item)); setEnabled(false) }} /> })}
+      {mappings.map(mapping => { const capability = metadata?.typeCapabilities.find(cap => cap.typeId === mapping.typeId); return capability && <RuleFields key={mapping.typeId} name={metadata?.types.find(item => item.id === mapping.typeId)?.label} t={t} mapping={mapping} capability={capability} tapd={connection?.platform === 'tapd'} onChange={next => { setMappings(previous => previous.map(item => item.typeId === next.typeId ? next : item)); setEnabled(false) }} /> })}
       {!ready && <p>{t('syncMappingRequired')}</p>}
     </>}
     {step === 3 && <>
@@ -104,13 +119,16 @@ export function RuleSettings({ rule, connections, face, workspaces, t, onBack, o
         <dt>{t('workspace')}</dt><dd>{workspaces.find(item => item.workspaceId === workspaceId)?.title ?? t('noWorkspace')}</dd>
         <dt>{t('syncTypes')}</dt><dd>{filters.typeIds.map(id => metadata?.types.find(item => item.id === id)?.label ?? id).join(', ')}</dd>
       </dl>
-      <div className={css.hint}>{t('syncConflict')}</div>
       <Checkbox label={t('syncEnableRule')} checked={enabled} disabled={!ready || busy} onChange={setEnabled} />
-      <p>{t('syncSaved')}</p>
     </>}
     <div className={css.editorActions}>
-      <Button disabled={busy} onClick={() => step === 1 ? onBack() : setStep(step - 1)}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
-      {step < 3 ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !ready} onClick={() => setStep(step + 1)}>{t('syncNext')}</Button> : <Button variant="primary" disabled={busy || enabled && !ready} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
+      {/* Removal lives inside the rule's own editor, armed by a first click. */}
+      {rule && onDeleted && <Button disabled={busy} onClick={() => void remove()}>{armed ? t('syncDeleteConfirm') : t('syncDeleteRule')}</Button>}
+      <div className={css.editorButtons}>
+        <Button disabled={busy} onClick={() => step === 1 ? onBack() : setStep(step - 1)}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
+        {step < 3 ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !ready} onClick={() => setStep(step + 1)}>{t('syncNext')}</Button> : <Button variant="primary" disabled={busy || enabled && !ready} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
+      </div>
+    </div>
     </div>
   </section>
 }

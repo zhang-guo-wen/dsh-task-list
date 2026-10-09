@@ -1,16 +1,51 @@
-.controls { margin-bottom: 16px; color: var(--dsw-alias-label-primary); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* Header block: one pill split into the create action and its trailing menu
+   handle, matching the list page's own primary button geometry (32px pill). */
+.split { position: relative; display: inline-flex; align-items: stretch; flex: none; }
+.splitAdd {
+  height: 32px; padding: 0 12px; border: 0; border-radius: 16px 0 0 16px;
+  background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff);
+  font: inherit; font-size: 13px; line-height: 20px; white-space: nowrap; cursor: pointer;
+}
+.splitToggle {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 32px; padding: 0;
+  border: 0; border-left: 1px solid #ffffff3d; border-radius: 0 16px 16px 0;
+  background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); cursor: pointer;
+}
+.splitAdd:hover, .splitToggle:hover { opacity: .86; }
+/* The dropdown belongs to the whole block, not to the 28px handle: the handle's
+   wrapper stops being the positioning context, so the card takes the block's
+   left and right edges — never longer than the button above it, and its rows
+   start at the same inset as the button's own label (4px card + 8px row). */
+.split > .splitAnchor { display: inline-flex; position: static; }
+.split > .splitAnchor > .splitMenu { left: 0; right: 0; min-width: 0; max-width: none; }
+/* Sync output under the toolbar: the notice, the failures, and the run card. */
+.status { margin-top: 16px; color: var(--dsw-alias-label-primary); }
+.notice {
+  display: flex; align-items: center; gap: 12px; margin: 0;
+  padding: 10px 12px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary); font-size: 13px;
+}
+.noticeClose { margin-left: auto; flex: none; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.noticeClose:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary); }
 .controls p, .settings p { margin: 8px 0; color: var(--dsw-alias-label-secondary); font-size: 13px; overflow-wrap: anywhere; }
 .results { margin-top: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md, 12px); }
 .resultList { list-style: none; margin: 8px 0; padding: 0; }
 .resultList li { padding: 8px 0; border-bottom: 1px solid var(--dsw-alias-border-l3); display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
-.error { color: var(--dsw-alias-label-error) !important; }
-.modal { width: min(880px, 100%); height: min(680px, 100%); max-height: 100%; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)); }
-.modalContent { min-height: 0; overflow: auto; }
+.error { color: var(--dsw-alias-state-error-primary) !important; }
 .settings { display: grid; gap: 16px; color: var(--dsw-alias-label-primary); }
 .settings fieldset { border: 1px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm, 8px); padding: 12px; min-width: 0; }
 .settings legend { color: var(--dsw-alias-label-primary); }
-.settings label { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; font-size: 13px; }
+.settings label, .field { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; min-width: 0; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+.fieldLabel { font-size: 13px; color: var(--dsw-alias-label-secondary); }
+/* One menu reads as one select, wearing the same metrics as the host Input
+   (32px tall, 8px side padding) so its value lines up with every text field. */
+.choiceAnchor { display: flex; width: 100%; }
+.choiceAnchor > button { width: 100%; height: 32px; padding: 0 8px; justify-content: space-between; }
+.choiceValue { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The account field: the authorized account (or its action) on the control line. */
+.accountRow { display: flex; align-items: center; gap: 8px; height: 32px; min-width: 0; }
+.accountValue { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .choice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 8px 0; font-size: 13px; }
 .candidates { display: flex; flex-wrap: wrap; gap: 8px; }
 .candidates label { flex-direction: row; }
@@ -29,20 +64,32 @@
 .connectionState { color: var(--dsw-alias-label-tertiary); font-size: 12px; white-space: nowrap; }
 .connectionState[data-enabled='true'] { color: var(--dsw-alias-state-business-primary); }
 .hint { margin-top: 22px; padding: 13px 15px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.7; }
-.formGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 20px; margin-bottom: 18px; }
-.formGrid label { margin: 0; min-width: 0; }
-.formGrid .choice { margin: 0; align-items: stretch; }
+.formGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; margin-bottom: 14px; align-items: start; }
+.formGrid label { margin: 8px 0; min-width: 0; }
+.formGrid .field { margin: 8px 0; }
 .alternative { margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l3); }
 .alternative summary { cursor: pointer; font-size: 13px; margin-bottom: 14px; }
-.editor { position: relative; padding-bottom: 58px; }
-.editorActions { position: sticky; bottom: -1px; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 13px 0 0; margin-top: 22px; border-top: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)); z-index: 1; }
-.modalFooter { display: flex; justify-content: space-between; align-items: center; gap: 16px; width: 100%; }
-.modalFooter > span { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.editor { position: relative; padding-bottom: 8px; }
+.editorTitle { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+/* The editor is one bordered card whose own footer holds save/cancel, so the
+   page needs no separate "back to list" affordance. */
+.editorBox { border: 1px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md, 12px); padding: 16px; }
+.resourceRow { display: flex; align-items: flex-end; gap: 10px; margin: 8px 0 18px; }
+.resourceRow .choice { flex: 1; margin: 0; }
+.resourceField { flex: 1; margin: 0; }
+.fullRow { display: block; margin: 8px 0 18px; }
+.editorButtons { display: flex; align-items: center; gap: 8px; }
+.editorActions {
+  display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+  margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l3);
+}
+/* The optional read-only test keeps the left end; save/cancel stay right. */
+.editorActions > .editorButtons { margin-left: auto; }
 .steps { display: flex; gap: 12px; justify-content: space-between; list-style: none; padding: 0 0 15px; margin: 0 0 22px; border-bottom: 1px solid var(--dsw-alias-border-l3); font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .steps li[data-active='true'] { color: var(--dsw-alias-label-primary); font-weight: 600; }
 .summary { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; margin: 20px 0; font-size: 13px; }
 .summary dt { color: var(--dsw-alias-label-secondary); }
 .summary dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
-@media (max-width: 560px) { .formGrid { grid-template-columns: 1fr; } .connectionCard { flex-wrap: wrap; gap: 10px; } .connectionState { margin-left: 50px; } .steps { gap: 6px; font-size: 11px; } .modalFooter > span { max-width: 65%; } }
+@media (max-width: 560px) { .formGrid { grid-template-columns: 1fr; } .connectionCard { flex-wrap: wrap; gap: 10px; } .connectionState { margin-left: 50px; } .steps { gap: 6px; font-size: 11px; } }
 @media (max-width: 560px) { .choice { align-items: stretch; flex-direction: column; } }
 @media (max-width: 430px) { .actions { gap: 6px; } }

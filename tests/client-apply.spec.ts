@@ -29,6 +29,7 @@ describe('client contribution', () => {
     expect(ctx.remote.$mount).toHaveBeenCalledWith(TYPERT_REMOTE)
     expect(register.mock.calls.map(call => call[0])).toEqual([
       expect.objectContaining({ name: 'main', key: 'task-list' }),
+      expect.objectContaining({ name: 'settings.section', id: 'task-list-sync' }),
       expect.objectContaining({ name: 'sidebar.panellist', id: 'task-list' }),
       expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
     ])
@@ -37,7 +38,7 @@ describe('client contribution', () => {
       'startStatistics', 'getStatisticsRun', 'cancelStatistics',
       'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
       'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
-      'getSyncMetadata', 'testSyncConnection', 'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults',
+      'getSyncMetadata', 'testSyncConnection', 'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults', 'listSyncOrganizations',
       'getSyncAuthState', 'beginSyncAuthorization', 'cancelSyncAuthorization', 'disconnectSyncAuthorization',
     ])
     cleanups.forEach(fn => fn())
@@ -49,7 +50,7 @@ describe('client contribution', () => {
 describe('subtasks and sessions', () => {
   interface PanelFace {
     openSession(sessionId: string): void
-    sessionSnapshot(): { items: readonly { id: string; title: string }[] }
+    sessionSnapshot(): { items: readonly { id: string; title: string; archived: boolean }[] }
     subscribeSessions(listener: () => void): () => void
     createSubtask(request: { taskId: string; notes: string }): Promise<unknown>
     updateSubtask(request: { id: string; version: number; notes: string }): Promise<unknown>
@@ -67,7 +68,7 @@ describe('subtasks and sessions', () => {
       locale: { register: () => vi.fn(), bind: () => (key: string) => key },
       effect: (fn: () => (() => void)) => { fn() },
       slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
-      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+      workspaces: { list: { getSnapshot: () => ({ items: [], archivedSessionIds: [] }) } },
     }
   }
 
@@ -86,7 +87,8 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
 
     expect(panel.sessionSnapshot().items).toEqual([
-      { id: 's-2', title: 'sessionUntitled' }, { id: 's-1', title: 'Release notes' },
+      { id: 's-2', title: 'sessionUntitled', archived: false, subagent: false, blank: false },
+      { id: 's-1', title: 'Release notes', archived: false, subagent: false, blank: false },
     ])
     // useSyncExternalStore compares by identity, so one snapshot projects once.
     expect(panel.sessionSnapshot()).toBe(panel.sessionSnapshot())
@@ -108,11 +110,41 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
     const before = panel.sessionSnapshot()
     expect(before.items).toHaveLength(205)
-    expect(before.items[204]).toEqual({ id: 'session-204', title: '较早的中文会话' })
+    expect(before.items[204]).toEqual({ id: 'session-204', title: '较早的中文会话', archived: false, subagent: false, blank: false })
     expect(before.items[0].title).toBe('sessionUntitled')
     snapshot = { ...snapshot, byId: { ...snapshot.byId, 'session-204': { displayTitle: '改名后的会话' } } }
     expect(panel.sessionSnapshot()).not.toBe(before)
     expect(panel.sessionSnapshot().items[204].title).toBe('改名后的会话')
+  })
+
+  it('marks archived sessions from the Workspace registry and re-projects when that set changes', async () => {
+    const snapshot = {
+      ids: ['s-1', 's-2', 's-3', 's-4'],
+      byId: {
+        's-1': { displayTitle: 'Live' }, 's-2': { displayTitle: 'Old' },
+        's-3': { displayTitle: 'Subagent run', origin: 'subagent' }, 's-4': { displayTitle: 'Blank', blank: true },
+      },
+    }
+    let archives: readonly string[] = ['s-2']
+    const ctx = baseContext({})
+    ctx.sessions = { list: { getSnapshot: () => snapshot, subscribe: vi.fn(() => vi.fn()) } }
+    ctx.workspaces = { list: { getSnapshot: () => ({ items: [], archivedSessionIds: archives }) } }
+    await apply(ctx as unknown as Context)
+    const panel = panelOf(ctx)
+
+    expect(panel.sessionSnapshot().items).toEqual([
+      { id: 's-1', title: 'Live', archived: false, subagent: false, blank: false },
+      { id: 's-2', title: 'Old', archived: true, subagent: false, blank: false },
+      { id: 's-3', title: 'Subagent run', archived: false, subagent: true, blank: false },
+      { id: 's-4', title: 'Blank', archived: false, subagent: false, blank: true },
+    ])
+    // An unchanged archive set keeps the projection identity, an archive or
+    // unarchive republishes it so the picker drops or restores the row.
+    const projected = panel.sessionSnapshot()
+    expect(panel.sessionSnapshot()).toBe(projected)
+    archives = ['s-1', 's-2']
+    expect(panel.sessionSnapshot()).not.toBe(projected)
+    expect(panel.sessionSnapshot().items.map(row => row.archived)).toEqual([true, true, false, false])
   })
 
   it('routes subtask edits through the taskList remote namespace', async () => {
@@ -478,7 +510,7 @@ describe('composer capture', () => {
       locale: { register: () => vi.fn(), bind: () => (key: string) => key },
       effect: (fn: () => (() => void)) => { fn() },
       slots: { inject: (_name: string, fn: () => void) => fn(), register },
-      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+      workspaces: { list: { getSnapshot: () => ({ items: [], archivedSessionIds: [] }) } },
     }
     await apply(ctx as unknown as Context)
     const entry = register.mock.calls.find(call => call[0].name === 'conversation.input.right')
@@ -499,7 +531,7 @@ describe('composer capture', () => {
       locale: { register: () => vi.fn(), bind: () => (key: string) => key },
       effect: (fn: () => (() => void)) => { fn() },
       slots: { inject: (_name: string, fn: () => void) => fn(), register },
-      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+      workspaces: { list: { getSnapshot: () => ({ items: [], archivedSessionIds: [] }) } },
     }
     await apply(ctx as unknown as Context)
     const face = register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0]
@@ -525,7 +557,7 @@ describe('sync face', () => {
       locale: { register: () => vi.fn(), bind: () => (key: string) => key },
       effect: (fn: () => (() => void)) => { fn() },
       slots: { inject: (_name: string, fn: () => void) => fn(), register: vi.fn(() => vi.fn()) },
-      workspaces: { list: { getSnapshot: () => ({ items: [] }) } },
+      workspaces: { list: { getSnapshot: () => ({ items: [], archivedSessionIds: [] }) } },
     }
   }
 

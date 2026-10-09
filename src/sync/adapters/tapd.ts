@@ -1,5 +1,5 @@
 import type {
-  RemoteItem, RemoteKey, SyncAdapter, SyncField, SyncPatch, SyncTransport, WriteEvidence, WriteIntent,
+  HostCredentials, RemoteItem, RemoteKey, SyncAdapter, SyncField, SyncPatch, SyncTransport, WriteEvidence, WriteIntent,
 } from '../types.ts'
 import type {
   MetadataScope, Option, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, TypeMapping,
@@ -38,7 +38,7 @@ export function createTapdAdapter(
   connection: SafeConnection,
   transport: SyncTransport,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
-  projectCredential?: { kind: 'tapd-project'; token: string; projectIds: readonly string[] },
+  projectCredential?: HostCredentials,
 ): SyncAdapter {
   if (connection.platform !== 'tapd') {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
@@ -49,9 +49,11 @@ export function createTapdAdapter(
   const companyId = connection.companyId
   const instance = companyId
   const authorization = credentials.kind === 'tapd-project' ? 'Bearer ' + credentials.token : basicAuth(credentials.user, credentials.password)
+  /** The application-project grant, when this adapter runs on one; it bounds workspaces. */
+  const project = credentials.kind === 'tapd-project' ? credentials : undefined
 
   const url = (path: string, params: Record<string, string> = {}): URL => {
-    if (projectCredential && params.workspace_id && !projectCredential.projectIds.includes(params.workspace_id)) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection' }))
+    if (project && params.workspace_id && !project.projectIds.includes(params.workspace_id)) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection' }))
     const built = new URL(`${ORIGIN}${path}`)
     for (const [key, value] of Object.entries(params)) built.searchParams.set(key, value)
     return built
@@ -242,7 +244,7 @@ export function createTapdAdapter(
 
   return {
     async metadata(scope: MetadataScope, signal: AbortSignal): Promise<SyncMetadata> {
-      const projects = projectCredential ? projectCredential.projectIds.map(id => ({ id, label: id })) : await listProjects(signal)
+      const projects = project ? project.projectIds.map(id => ({ id, label: id })) : await listProjects(signal)
       let members: Option[] = []
       let iterations: Option[] = []
       let types: Option[] = []

@@ -20,10 +20,20 @@ export class SyncAuthorizationService {
     if (!connection) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'id' }))
     return connection
   }
+  /**
+   * The identity an authorization is bound to. A 云效 grant is account-scoped,
+   * so choosing or fixing its organization must not throw the sign-in away; a
+   * TAPD grant is instance-bound and still is. The callback check and the
+   * manager's own comparison must use this one definition, or a legitimate
+   * callback is rejected as stale.
+   */
+  private fingerprintOf(connection: SafeConnection): string {
+    return JSON.stringify([connection.platform === 'yunxiao' ? '' : connection.instance, connection.authentication])
+  }
   private async manager(connection: SafeConnection): Promise<OAuthManager> {
     if (this.disposed) throw syncRemoteError(syncError('RunInterrupted', { scope: 'connection' }))
     if (!this.options.store || !this.options.callbackBaseUrl) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'connection' }))
-    const fingerprint = JSON.stringify([connection.instance, connection.authentication])
+    const fingerprint = this.fingerprintOf(connection)
     const existing = this.managers.get(connection.id)
     if (existing?.fingerprint === fingerprint) return existing.manager
     if (existing) { await existing.manager.dispose(); await existing.manager.disconnect(connection.id) }
@@ -38,8 +48,23 @@ export class SyncAuthorizationService {
   }
   async decorate(connection: SafeConnection): Promise<SafeConnection> {
     if (connection.authentication?.mode !== 'oauth') return connection
+    // 云效's OAuth grant is an ordinary access token for the open platform
+    // (documented as user-equivalent and carried by `x-yunxiao-token`), so a
+    // live one makes the connection usable; TAPD needs its project grant.
+    if (connection.platform === 'yunxiao') {
+      // The 云效 token is account-scoped: the organization is only a path
+      // segment, so an authorization stays valid while the organization is
+      // chosen or corrected afterwards.
+      const grant = await this.options.store?.read(connection.id)
+      return { ...connection, credentialPresent: Boolean(grant?.platform === 'yunxiao' && grant.expiresAt > Date.now()) }
+    }
     const grant = await this.options.store?.read(connection.id + '-project')
-    return { ...connection, credentialPresent: Boolean(connection.platform === 'tapd' && grant?.purpose === 'tapd-project' && grant.instance === connection.instance && grant.clientId === connection.authentication.appId && grant.expiresAt > Date.now() && grant.resourceIds.length > 0) }
+    return { ...connection, credentialPresent: Boolean(grant?.purpose === 'tapd-project' && grant.instance === connection.instance && grant.clientId === connection.authentication.appId && grant.expiresAt > Date.now() && grant.resourceIds.length > 0) }
+  }
+  /** The live 云效 access token of an authorized connection, or null when absent/expired. */
+  async yunxiaoToken(connection: SafeConnection): Promise<string | null> {
+    const grant = await this.options.store?.read(connection.id)
+    return grant?.platform === 'yunxiao' && grant.expiresAt > Date.now() ? grant.accessToken : null
   }
   async state({ connectionId }: AuthRequest): Promise<SafeAuthState> {
     const connection = this.connection(connectionId)
@@ -72,7 +97,7 @@ export class SyncAuthorizationService {
     for (const [id, entry] of this.managers) {
       if (!entry.manager.acceptsCallback(url)) continue
       const current = this.connection(id)
-      if (entry.fingerprint !== JSON.stringify([current.instance, current.authentication])) { await entry.manager.dispose(); throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection' })) }
+      if (entry.fingerprint !== this.fingerprintOf(current)) { await entry.manager.dispose(); throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection' })) }
       await entry.manager.callback(url); return
     }
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection' }))

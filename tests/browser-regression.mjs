@@ -68,7 +68,7 @@ try {
   await page.getByRole('button', { name: '报表统计', exact: true }).click()
   await page.locator('[data-period="day"]').waitFor()
   assert.equal(await calls(), 2, 'reopening reloads the report')
-  await page.getByRole('button', { name: '月', exact: true }).click()
+  await page.getByRole('tab', { name: '月', exact: true }).click()
   await page.locator('[data-period="month"]').waitFor()
   await page.waitForFunction(() => window.fixture.statisticsCalls() === 3)
   assert.equal(await page.locator('[data-weekday]').count(), 7)
@@ -82,14 +82,14 @@ try {
   // A short window is the case that used to stretch the cells into a scrollbar.
   await page.setViewportSize({ width: 1080, height: 700 })
   assert.ok((await reportOverflow()) <= 0, 'the month report fits a 700px window')
-  await page.getByRole('button', { name: '天', exact: true }).click()
+  await page.getByRole('tab', { name: '天', exact: true }).click()
   await page.locator('[data-period="day"]').waitFor()
   assert.ok((await reportOverflow()) <= 0, 'the day report fits a 700px window')
-  await page.getByRole('button', { name: '年', exact: true }).click()
+  await page.getByRole('tab', { name: '年', exact: true }).click()
   await page.locator('[data-period="year"]').waitFor()
   assert.ok((await reportOverflow()) <= 0, 'the year report fits a 700px window')
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.getByRole('button', { name: '月', exact: true }).click()
+  await page.getByRole('tab', { name: '月', exact: true }).click()
   await page.locator('[data-period="month"]').waitFor()
   // A read failure surfaces as an alert; the next successful load clears it.
   await page.evaluate(() => window.fixture.failStatistics(true))
@@ -98,19 +98,62 @@ try {
   await page.evaluate(() => window.fixture.failStatistics(false))
   await page.locator('input[type="month"]').fill('2026-10')
   await page.waitForFunction(() => !document.querySelector('[role="alert"]'))
-  await page.evaluate(() => {
-    document.documentElement.style.setProperty('--dsw-alias-label-primary', '#eee')
-    document.documentElement.style.setProperty('--dsw-alias-bg-base', '#181a20')
-    document.documentElement.style.setProperty('--dsw-alias-border-l3', '#45474d')
-    document.documentElement.style.setProperty('--dsw-alias-interactive-bg-hover', '#2c3038')
+  // The Host dark theme itself, not a four-token stand-in: every token the report
+  // reads comes from the fixture's copy of the Host sheets.
+  const theme = mode => page.evaluate(dark => {
+    if (dark) document.body.dataset.dsDarkTheme = 'true'
+    else delete document.body.dataset.dsDarkTheme
+  }, mode === 'dark')
+  /** The control eases between themes, so read a label colour only once it settled. */
+  const settleSwitch = () => page.getByRole('tablist', { name: '统计周期' }).evaluate(async element => {
+    const read = () => [...element.querySelectorAll('[role="tab"]')].map(tab => getComputedStyle(tab).color).join('|')
+    let previous = read()
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 25))
+      const current = read()
+      if (current === previous) return current
+      previous = current
+    }
+    return previous
   })
+  /** Contrast of every period label against the surface it is actually drawn on. */
+  const switchContrast = () => page.getByRole('tablist', { name: '统计周期' }).evaluate(element => {
+    const numbers = value => (value.match(/[\d.]+/g) ?? []).map(Number)
+    const over = (colour, background) => colour.length > 3
+      ? colour.slice(0, 3).map((channel, index) => channel * colour[3] + background[index] * (1 - colour[3]))
+      : colour
+    const luminance = colour => {
+      const channel = value => { const scaled = value / 255; return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4 }
+      return 0.2126 * channel(colour[0]) + 0.7152 * channel(colour[1]) + 0.0722 * channel(colour[2])
+    }
+    const ratio = (one, other) => {
+      const [light, dark] = [luminance(one), luminance(other)].sort((left, right) => right - left)
+      return (light + 0.05) / (dark + 0.05)
+    }
+    const pageSurface = numbers(getComputedStyle(document.querySelector('[data-report="true"]')).backgroundColor)
+    const track = over(numbers(getComputedStyle(element).backgroundColor), pageSurface)
+    const indicator = over(numbers(getComputedStyle(element.firstElementChild).backgroundColor), track)
+    return [...element.querySelectorAll('[role="tab"]')].map(tab => ratio(numbers(getComputedStyle(tab).color),
+      tab.getAttribute('aria-selected') === 'true' ? indicator : track))
+  })
+  await theme('dark')
+  await settleSwitch()
+  // The switch is the Host segmented control, so its track and labels follow the
+  // theme: white-on-white here is the regression this file guards.
+  for (const contrast of await switchContrast()) {
+    assert.ok(contrast >= 4.5, `a period label must stay readable on the switch surface (contrast ${contrast.toFixed(2)})`)
+  }
   await page.screenshot({ path: resolve(root, 'statistics-dark.png'), fullPage: true })
-  await page.evaluate(() => { document.documentElement.removeAttribute('style') })
+  await theme('light')
+  await settleSwitch()
+  for (const contrast of await switchContrast()) {
+    assert.ok(contrast >= 4.5, `a period label must stay readable on the light switch surface (contrast ${contrast.toFixed(2)})`)
+  }
   await page.setViewportSize({ width: 390, height: 844 })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'heatmap should scroll internally on mobile')
   await page.screenshot({ path: resolve(root, 'statistics-mobile.png'), fullPage: true })
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.getByRole('button', { name: '年', exact: true }).click()
+  await page.getByRole('tab', { name: '年', exact: true }).click()
   await page.locator('[data-period="year"]').waitFor()
   assert.equal(await page.locator('[data-period="year"]').getAttribute('data-columns'), '6')
   assert.equal(await page.locator('[data-period="year"] [data-cell]').count(), 12)
@@ -143,6 +186,18 @@ try {
   await page.evaluate(() => window.fixture.renameSession('session-other', '更新后的中文标题'))
   await sessionPicker.getByRole('option', { name: '更新后的中文标题', exact: true }).waitFor({ state: 'attached' })
   assert.equal(await sessionPicker.locator('option:checked').innerText(), '更新后的中文标题')
+  // Archiving the linked session hides it from the list but keeps the historical
+  // link readable: the stored value stays selected, marked as archived, and no
+  // second row for the same session appears.
+  await page.evaluate(() => window.fixture.setArchived('session-other', true))
+  await sessionPicker.getByRole('option', { name: '更新后的中文标题 · 已归档', exact: true }).waitFor({ state: 'attached' })
+  assert.equal(await sessionPicker.locator('option:checked').innerText(), '更新后的中文标题 · 已归档')
+  assert.equal(await sessionPicker.locator('option', { hasText: '更新后的中文标题' }).count(), 1)
+  assert.deepEqual(await sessionPicker.locator('option').allTextContents(), ['不关联会话', '更新后的中文标题 · 已归档', '当前中文会话'])
+  await page.screenshot({ path: resolve(root, 'session-picker-archived-light.png') })
+  await page.evaluate(() => window.fixture.setArchived('session-other', false))
+  await sessionPicker.getByRole('option', { name: '更新后的中文标题', exact: true }).waitFor({ state: 'attached' })
+  assert.deepEqual(await sessionPicker.locator('option').allTextContents(), ['不关联会话', '当前中文会话', '更新后的中文标题'])
   await sessionPicker.selectOption('')
   assert.equal(await editor.locator('strong,b,[class*="bold"]').innerText(), '测试富文本')
   const downloadPromise = page.waitForEvent('download')
@@ -155,14 +210,7 @@ try {
   await page.mouse.move(100, 100)
   await page.getByRole('tooltip').waitFor({ state: 'hidden' })
   await page.screenshot({ path: resolve(root, 'light.png') })
-  await page.evaluate(() => {
-    const root = document.documentElement.style
-    root.setProperty('--dsw-alias-label-primary', '#eee')
-    root.setProperty('--dsw-alias-label-secondary', '#a2a8b3')
-    root.setProperty('--dsw-alias-bg-base', '#181a20')
-    root.setProperty('--dsw-alias-border-l3', '#45474d')
-    root.setProperty('--dsw-alias-interactive-bg-hover', '#303238')
-  })
+  await theme('dark')
   await page.screenshot({ path: resolve(root, 'dark.png') })
   await page.setViewportSize({ width: 420, height: 900 })
   const toolbarBox = await page.getByRole('toolbar', { name: '文字格式' }).boundingBox()
@@ -207,6 +255,23 @@ try {
   assert.ok(!(await editor.innerText()).includes('撤销测试'))
   await editor.press('Control+y')
   assert.ok((await editor.innerText()).includes('撤销测试'))
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  // A new task never offers an archived session, and archiving one while the
+  // dialog is open drops it without reopening the form.
+  await page.getByRole('button', { name: '新建任务', exact: true }).click()
+  const createPicker = page.getByRole('combobox', { name: '关联会话', exact: true })
+  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '当前中文会话', '另一个中文会话'])
+  await page.evaluate(() => window.fixture.setArchived('session-current', true))
+  await page.waitForFunction(() => {
+    const label = [...document.querySelectorAll('label')].find(node => node.textContent?.startsWith('关联会话'))
+    return [...(label?.querySelector('select')?.options ?? [])].every(option => !option.textContent?.includes('当前中文会话'))
+  })
+  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '另一个中文会话'])
+  await page.evaluate(() => window.fixture.setArchived('session-current', false))
+  await page.waitForFunction(() => {
+    const label = [...document.querySelectorAll('label')].find(node => node.textContent?.startsWith('关联会话'))
+    return [...(label?.querySelector('select')?.options ?? [])].some(option => option.textContent?.includes('当前中文会话'))
+  })
   await page.getByRole('button', { name: '取消', exact: true }).click()
   const composer = page.getByRole('textbox', { name: '测试对话输入框' })
   await composer.fill('一起保存文件和图片')
@@ -368,14 +433,7 @@ try {
   await page.getByRole('button', { name: '预览图片: broken.png' }).getByText('图片预览失败，点击重试').waitFor()
   assert.equal(await page.getByRole('button', { name: '保存', exact: true }).isEnabled(), true)
   await page.getByRole('button', { name: '移除附件: broken.png' }).click()
-  await page.evaluate(() => {
-    const root = document.documentElement.style
-    root.setProperty('--dsw-alias-label-primary', '#15171c')
-    root.setProperty('--dsw-alias-label-secondary', '#69717c')
-    root.setProperty('--dsw-alias-bg-base', '#fff')
-    root.setProperty('--dsw-alias-border-l3', '#ccc')
-    root.setProperty('--dsw-alias-interactive-bg-hover', '#eee')
-  })
+  await theme('light')
   await page.screenshot({ path: resolve(root, 'image-thumbnails-light.png') })
   await page.setViewportSize({ width: 420, height: 900 })
   await page.screenshot({ path: resolve(root, 'image-thumbnails-narrow.png') })

@@ -26,7 +26,7 @@ describe('Host Remote parameter contract', () => {
 
   it('exposes sync, authorization, legacy and statistics methods on the taskList namespace', () => {
     const methods = TYPERT_REMOTE.descriptors.map(row => row.method)
-    expect(methods).toHaveLength(31)
+    expect(methods).toHaveLength(32)
     for (const method of SYNC_METHODS) expect(methods).toContain(method)
     for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask']) {
       expect(methods).toContain(method)

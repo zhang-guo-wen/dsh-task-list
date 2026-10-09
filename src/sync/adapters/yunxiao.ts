@@ -1,9 +1,9 @@
 import type {
-  HostRequest, RemoteItem, RemoteKey, SyncAdapter, SyncPatch, SyncTransport,
+  HostCredentials, HostRequest, RemoteItem, RemoteKey, SyncAdapter, SyncPatch, SyncTransport,
   WriteEvidence, WriteIntent,
 } from '../types.ts'
 import type {
-  MetadataScope, Option, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, TypeMapping,
+  MetadataScope, Option, OrganizationChoice, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, TypeMapping,
 } from '../dto.ts'
 import { decodeOptionList, decodeSearchIdentity, decodeWorkflowStatuses, decodeWorkitem, decodeWorkitemFilterIdentity } from './yunxiao-codec.ts'
 import { resolveCredentials } from '../credentials.ts'
@@ -47,16 +47,75 @@ function fieldId(mapping: TypeMapping, field: 'title' | 'status', fallback: stri
 }
 
 /**
+ * Official 云效 endpoint listing the organizations one credential can see. The
+ * standard-proprietary family is the one that answers here (same origin and
+ * `x-yunxiao-token` header as every Projex call); the Alibaba Cloud OpenAPI
+ * name of the same operation does not exist on this host and redirects away.
+ */
+const ORGANIZATIONS_URL = 'https://openapi-rdc.aliyuncs.com/oapi/v1/platform/organizations'
+
+/**
+ * Decode the organization list. The envelope differs between the documented
+ * OpenAPI shape and the standard-proprietary one this host serves, so every
+ * known carrier of the array is accepted and only `id`/`name` pairs survive.
+ */
+function decodeOrganizations(raw: unknown): OrganizationChoice[] {
+  const rows = organizationRows(raw)
+  if (rows === null) fail('organizations')
+  return rows.map(row => {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) fail('organizations')
+    const value = row as Record<string, unknown>
+    const id = value.id
+    if (typeof id === 'string' && id.trim()) return { id: id.trim(), name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : id.trim() }
+    if (typeof id === 'number' && Number.isSafeInteger(id)) return { id: String(id), name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : String(id) }
+    fail('organizations')
+  })
+}
+
+/** The row array of one organization response, or null when the body carries none. */
+function organizationRows(raw: unknown): unknown[] | null {
+  // This endpoint answers with a bare JSON array (verified against the real
+  // service); the wrapped shapes stay for the documented envelope of the same
+  // operation on other deployments.
+  if (Array.isArray(raw)) return raw
+  if (typeof raw !== 'object' || raw === null) return null
+  const body = raw as Record<string, unknown>
+  for (const key of ['organizations', 'result', 'content', 'data', 'items']) {
+    const value = body[key]
+    if (Array.isArray(value)) return value
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const nested = value as Record<string, unknown>
+      for (const inner of ['organizations', 'content', 'data', 'items']) {
+        if (Array.isArray(nested[inner])) return nested[inner] as unknown[]
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * List the organizations a 云效 personal access token can see. The token is
+ * used for this one request and never stored or returned.
+ */
+export async function listYunxiaoOrganizations(token: string, transport: SyncTransport, signal: AbortSignal): Promise<OrganizationChoice[]> {
+  if (!token.trim()) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'token' }))
+  const response = await transport.read({ url: new URL(ORGANIZATIONS_URL), method: 'GET', headers: { 'x-yunxiao-token': token }, readOnly: true }, signal)
+  return decodeOrganizations(response.value)
+}
+
+/**
  * Build a Yunxiao (modern Projex) adapter for one center connection. The token
- * is resolved from the referenced environment variable inside the factory, so a
- * missing credential fails before any network request and the token never
- * enters a DTO. Region mode has no documented origin in the transport
- * allowlist, so it is rejected explicitly rather than guessing a host.
+ * is the Host-resolved credential when one was typed in the settings page, and
+ * otherwise the referenced environment variable; either way a missing
+ * credential fails before any network request and the token never enters a DTO.
+ * Region mode has no documented origin in the transport allowlist, so it is
+ * rejected explicitly rather than guessing a host.
  */
 export function createYunxiaoAdapter(
   connection: SafeConnection,
   transport: SyncTransport,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+  stored?: HostCredentials,
 ): SyncAdapter {
   if (connection.platform !== 'yunxiao') {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
@@ -64,7 +123,7 @@ export function createYunxiaoAdapter(
   if (connection.mode === 'region') {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'regionHost' }))
   }
-  const credentials = resolveCredentials(connection, env)
+  const credentials = stored ?? resolveCredentials(connection, env)
   if (credentials.kind !== 'yunxiao') {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
   }

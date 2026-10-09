@@ -4,9 +4,9 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { syncError, syncRemoteError } from '../../sync/errors.ts'
 import type {
   CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
-  DeleteResult, GetSyncRunRequest, ListItemResultsRequest, ListRunsRequest, MetadataScope,
-  Page, SafeConnection, SafeItemResult, SafeRun, StartSyncResult, SyncMetadata, SyncRule,
-  TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  DeleteResult, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest, ListRunsRequest,
+  MetadataScope, OrganizationChoice, Page, SafeConnection, SafeItemResult, SafeRun, StartSyncResult,
+  SyncMetadata, SyncRule, TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
 } from '../../sync/dto.ts'
 
 /** The mounted sync Remote methods; every method folds failures into a `RemoteResult`. */
@@ -29,6 +29,7 @@ export interface SyncRemoteService {
   getSyncRun(request: GetSyncRunRequest): Promise<RemoteResult<SafeRun | null>>
   listSyncRuns(request: ListRunsRequest): Promise<RemoteResult<Page<SafeRun>>>
   listSyncItemResults(request: ListItemResultsRequest): Promise<RemoteResult<Page<SafeItemResult>>>
+  listSyncOrganizations(request: ListOrganizationsRequest): Promise<RemoteResult<OrganizationChoice[]>>
 }
 
 /** Browser-side business values; sync methods mapped 1:1 onto the Remote service. */
@@ -51,6 +52,7 @@ export interface SyncFace {
   getSyncRun(request: GetSyncRunRequest): Promise<SafeRun | null>
   listSyncRuns(request: ListRunsRequest): Promise<Page<SafeRun>>
   listSyncItemResults(request: ListItemResultsRequest): Promise<Page<SafeItemResult>>
+  listSyncOrganizations(request: ListOrganizationsRequest): Promise<OrganizationChoice[]>
 }
 
 /**
@@ -94,5 +96,6 @@ export function createSyncFace(remote: () => SyncRemoteService): SyncFace {
     getSyncRun: request => unwrapSync(remote().getSyncRun(request)),
     listSyncRuns: request => unwrapSync(remote().listSyncRuns(request)),
     listSyncItemResults: request => unwrapSync(remote().listSyncItemResults(request)),
+    listSyncOrganizations: request => authCall(() => remote().listSyncOrganizations(request)),
   }
 }

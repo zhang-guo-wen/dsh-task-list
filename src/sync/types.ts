@@ -129,8 +129,16 @@ export type FinalizeItem = {
   result: SafeItemResult
 }
 
-/** Host-side credentials resolved from environment variables; never exported to the browser. */
-export type HostCredentials = { kind: 'yunxiao'; token: string } | { kind: 'tapd'; user: string; password: string }
+/**
+ * Host-side credentials; never exported to the browser. `yunxiao`/`tapd` are
+ * the plain Basic/token pairs (typed in the settings page or read from the
+ * referenced environment variable); `tapd-project` is the application-project
+ * Bearer token the OAuth flow mints for one workspace.
+ */
+export type HostCredentials =
+  | { kind: 'yunxiao'; token: string }
+  | { kind: 'tapd'; user: string; password: string }
+  | { kind: 'tapd-project'; token: string; projectIds: readonly string[] }
 
 /** An outbound request an adapter builds; no raw URL or auth ever enters through the RPC. */
 export type HostRequest = {
