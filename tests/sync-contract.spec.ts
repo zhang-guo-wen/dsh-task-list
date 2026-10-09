@@ -130,13 +130,14 @@ describe('parseSyncRequest closed request parsing', () => {
     expect(item.key.id).toBe(giant)
   })
 
-  it('parses all 15 methods into discriminated requests', () => {
-    expect(SYNC_METHODS).toHaveLength(15)
+  it('parses all 18 methods into discriminated requests', () => {
+    expect(SYNC_METHODS).toHaveLength(18)
     const expected: SyncMethod[] = [
       'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
       'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
       'getSyncMetadata', 'testSyncConnection',
       'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults', 'listSyncOrganizations',
+      'listWorkitems', 'listWorkitemFields', 'getWorkitemDescription',
     ]
     expect([...SYNC_METHODS].sort()).toEqual([...expected].sort())
 
@@ -156,6 +157,12 @@ describe('parseSyncRequest closed request parsing', () => {
       ['getSyncRun', { id: 'run1' }],
       ['listSyncRuns', { page: 1, pageSize: 20 }],
       ['listSyncItemResults', { id: 'run1', page: 1, pageSize: 20 }],
+      ['listWorkitems', {
+        connectionId, projectId: 'space-1', categories: 'Req', page: 1, perPage: 20,
+        fields: ['serialNumber', 'subject'], customFieldIds: [], orderBy: 'gmtCreate', sort: 'desc',
+      }],
+      ['listWorkitemFields', { connectionId, projectId: 'space-1', category: 'Req' }],
+      ['getWorkitemDescription', { connectionId, projectId: 'space-1', id: 'w1' }],
     ]
     for (const [method, value] of cases) {
       expect(parseSyncRequest(method, value).method).toBe(method)

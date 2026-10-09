@@ -2,14 +2,17 @@ import { DOC_KEYS, SYNC_ERRORS, syncError, syncRemoteError } from './errors.ts'
 import type {
   ConnectionSecret, CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
   DeleteResult, DocKey, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest,
-  ListRunsRequest, MetadataScope, OptionalFieldCandidate, Option, OrganizationChoice, Page, SafeConnection,
-  SafeItemCategory, SafeItemResult, SafeRun, SafeRunCounts, SafeRunPhase, SafeRunStatus, StartSyncResult,
+  ListRunsRequest, ListWorkitemFieldsRequest, ListWorkitemsRequest, MetadataScope, OptionalFieldCandidate, Option,
+  OrganizationChoice, Page, SafeConnection, SafeItemCategory, SafeItemResult, SafeRun, SafeRunCounts, SafeRunPhase,
+  SafeRunStatus, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage, SafeWorkitemRow, StartSyncResult,
   SyncErrorCode, SyncErrorDto, SyncErrorScope, SyncMetadata, SyncMethod, SyncRequest, SyncResponse, SyncRule,
   SyncRuleFilters, TestConnectionResult, TypeCapabilities, TypeMapping, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  WorkitemConditionGroups, WorkitemFilterCondition, WorkitemFilterOperator, GetWorkitemDescriptionRequest,
 } from './dto.ts'
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../types.ts'
 import type { TaskStatus } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
+import { LIST_FIELDS } from './query/fields.ts'
 
 const CONTROL = /[\u0000-\u001f]/u
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u
@@ -448,6 +451,182 @@ function parseOrganizationChoice(value: unknown): OrganizationChoice {
   return { id: text(scope, object.id, 'organization.id', ID_LIMIT, false), name: text(scope, object.name, 'organization.name', NAME_LIMIT, true) }
 }
 
+// --- read-only work-item queries ---
+
+const WORKITEM_FIELDS = new Set<string>(LIST_FIELDS)
+const ORDER_FIELDS = new Set(['gmtCreate', 'subject', 'status', 'priority', 'assignedTo'])
+const CATEGORIES = /^[A-Za-z]+(?:,[A-Za-z]+)*$/u
+const FILTER_OPERATORS = new Set(['EQUALS', 'CONTAINS', 'BETWEEN'])
+const FILTER_FIELDS = new Set(['assignedTo', 'creator', 'status', 'statusStage', 'sprint', 'workitemType', 'priority', 'tag', 'subject', 'gmtCreate', 'gmtModified', 'updateStatusAt'])
+const DATETIME = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?$/u
+const MAX_CONDITION_GROUPS = 10
+const MAX_CONDITIONS_PER_GROUP = 20
+const MAX_FILTER_VALUES = 50
+const FILTER_VALUE_LIMIT = 200
+const MAX_PER_PAGE = 200
+const MAX_RESULT_WINDOW = 10_000
+const FIELD_NAME_LIMIT = 100
+const FIELD_FORMAT_LIMIT = 32
+const MAX_FIELD_OPTIONS = 200
+/** A work item body can be long; the transport already caps a response at 2 MiB. */
+const CONTENT_LIMIT = 200_000
+
+/** One filter object; the field/operator pair is checked against the verified matrix. */
+function parseWorkitemCondition(scope: SyncErrorScope, value: unknown): WorkitemFilterCondition {
+  const object = parseObject(scope, value, 'conditions')
+  closedKeys(scope, object, new Set(['field', 'operator', 'value', 'toValue']), 'conditions')
+  const field = text(scope, object.field, 'conditions.field', 32, true)
+  if (!FILTER_FIELDS.has(field)) fail(scope, 'conditions.field')
+  const operator = object.operator === undefined ? undefined : text(scope, object.operator, 'conditions.operator', 16, true)
+  if (operator !== undefined && !FILTER_OPERATORS.has(operator)) fail(scope, 'conditions.operator')
+  const values = stringArray(scope, object.value, 'conditions.value', MAX_FILTER_VALUES, FILTER_VALUE_LIMIT)
+  const out: WorkitemFilterCondition = { field, value: values }
+  if (operator !== undefined) out.operator = operator as WorkitemFilterOperator
+  if (object.toValue !== undefined && object.toValue !== null) {
+    const to = text(scope, object.toValue, 'conditions.toValue', FILTER_VALUE_LIMIT, true)
+    if (!DATETIME.test(to)) fail(scope, 'conditions.toValue')
+    out.toValue = to
+  }
+  if (operator === 'BETWEEN') {
+    if (values.length !== 1 || !DATETIME.test(values[0]!) || out.toValue === undefined) fail(scope, 'conditions.value')
+  }
+  return out
+}
+
+function parseWorkitemConditions(scope: SyncErrorScope, value: unknown): WorkitemConditionGroups {
+  if (!Array.isArray(value) || value.length > MAX_CONDITION_GROUPS) fail(scope, 'conditions')
+  return value.map(group => {
+    if (!Array.isArray(group) || group.length > MAX_CONDITIONS_PER_GROUP) fail(scope, 'conditions')
+    return group.map(condition => parseWorkitemCondition(scope, condition))
+  })
+}
+
+function parseListWorkitems(value: unknown): ListWorkitemsRequest {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'listWorkitems')
+  closedKeys(scope, object, new Set([
+    'connectionId', 'projectId', 'categories', 'page', 'perPage', 'fields', 'customFieldIds', 'orderBy', 'sort', 'conditions',
+  ]), 'listWorkitems')
+  const categories = text(scope, object.categories, 'categories', NAME_LIMIT, true)
+  if (!CATEGORIES.test(categories) || categories.split(',').some(part => part.trim() === '')) fail(scope, 'categories')
+  const page = object.page === undefined ? 1 : int(scope, object.page, 'page', 1, Number.MAX_SAFE_INTEGER)
+  const perPage = object.perPage === undefined ? 50 : int(scope, object.perPage, 'perPage', 1, MAX_PER_PAGE)
+  // The service refuses a window it knows the platform rejects, before any request.
+  if (page * perPage > MAX_RESULT_WINDOW) fail(scope, 'page')
+  const orderBy = object.orderBy === undefined ? 'gmtCreate' : text(scope, object.orderBy, 'orderBy', 32, true)
+  if (!ORDER_FIELDS.has(orderBy)) fail(scope, 'orderBy')
+  const sort = object.sort === undefined ? 'desc' : text(scope, object.sort, 'sort', 8, true)
+  if (sort !== 'asc' && sort !== 'desc') fail(scope, 'sort')
+  const fields = object.fields === undefined ? ['*'] : stringArray(scope, object.fields, 'fields', LIST_FIELDS.length, 32)
+  for (const field of fields) if (field !== '*' && !WORKITEM_FIELDS.has(field)) fail(scope, 'fields')
+  return {
+    connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
+    projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
+    categories,
+    page,
+    perPage,
+    fields,
+    customFieldIds: object.customFieldIds === undefined ? [] : stringArray(scope, object.customFieldIds, 'customFieldIds', 100, ID_LIMIT),
+    orderBy: orderBy as ListWorkitemsRequest['orderBy'],
+    sort,
+    ...(object.conditions === undefined ? {} : { conditions: parseWorkitemConditions(scope, object.conditions) }),
+  }
+}
+
+/** One projected row: only the supported fields, each a bounded JSON value. */
+function parseWorkitemRow(value: unknown): SafeWorkitemRow {
+  const scope: SyncErrorScope = 'item'
+  const object = parseObject(scope, value, 'workitem')
+  closedKeys(scope, object, WORKITEM_FIELDS, 'workitem')
+  if (!isJsonValue(object)) fail(scope, 'workitem')
+  return object
+}
+
+function parseWorkitemPage(value: unknown): SafeWorkitemPage {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'listWorkitems')
+  closedKeys(scope, object, new Set(['items', 'page', 'perPage', 'total', 'totalPages', 'fields']), 'listWorkitems')
+  return {
+    items: object.items === undefined ? [] : arrayOf(scope, object.items, 'listWorkitems.items', parseWorkitemRow),
+    page: int(scope, object.page, 'listWorkitems.page', 1, Number.MAX_SAFE_INTEGER),
+    perPage: int(scope, object.perPage, 'listWorkitems.perPage', 1, MAX_PER_PAGE),
+    total: object.total === null || object.total === undefined ? null : int(scope, object.total, 'listWorkitems.total', 0, Number.MAX_SAFE_INTEGER),
+    totalPages: object.totalPages === null || object.totalPages === undefined ? null : int(scope, object.totalPages, 'listWorkitems.totalPages', 0, Number.MAX_SAFE_INTEGER),
+    fields: object.fields === undefined ? [] : stringArray(scope, object.fields, 'listWorkitems.fields', LIST_FIELDS.length, 32),
+  }
+}
+
+/** List the selectable fields of one project category (native + custom). */
+function parseListWorkitemFields(value: unknown): ListWorkitemFieldsRequest {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'listWorkitemFields')
+  closedKeys(scope, object, new Set(['connectionId', 'projectId', 'category']), 'listWorkitemFields')
+  const category = text(scope, object.category, 'category', NAME_LIMIT, true)
+  if (!CATEGORIES.test(category) || category.includes(',')) fail(scope, 'category')
+  return {
+    connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
+    projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
+    category,
+  }
+}
+
+/** One field definition row; options stay bounded so a picker cannot be flooded. */
+function parseWorkitemField(value: unknown): SafeWorkitemField {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'workitemField')
+  closedKeys(scope, object, new Set(['id', 'name', 'format', 'required', 'kind', 'options']), 'workitemField')
+  return {
+    id: text(scope, object.id, 'workitemField.id', ID_LIMIT, true),
+    name: text(scope, object.name, 'workitemField.name', FIELD_NAME_LIMIT, true),
+    format: boundedText(scope, object.format ?? '', 'workitemField.format', FIELD_FORMAT_LIMIT),
+    required: bool(scope, object.required, 'workitemField.required'),
+    kind: boundedText(scope, object.kind ?? '', 'workitemField.kind', FIELD_FORMAT_LIMIT),
+    options: object.options === undefined || object.options === null
+      ? []
+      : arrayOf(scope, Array.isArray(object.options) ? object.options.slice(0, MAX_FIELD_OPTIONS) : object.options, 'workitemField.options', parseWorkitemFieldOption),
+  }
+}
+
+function parseWorkitemFieldOption(value: unknown): { id: string; label: string } {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'workitemFieldOption')
+  closedKeys(scope, object, new Set(['id', 'label']), 'workitemFieldOption')
+  return {
+    id: text(scope, object.id, 'workitemFieldOption.id', ID_LIMIT, true),
+    label: boundedText(scope, object.label, 'workitemFieldOption.label', FIELD_NAME_LIMIT),
+  }
+}
+
+/** Read one work item's body; this is the only surface that carries it. */
+function parseGetWorkitemDescription(value: unknown): GetWorkitemDescriptionRequest {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'getWorkitemDescription')
+  closedKeys(scope, object, new Set(['connectionId', 'projectId', 'id']), 'getWorkitemDescription')
+  return {
+    connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
+    projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
+    id: text(scope, object.id, 'id', ID_LIMIT, true),
+  }
+}
+
+function parseWorkitemDescriptionResult(value: unknown): SafeWorkitemDescriptionResult {
+  const scope: SyncErrorScope = 'query'
+  const object = parseObject(scope, value, 'getWorkitemDescription')
+  closedKeys(scope, object, new Set(['description']), 'getWorkitemDescription')
+  if (object.description === null || object.description === undefined) return { description: null }
+  const description = parseObject(scope, object.description, 'description')
+  closedKeys(scope, description, new Set(['format', 'html', 'plain']), 'description')
+  const format = text(scope, description.format, 'description.format', 16, true)
+  if (format !== 'richtext' && format !== 'markdown' && format !== 'text') fail(scope, 'description.format')
+  return {
+    description: {
+      format,
+      html: description.html === null || description.html === undefined ? null : boundedText(scope, description.html, 'description.html', CONTENT_LIMIT),
+      plain: boundedText(scope, description.plain, 'description.plain', CONTENT_LIMIT),
+    },
+  }
+}
+
 /** Parse and validate one wire request into its method-discriminated closed schema. */
 export function parseSyncRequest(method: SyncMethod, value: unknown): SyncRequest {
   switch (method) {
@@ -466,6 +645,9 @@ export function parseSyncRequest(method: SyncMethod, value: unknown): SyncReques
     case 'listSyncRuns': return { method, request: parseListRuns(value) }
     case 'listSyncItemResults': return { method, request: parseListItemResults(value) }
     case 'listSyncOrganizations': return { method, request: parseListOrganizations(value) }
+    case 'listWorkitems': return { method, request: parseListWorkitems(value) }
+    case 'listWorkitemFields': return { method, request: parseListWorkitemFields(value) }
+    case 'getWorkitemDescription': return { method, request: parseGetWorkitemDescription(value) }
     default: return fail('config', 'method')
   }
 }
@@ -805,6 +987,9 @@ export function parseSyncResponse(method: SyncMethod, value: unknown): SyncRespo
     case 'listSyncRuns': return { method, response: parsePage(value, parseSafeRun, 'run', 'listSyncRuns') }
     case 'listSyncItemResults': return { method, response: parsePage(value, parseSafeItemResult, 'item', 'listSyncItemResults') }
     case 'listSyncOrganizations': return { method, response: arrayOf('connection', value, 'listSyncOrganizations', parseOrganizationChoice) }
+    case 'listWorkitems': return { method, response: parseWorkitemPage(value) }
+    case 'listWorkitemFields': return { method, response: arrayOf('query', value, 'listWorkitemFields', parseWorkitemField) }
+    case 'getWorkitemDescription': return { method, response: parseWorkitemDescriptionResult(value) }
     default: return fail('config', 'method')
   }
 }

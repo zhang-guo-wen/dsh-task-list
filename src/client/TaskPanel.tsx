@@ -17,11 +17,14 @@ import { contentText, textContent } from '../content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { TaskContentEditor } from './TaskContentEditor.tsx'
 import type { SyncFace } from './sync/face.ts'
+import type { ListWorkitemFieldsRequest, ListWorkitemsRequest, SafeWorkitemDescription, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage } from '../sync/dto.ts'
+import { buildWorkitemBody, readFillFields } from './workitem-fill.ts'
 import { SyncActions, SyncStatus } from './sync/SyncControls.tsx'
 import { useSyncPanel } from './sync/use-sync-panel.ts'
 
 import { StatisticsCalendar } from './StatisticsCalendar.tsx'
 import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
+import { MoreTasks } from './MoreTasks.tsx'
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
@@ -66,6 +69,12 @@ export interface TaskFace {
   subscribeWorkspaces(listener: () => void): () => void
   /** Manual sync surface; consumed by the sync UI, not by the task list rows. */
   sync: SyncFace
+  /** One page of remote work items for the "more tasks" page. */
+  listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage>
+  /** The platform's own column catalog for one project category. */
+  listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]>
+  /** One work item's body, read only when a draft needs it. */
+  getWorkitemDescription(request: { connectionId: string; projectId: string; id: string }): Promise<SafeWorkitemDescriptionResult>
 }
 
 type TaskPanelProps = PropsLocale<'taskList'> & InjectFace<TaskFace>
@@ -94,10 +103,12 @@ function contentOf(task: TaskRecord): string {
 export function TaskPanel({
   list, create, update, remove, readAttachments,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces,
-  sessionSnapshot, subscribeSessions, sync, calculateStatistics, t,
+  sessionSnapshot, subscribeSessions, sync, calculateStatistics, listWorkitems, listWorkitemFields, getWorkitemDescription, t,
 }: TaskPanelProps) {
   const [reportsOpen, setReportsOpen] = useState(false)
   const reportButton = useRef<HTMLButtonElement>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreButton = useRef<HTMLButtonElement>(null)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -256,6 +267,31 @@ export function TaskPanel({
     setAgent('')
     setUseWorktree(false)
     setError('')
+    setComposerOpen(true)
+  }
+
+  /**
+   * Open the create composer prefilled from a remote work item. The body is
+   * built from the fields the settings page has checked, and `start` arms the
+   * "start immediately" switch so saving launches the session in one step.
+   */
+  const openDraft = (row: Record<string, unknown>, description: SafeWorkitemDescription | null, mode: 'sync' | 'start') => {
+    setEditing(null)
+    setContent(textContent(buildWorkitemBody(row, description, readFillFields(), t)))
+    setUploads([])
+    setAttachmentBusy(false)
+    setContentValid(true)
+    setStatus('todo')
+    setPriority('medium')
+    setStoryPoints('')
+    setTagsInput('')
+    setWorkspaceId(defaultWorkspaceId ?? '')
+    setSendImmediately(mode === 'start')
+    setSessionId('')
+    setAgent('')
+    setUseWorktree(false)
+    setError('')
+    setMoreOpen(false)
     setComposerOpen(true)
   }
 
@@ -449,12 +485,22 @@ export function TaskPanel({
     </div>
   </main>
 
+  if (moreOpen) return <main className={css.page} data-more="true">
+    <div className={css.inner}>
+      <MoreTasks sync={sync} query={{ listWorkitems, listWorkitemFields, getWorkitemDescription }} onDraft={openDraft} t={t} close={() => {
+        setMoreOpen(false)
+        requestAnimationFrame(() => moreButton.current?.focus())
+      }} />
+    </div>
+  </main>
+
   return <main className={css.page}>
     <div className={css.inner}>
       <header className={css.header}>
         <h1>{t('title')}</h1>
         <div className={css.titleActions}>
           <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
+          <Button className={css.reportButton} variant="outline" ref={moreButton} onClick={() => setMoreOpen(true)}>{t('moreTasksTitle')}</Button>
           {/* One right-hand block: the body creates a task, the trailing caret
               opens the menu holding Sync. */}
           <SyncActions addLabel={t('add')} onCreate={openCreate} panel={syncPanel} t={t} />

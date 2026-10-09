@@ -14,7 +14,7 @@ import type {
   CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
   SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
 } from '../types.ts'
-import type { ListOrganizationsRequest, OrganizationChoice } from '../sync/dto.ts'
+import type { GetWorkitemDescriptionRequest, ListOrganizationsRequest, ListWorkitemFieldsRequest, ListWorkitemsRequest, OrganizationChoice, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage } from '../sync/dto.ts'
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
 import { createSyncFace, type SyncRemoteService } from './sync/face.ts'
 import { SyncSection } from './sync/SyncSection.tsx'
@@ -36,6 +36,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 interface RemoteService {
   calculateStatistics(request: StatisticsRequest): Promise<RemoteResult<StatisticsSnapshot>>
   listSyncOrganizations(request: ListOrganizationsRequest): Promise<RemoteResult<OrganizationChoice[]>>
+  listWorkitems(request: ListWorkitemsRequest): Promise<RemoteResult<SafeWorkitemPage>>
+  listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<RemoteResult<SafeWorkitemField[]>>
+  getWorkitemDescription(request: GetWorkitemDescriptionRequest): Promise<RemoteResult<SafeWorkitemDescriptionResult>>
   startStatistics(request: StatisticsRequest & { refresh?: boolean }): Promise<RemoteResult<{ jobId: string }>>
   getStatisticsRun(request: { jobId: string }): Promise<RemoteResult<StatisticsRunState | null>>
   cancelStatistics(request: { jobId: string }): Promise<RemoteResult<{ cancelled: boolean }>>
@@ -207,6 +210,9 @@ export async function apply(ctx: Context): Promise<void> {
       }
     },
     list: request => unwrap(remote().listTasks(request)),
+    listWorkitems: request => unwrap(remote().listWorkitems(request)),
+    listWorkitemFields: request => unwrap(remote().listWorkitemFields(request)),
+    getWorkitemDescription: request => unwrap(remote().getWorkitemDescription(request)),
     readAttachments: request => unwrap(remote().readTaskAttachments(request)),
     create: request => persistRichTask(request.content, () => unwrap(remote().capabilities({})),
       () => unwrap(remote().createTask(request)), task => unwrap(remote().readTaskAttachments({ id: task.id, version: task.version })), t('storageUpgradeRequired')),

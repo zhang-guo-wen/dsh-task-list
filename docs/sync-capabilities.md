@@ -28,13 +28,38 @@
 | 字段/状态 | `GET .../workitemTypes/{typeId}/fields`、`.../workflows` | 状态候选来自 workflow `statuses`；无状态候选时 `readStates`/`writeStates` 为空、`workflow.readOnly=true` |
 | 更新 | `PUT .../workitems/{id}` | 仅写补丁字段；`subject` 平铺、`description`+`formatType`、`status` 为标量 statusId；`readOnly=false`；2xx 成功不读实体回读，非 2xx 写响应显式拒绝（404→`RemoteUnavailable`、400/422→`WorkflowRejected`、429→`WriteOutcomeUnknown` 写入结果未知需核对而非重发），不回显响应体；写前 `observed.description.roundTrip` 门禁防有损编辑 |
 
+### 只读查询面（“更多任务”页与 RPC `listWorkitems`）
+
+2026-10-09 用真实账号（中心版）实测，非文档推断。实现：`src/sync/query/fields.ts`（字段投影）、`src/sync/query/filters.ts`（conditions）、`src/sync/query/detail.ts`（详情区块解码）、`src/sync/adapters/yunxiao-query.ts`（list/detail 编排）。
+
+| 能力 | 实测结论 |
+| --- | --- |
+| 字段选择 | 平台**没有**字段参数：15 种写法（body 数组/对象/字符串/`*`、`fieldId(s)`、`returnFields`、query 参数…）全部被静默忽略，响应字节数完全一致。因此 `fields` 是**本地投影**：只返回调用方点名的字段，`id` 恒在；`description` 属详情专属，列表请求会 `InvalidConfig` |
+| 字段目录 | RPC `listWorkitemFields`：`GET /projects/{id}/workitemTypes?category=X` 取该类别的工作项类型，再逐个 `GET /projects/{id}/workitemTypes/{typeId}/fields`，按字段 id 合并（首个出现的 name/format 胜出，最多 10 个类型）。返回 `{id,name,format,required,kind,options}`，是本项目真正配置的字段（含 `priority`、`story_points`、`progress`、自定义六位/日期字段），供“表头设置”按平台名字列出；`category` 不接受逗号多值 |
+| 列表字段来源 | search 已返回 `customFieldValues`（25/25 条与详情逐字段一致，仅数组顺序不同）、`labels`/`sprint`/`participants`/`assignedTo`/`status` 等；**只有 `description`（恒 `""`）与 `formatType`（恒 `null`）必须补详情** |
+| `category` | 必填且不能为空（空串/缺省 400「工作项类型不能为空」）；支持逗号多值 `Req,Bug,Task`（一次拿 7908 条）；**不能带空格**（`"Req, Bug"` 静默只取 Req）、大小写敏感（`req` → 0 条） |
+| 分页 | `perPage ≤ 200`；**`page × perPage ≤ 10000`**，超出 400 并提示缩小筛选范围；列表请求在发请求前就拒绝越界窗口 |
+| 排序 | `orderBy` 只接受字符串（`gmtCreate`/`subject`/`status`/`priority`/`assignedTo`）；控制台那种对象形式报 400 `Invalid format for field: orderBy` |
+| 详情区块 | `GET /workitems/{id}`（描述）、`/comments`、`/activities`、`/attachments`、`/relationRecords?relationType=PARENT\|SUB\|ASSOCIATED\|DEPEND_ON\|DEPENDED_BY`（缺 `relationType` 报 400）。某区块失败只记入 `sectionErrors`，其余区块照常返回 |
+| 描述预填 | RPC `getWorkitemDescription`（`GET /workitems/{id}` + `include:['description']`）只返回解包后的 `{format,html,plain}`；“更多任务”行的「启动/同步」仅在设置勾选了「描述」时才调用它，一次一请求 |
+| 筛选字段补充实测（2026-10-09） | `creator`（`user`/`list`，EQUALS）可用（x-total=8，逐条匹配）；`statusStage`（`statusStage`/`list` 与 `status`/`list` 均可，EQUALS）可用（x-total=83，逐条匹配）；`gmtCreate` BETWEEN 可用。**`participants`（`user`/`list` 与 `multiUser`/`list`，CONTAINS）返回 200 且 x-total=0**，而样本工作项确实带该参与人 —— 静默失效，因此界面不提供「参与人」筛选（对照：`assignedTo` 同参数可用）。筛选栏固定「1 个标题搜索 + 最多 2 个条件」，全部放进同一个 `conditionGroups` 组（AND）；可选字段在设置页勾选 |
+| 描述载体 | 真实 `description` 是 **JSON 字符串** `{"htmlValue":"<article…>","jsonMLValue":[…]}`，不是 HTML；列表接口里恒为空。适配器解包后取 `htmlValue`，绝不把 JSON 外壳当正文 |
+| 评论格式 | `contentFormat` 不可信：实测 25/25 为 `RICHTEXT` 但内容不是 HTML（是 Markdown 风格纯文本）；方言按内容首字符判定 |
+| 关联项 | `relationRecords` 只返回 `{id, relationType, resourceType, resourceId, gmtCreate}`，**不含标题/编号**；`resourceType` 实测是类别（`Req`/`Bug`），与文档示例的 `WORKITEM` 不符；取标题需再 `GET /workitems/{id}`（`expandRelations` 有界展开） |
+| 子项 | 无独立接口；用 `relationRecords?relationType=SUB`（实测与 `parentId` 反查一致）；控制台的 `scope:"child"` 开放 API 不认 |
+| 附件 | `/attachments` 返回 `url`（OSS 签名，实测**约 1 分钟有效**，GET 不带 token 可下载）与 `embedUrl`（前端路径，401）；签名 URL 必须即取即用，不落库 |
+| 描述内嵌图片 | **取不到**：`devops.aliyun.com/projex/api/workitem/file/url?fileIdentifier=…` 六种鉴权变体全部 401 `invalid session`；且实测 8 条带图工作项的 `/attachments` 均为 0 条，无法用附件签名 URL 绕过 |
+| 与云效 MCP 的关系 | 官方托管 MCP（`https://openapi-rdc.aliyuncs.com/ai/mcp`）实测 131 个工具，与上述 REST 端点一一对应；其 `search_workitems` 的 `includeDetails` 在 REST 上**被静默忽略**，是 MCP 服务端自己补的详情请求——与插件“按需补详情”是同一做法 |
+
+Fixtures：`tests/fixtures/sync-api/yunxiao-query-*.json` 依据上述实测响应构造（已匿名化：人名、组织/项目/工作项 id、OSS 地址均为占位值），不代表新账号的联调结果。
+
 ### 未确认 / 限制
 
 - **Region 模式不支持**：无官方 origin 证据且 transport 仅放行中心 host；工厂对 `mode=region` 直接报 `InvalidConfig`，不猜测任意 host。
 - **可选字段（priority/tags/storyPoints）禁用**：priority 读取需 field meta、labels GET 不证明 PUT tag key、points 无确切 key；`candidateFields` 为空。`OptionalFieldCandidate` DTO（`dto.ts`）与闭包校验已就位，供后续有证据时填充，控制器评审后再消费。
 - **无 CAS/幂等**：`evidence` 返回 `unknown`，写效果核对属 Task 7。
 - **状态转换**：公开 state 候选不证明转移可执行；写入按映射 ID，被 workflow 拒绝时报 `WorkflowRejected`。
-- **filters 编码**：assignedTo/status 等精确 filter 载荷未证实，采用有界客户端过滤（detail 的 `assignedTo.id`/`sprint.id` + 原始 status/type），无条件筛选时省略 `conditions`，不发未证 payload。`assignedTo` 是官方 GetWorkitem 详情的 `{id,name}` 字段（见 [GetWorkitem](https://help.aliyun.com/zh/yunxiao/developer-reference/getworkitem)），但真实账号响应可能缺省该字段，因此非空过滤下**缺失或畸形**该字段报 `InvalidRemoteResponse`，显式 null 视为未分配，不把“缺字段”当成“零匹配”。
+- **filters 编码（已实测可用）**：`conditions` 为 JSON 字符串 `{"conditionGroups":[[filterObject…]]}`；**组间 OR、组内 AND、`value` 数组内 OR**。filterObject 键为 `fieldIdentifier`/`operator`/`value`/`toValue`/`className`/`format`，实测通过的组合：`assignedTo`(user/list, EQUALS|CONTAINS)、`status`(status/list)、`sprint`(sprint/list)、`workitemType`(workitemType/list)、`priority`(list/list)、`tag`(tag/multiList)、`subject`(string/input)、`gmtCreate|gmtModified|updateStatusAt`(dateTime/input, BETWEEN 需 `toValue`)。空 `conditionGroups` 等于不过滤；裸数组报 400；`advancedConditions`/`extraConditions`/`groupCondition` 被静默忽略。因此发现阶段使用服务端筛选（`ruleConditions`），不再全量拉取后客户端过滤。`assignedTo` 是官方 GetWorkitem 详情的 `{id,name}` 字段（见 [GetWorkitem](https://help.aliyun.com/zh/yunxiao/developer-reference/getworkitem)）。
 
 ### Fixtures 来源
 

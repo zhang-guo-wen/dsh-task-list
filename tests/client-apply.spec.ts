@@ -38,7 +38,7 @@ describe('client contribution', () => {
       'startStatistics', 'getStatisticsRun', 'cancelStatistics',
       'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
       'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
-      'getSyncMetadata', 'testSyncConnection', 'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults', 'listSyncOrganizations',
+      'getSyncMetadata', 'testSyncConnection', 'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults', 'listSyncOrganizations', 'listWorkitems', 'listWorkitemFields', 'getWorkitemDescription',
       'getSyncAuthState', 'beginSyncAuthorization', 'cancelSyncAuthorization', 'disconnectSyncAuthorization',
     ])
     cleanups.forEach(fn => fn())

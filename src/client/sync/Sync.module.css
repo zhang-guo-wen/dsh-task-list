@@ -1,4 +1,9 @@
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* "Prefill a new task with": a compact checkbox grid above the connections. */
+.fillSettings { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px; }
+.fillSettings h3 { margin: 0; font-size: 14px; font-weight: 500; }
+.fillGrid { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.fillRow { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 /* Header block: one pill split into the create action and its trailing menu
    handle, matching the list page's own primary button geometry (32px pill). */
 .split { position: relative; display: inline-flex; align-items: stretch; flex: none; }

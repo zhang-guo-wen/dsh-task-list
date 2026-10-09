@@ -19,8 +19,10 @@ import { SyncExecutor } from './sync/executor.ts'
 import { SyncService } from './sync/service.ts'
 import { SyncTransport } from './sync/transport.ts'
 import { createYunxiaoAdapter, listYunxiaoOrganizations } from './sync/adapters/yunxiao.ts'
+import { createYunxiaoQuery } from './sync/adapters/yunxiao-query.ts'
 import { createTapdAdapter } from './sync/adapters/tapd.ts'
 import type { AdapterFactory, Clock } from './sync/types.ts'
+import type { WorkitemQueryFactory } from './sync/service.ts'
 
 export { TaskStore } from './store.ts'
 export type * from './types.ts'
@@ -108,11 +110,25 @@ export function apply(ctx: Context, config: Config = {}): void {
     return createTapdAdapter(connection, transport, {}, stored?.platform === 'tapd' ? { kind: 'tapd', user: stored.user, password: stored.password } : undefined)
   }
   const executor = new SyncExecutor({ tasks: store, config: configStore, links, runs, adapterFactory, clock: realClock })
+  // The read-only query surface reuses the same credential resolution, but its
+  // gate is a no-op: it never runs inside a sync run's ownership fence.
+  const queryFactory: WorkitemQueryFactory = async connection => {
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
+    const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} })
+    if (connection.authentication?.mode === 'oauth') {
+      const token = await authorization.yunxiaoToken(connection)
+      if (token === null) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'authentication' }))
+      return createYunxiaoQuery(connection, transport, undefined, { kind: 'yunxiao', token })
+    }
+    const stored = secrets.store ? await secrets.store.read(connection.id) : null
+    return createYunxiaoQuery(connection, transport, undefined, stored?.platform === 'yunxiao' ? { kind: 'yunxiao', token: stored.token } : undefined)
+  }
   const sync = new SyncService({
     tasks: store, config: configStore, links, runs, executor, adapterFactory,
     secrets: () => secrets.store ?? undefined,
     organizations: async token => listYunxiaoOrganizations(token, new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} }), AbortSignal.timeout(30_000)),
     oauthToken: async id => { const connection = configStore.getConnection(id); return connection === null ? null : authorization.yunxiaoToken(connection) },
+    queryFactory,
   })
   // Session projections are cached in this plugin's own database; the session
   // read surface is resolved per request, so a later-mounted persistence

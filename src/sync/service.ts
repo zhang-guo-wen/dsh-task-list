@@ -7,15 +7,22 @@ import type { SyncExecutor } from './executor.ts'
 import type { AdapterFactory } from './types.ts'
 import type { TaskStore } from '../store.ts'
 import type { ManualSecretStore } from './credential-provider.ts'
+import type { YunxiaoQuery } from './adapters/yunxiao-query.ts'
+import type { WorkitemFilterField } from './query/filters.ts'
 import type {
   CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
   DeleteResult, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest, ListRunsRequest,
-  MetadataScope, OrganizationChoice, Page, SafeConnection, SafeItemResult, SafeRun, StartSyncResult,
+  ListWorkitemFieldsRequest, ListWorkitemsRequest, MetadataScope, OrganizationChoice, Page, SafeConnection,
+  SafeItemResult, SafeRun, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage, StartSyncResult,
   SyncErrorDto, SyncMetadata, SyncRule, TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  GetWorkitemDescriptionRequest,
 } from './dto.ts'
 
 /** Lists the organizations one personal access token can see; injected so the service stays offline-testable. */
 export type OrganizationLister = (token: string) => Promise<OrganizationChoice[]>
+
+/** Builds the read-only work-item query surface for one connection. */
+export type WorkitemQueryFactory = (connection: SafeConnection) => Promise<YunxiaoQuery>
 
 /** Everything one manual sync service needs: the stores, the run owner, and the adapter builder. */
 export interface SyncServiceOptions {
@@ -31,6 +38,8 @@ export interface SyncServiceOptions {
   organizations?: OrganizationLister
   /** Live OAuth access token of one connection (云效 official authorization). */
   oauthToken?: (connectionId: string) => Promise<string | null>
+  /** Read-only work-item query surface; absent on a Host built before this feature. */
+  queryFactory?: WorkitemQueryFactory
 }
 
 /** Extract a safe DTO from a thrown value; a raw message, header or body is never echoed. */
@@ -59,6 +68,7 @@ export class SyncService {
   private readonly secrets: (() => ManualSecretStore | undefined) | undefined
   private readonly organizations: OrganizationLister | undefined
   private readonly oauthToken: ((connectionId: string) => Promise<string | null>) | undefined
+  private readonly queryFactory: WorkitemQueryFactory | undefined
 
   constructor(options: SyncServiceOptions) {
     this.tasks = options.tasks
@@ -70,6 +80,7 @@ export class SyncService {
     this.secrets = options.secrets
     this.organizations = options.organizations
     this.oauthToken = options.oauthToken
+    this.queryFactory = options.queryFactory
   }
 
   /** The live store, or undefined while the Host's credentials service is absent. */
@@ -185,6 +196,77 @@ export class SyncService {
 
   listSyncItemResults(request: ListItemResultsRequest): Page<SafeItemResult> {
     return this.runs.listItemResults(request.id, request.page, request.pageSize)
+  }
+
+  /**
+   * One page of remote work items, projected to exactly the requested fields.
+   * Filtering and sorting happen on the platform (verified `conditions` and
+   * `orderBy`), so nothing is fetched only to be discarded locally.
+   */
+  async listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage> {
+    const connection = this.requireConnection(request.connectionId)
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
+    if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
+    const query = await this.queryFactory(connection)
+    const conditions = request.conditions?.map(group => group.map(condition => ({
+      field: condition.field as WorkitemFilterField,
+      ...(condition.operator === undefined ? {} : { operator: condition.operator }),
+      value: condition.value,
+      ...(condition.toValue === undefined || condition.toValue === null ? {} : { toValue: condition.toValue }),
+    })))
+    const page = await query.listWorkitems({
+      projectId: request.projectId,
+      categories: request.categories,
+      page: request.page,
+      perPage: request.perPage,
+      fields: request.fields,
+      customFieldIds: request.customFieldIds,
+      orderBy: request.orderBy,
+      sort: request.sort,
+      ...(conditions === undefined ? {} : { conditions }),
+    }, new AbortController().signal)
+    return {
+      items: page.items,
+      page: page.page,
+      perPage: page.perPage,
+      total: page.total,
+      totalPages: page.totalPages,
+      fields: [...page.fields],
+    }
+  }
+
+  /**
+   * One work item's body, unwrapped from the platform's JSON carrier. This is
+   * the single detail request the "create a task from a work item" flow needs:
+   * every other field already comes from the list projection.
+   */
+  async getWorkitemDescription(request: GetWorkitemDescriptionRequest): Promise<SafeWorkitemDescriptionResult> {
+    const connection = this.requireConnection(request.connectionId)
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
+    if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
+    const query = await this.queryFactory(connection)
+    const detail = await query.getWorkitem({
+      projectId: request.projectId,
+      id: request.id,
+      include: ['description'],
+      fields: ['id'],
+    }, new AbortController().signal)
+    return { description: detail.description }
+  }
+
+  /**
+   * Every selectable field of one project category, so the caller can offer the
+   * platform's own column catalog (native fields and custom fields alike).
+   */
+  async listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]> {
+    const connection = this.requireConnection(request.connectionId)
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
+    if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
+    const query = await this.queryFactory(connection)
+    return query.listFields(
+      { projectId: request.projectId, category: request.category },
+      new AbortController().signal,
+    )
   }
 
   /** Attach the current page's sync-source badges in one batch, never a platform request. */

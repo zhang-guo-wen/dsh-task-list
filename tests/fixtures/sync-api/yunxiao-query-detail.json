@@ -1,0 +1,32 @@
+{
+  "id": "1000000000000000001",
+  "serialNumber": "PROJ-11",
+  "subject": "Alpha work item",
+  "description": "{\"htmlValue\":\"<article class=\\\"4ever-article\\\"><ol style=\\\"list-style-type:decimal\\\"><li><div><span style=\\\"font-weight:bold\\\">功能需求</span></div></li></ol><p>see <img src=\\\"https://devops.example.invalid/projex/api/workitem/file/url?fileIdentifier=abc123\\\" style=\\\"width:530px\\\"></p></article>\",\"jsonMLValue\":[\"root\",{},[\"p\",{},\"功能需求\"]]}",
+  "formatType": "RICHTEXT",
+  "gmtCreate": 1791000000000,
+  "gmtModified": 1791516103000,
+  "assignedTo": { "name": "Alice", "id": "user-1" },
+  "creator": { "name": "Alice", "id": "user-1" },
+  "modifier": { "name": "Automation", "id": "AK-AUTOMATION" },
+  "status": { "name": "待处理", "nameEn": "To Do", "displayName": "待处理", "id": "100005" },
+  "space": { "name": "Project One", "id": "space-1" },
+  "workitemType": { "name": "Tech requirement", "id": "req-type-1" },
+  "logicalStatus": "NORMAL",
+  "customFieldValues": [
+    { "fieldName": "Plan start", "fieldFormat": "date", "values": [{ "identifier": "2026-09-22 00:00:00", "displayValue": "2026-09-22 00:00:00" }], "fieldId": "79" },
+    { "fieldName": "Priority", "fieldFormat": "list", "values": [{ "identifier": "prio-medium", "displayValue": "中" }], "fieldId": "priority" },
+    { "fieldName": "Progress", "fieldFormat": "float", "values": [{ "identifier": "0", "displayValue": "0" }], "fieldId": "progress" }
+  ],
+  "updateStatusAt": null,
+  "trackers": null,
+  "participants": [{ "name": "Bob", "id": "user-2" }],
+  "verifier": null,
+  "sprint": { "name": "Sprint 42", "id": "sprint-1" },
+  "labels": null,
+  "versions": null,
+  "idPath": null,
+  "statusStageId": "1",
+  "categoryId": "Req",
+  "parentId": null
+}

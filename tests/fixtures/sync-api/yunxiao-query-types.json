@@ -1,0 +1,4 @@
+[
+  { "id": "req-type-1", "name": "Tech requirement", "categoryId": "Req" },
+  { "id": "req-type-2", "name": "Product requirement", "categoryId": "Req" }
+]

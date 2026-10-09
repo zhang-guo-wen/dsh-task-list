@@ -19,6 +19,10 @@
    it the bottom padding pushed the panel exactly one padding past its height and
    every report showed a scrollbar. */
 .page[data-report='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 16px; }
+/* The work-item page follows the same rule: the table scrolls inside the panel,
+   and the paging controls stay pinned at the bottom instead of scrolling away. */
+.page[data-more='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 0; }
+.page[data-more='true'] { overflow: hidden; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
 /* The list header's right end: the report button and the create/sync split

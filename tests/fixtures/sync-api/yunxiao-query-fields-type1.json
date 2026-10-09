@@ -1,0 +1,9 @@
+[
+  { "name": "标题", "type": "NativeField", "format": "string", "required": true, "id": "subject", "options": [] },
+  { "name": "负责人", "type": "NativeField", "format": "user", "required": true, "id": "assignedTo", "options": [] },
+  { "name": "优先级", "type": "SystemCustomField", "format": "list", "required": true, "id": "priority", "options": [
+    { "value": "紧急", "displayValue": "紧急", "id": "prio-urgent" },
+    { "value": "中", "displayValue": "中", "id": "prio-medium" }
+  ] },
+  { "name": "计划开始时间", "type": "CustomField", "format": "date", "required": false, "id": "79", "options": [] }
+]

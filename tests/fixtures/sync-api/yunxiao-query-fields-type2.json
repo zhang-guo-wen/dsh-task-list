@@ -1,0 +1,5 @@
+[
+  { "name": "标题", "type": "NativeField", "format": "string", "required": true, "id": "subject", "options": [] },
+  { "name": "Story Points", "type": "SystemCustomField", "format": "list", "required": false, "id": "story_points", "options": [] },
+  { "name": "所属模块", "type": "CustomField", "format": "list", "required": false, "id": "5b35c9e6485c4eae7d47367bb6", "options": [] }
+]

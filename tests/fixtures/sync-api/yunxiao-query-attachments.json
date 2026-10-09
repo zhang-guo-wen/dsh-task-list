@@ -1,0 +1,16 @@
+[
+  {
+    "creator": { "name": "Alice", "id": "user-1" },
+    "modifier": null,
+    "gmtCreate": 1791441985000,
+    "gmtModified": 1791441998000,
+    "id": "att-1",
+    "fileId": "file-1",
+    "fileName": "normal_video.mp4",
+    "suffix": "mp4",
+    "size": 22503329,
+    "url": "https://oss.example.invalid/bucket/obj?Expires=1791538993&Signature=abc",
+    "embedUrl": "https://devops.example.invalid/projex/api/workitem/file/url?fileIdentifier=file-1",
+    "embedHtml": "<img src=\"https://devops.example.invalid/projex/api/workitem/file/url?fileIdentifier=file-1\">"
+  }
+]

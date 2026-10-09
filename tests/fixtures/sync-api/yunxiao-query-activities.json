@@ -1,0 +1,28 @@
+[
+  {
+    "eventId": 500145680,
+    "eventType": "workitem.association.changed",
+    "eventTime": 1791534163116,
+    "resourceId": "1000000000000000001",
+    "operator": { "name": "Carol", "id": "user-3" },
+    "parentEventId": null,
+    "property": { "propertyType": "Relation", "propertyId": "SUB", "propertyName": "子项" },
+    "oldValue": null,
+    "newValue": null,
+    "actionType": "associate",
+    "relatedResource": { "resourceType": "Workitem", "resourceId": "1000000000000000003" }
+  },
+  {
+    "eventId": 500145681,
+    "eventType": "workitem.updated",
+    "eventTime": 1791534164000,
+    "resourceId": "1000000000000000001",
+    "operator": { "name": "Automation", "id": "AK-AUTOMATION" },
+    "parentEventId": null,
+    "property": { "propertyType": "Field", "propertyId": "79", "propertyName": "Plan start" },
+    "oldValue": [{ "identifier": "2026-09-21 00:00:00", "displayValue": "2026-09-21" }],
+    "newValue": [{ "identifier": "2026-09-22 00:00:00", "displayValue": "2026-09-22" }],
+    "actionType": "update",
+    "relatedResource": null
+  }
+]

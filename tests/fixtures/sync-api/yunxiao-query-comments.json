@@ -1,0 +1,24 @@
+[
+  {
+    "id": "c1",
+    "content": "## update\n\n- item one\n- item two",
+    "contentFormat": "RICHTEXT",
+    "parentId": null,
+    "top": false,
+    "topTime": null,
+    "user": { "name": "Alice", "id": "user-1" },
+    "gmtCreate": 1791516103000,
+    "gmtModified": 1791516103000
+  },
+  {
+    "id": "c2",
+    "content": "<p>HTML comment</p>",
+    "contentFormat": "RICHTEXT",
+    "parentId": "c1",
+    "top": true,
+    "topTime": 1791516200000,
+    "user": { "name": "Bob", "id": "user-2" },
+    "gmtCreate": 1791516200000,
+    "gmtModified": 1791516200000
+  }
+]

@@ -92,7 +92,7 @@ const mapping = {
 describe('RPC descriptor contract', () => {
   it('exposes sync, authorization, legacy and statistics methods on the taskList namespace', () => {
     const methods = TYPERT_REMOTE.descriptors.map(row => row.method)
-    expect(methods).toHaveLength(32)
+    expect(methods).toHaveLength(35)
     for (const method of SYNC_METHODS) expect(methods).toContain(method)
     for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask']) {
       expect(methods).toContain(method)
@@ -280,3 +280,4 @@ describe('startSync', () => {
     expect(service.getSyncRun({ id: started.runId })?.status).toBe('completed')
   })
 })
+

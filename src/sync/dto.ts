@@ -1,13 +1,16 @@
 import type { TaskStatus } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 
-/** The 15 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4/orgs1). */
+/** The 18 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4/orgs1/query3). */
 export const SYNC_METHODS = [
   'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
   'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
   'getSyncMetadata', 'testSyncConnection',
   'startSync', 'getSyncRun', 'listSyncRuns', 'listSyncItemResults',
   'listSyncOrganizations',
+  'listWorkitems',
+  'listWorkitemFields',
+  'getWorkitemDescription',
 ] as const
 export type SyncMethod = (typeof SYNC_METHODS)[number]
 
@@ -212,6 +215,81 @@ export interface Page<T> {
   pageSize: number
 }
 
+// --- Read-only work-item queries ---
+
+export type WorkitemFilterOperator = 'EQUALS' | 'CONTAINS' | 'BETWEEN'
+
+/** One platform filter object; groups are ORed, conditions inside one group are ANDed. */
+export interface WorkitemFilterCondition {
+  field: string
+  operator?: WorkitemFilterOperator
+  value: string[]
+  toValue?: string | null
+}
+
+export type WorkitemConditionGroups = WorkitemFilterCondition[][]
+
+export interface ListWorkitemsRequest {
+  connectionId: string
+  projectId: string
+  /** One category or a comma-joined set, e.g. `Req` or `Req,Bug`; spaces are refused. */
+  categories: string
+  page: number
+  perPage: number
+  /** Requested list fields; `['*']` means every supported field. */
+  fields: string[]
+  /** Keep only these custom-field ids; empty means all of them. */
+  customFieldIds: string[]
+  orderBy: 'gmtCreate' | 'subject' | 'status' | 'priority' | 'assignedTo'
+  sort: 'asc' | 'desc'
+  conditions?: WorkitemConditionGroups
+}
+
+/** One projected work-item row: only the requested fields, each shape-verified. */
+export type SafeWorkitemRow = Record<string, unknown>
+
+/** One selectable field of a work-item type, as the platform configures it. */
+export interface SafeWorkitemField {
+  id: string
+  name: string
+  format: string
+  required: boolean
+  kind: string
+  options: { id: string; label: string }[]
+}
+
+export interface ListWorkitemFieldsRequest {
+  connectionId: string
+  projectId: string
+  category: string
+}
+
+/** One work item's body, unwrapped from the platform's JSON description carrier. */
+export interface SafeWorkitemDescription {
+  format: 'richtext' | 'markdown' | 'text'
+  html: string | null
+  plain: string
+}
+
+export interface GetWorkitemDescriptionRequest {
+  connectionId: string
+  projectId: string
+  id: string
+}
+
+export interface SafeWorkitemDescriptionResult {
+  description: SafeWorkitemDescription | null
+}
+
+export interface SafeWorkitemPage {
+  items: SafeWorkitemRow[]
+  page: number
+  perPage: number
+  total: number | null
+  totalPages: number | null
+  fields: string[]
+}
+
 // --- Request DTOs (normalized output of parseSyncRequest) ---
 
 export type EmptyRequest = Record<string, never>
@@ -315,6 +393,9 @@ export type SyncRequest =
   | { method: 'listSyncRuns'; request: ListRunsRequest }
   | { method: 'listSyncItemResults'; request: ListItemResultsRequest }
   | { method: 'listSyncOrganizations'; request: ListOrganizationsRequest }
+  | { method: 'listWorkitems'; request: ListWorkitemsRequest }
+  | { method: 'listWorkitemFields'; request: ListWorkitemFieldsRequest }
+  | { method: 'getWorkitemDescription'; request: GetWorkitemDescriptionRequest }
 
 // --- Response DTOs (returned by services, produced by fixtures) ---
 
@@ -348,3 +429,6 @@ export type SyncResponse =
   | { method: 'listSyncRuns'; response: Page<SafeRun> }
   | { method: 'listSyncItemResults'; response: Page<SafeItemResult> }
   | { method: 'listSyncOrganizations'; response: OrganizationChoice[] }
+  | { method: 'listWorkitems'; response: SafeWorkitemPage }
+  | { method: 'listWorkitemFields'; response: SafeWorkitemField[] }
+  | { method: 'getWorkitemDescription'; response: SafeWorkitemDescriptionResult }

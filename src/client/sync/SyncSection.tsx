@@ -6,6 +6,8 @@ import type { SyncFace } from './face.ts'
 import { SyncFailure } from './SyncResults.tsx'
 import { ConnectionSettings } from './ConnectionSettings.tsx'
 import { RuleSettings } from './RuleSettings.tsx'
+import { FILL_FIELDS, readFillFields, writeFillFields, type FillField } from '../workitem-fill.ts'
+import { FILTER_FIELDS, readFilterFields, writeFilterFields, type FilterFieldId } from '../workitem-filter.ts'
 import css from './Sync.module.css'
 
 export interface WorkspaceChoice { workspaceId: string; title: string }
@@ -32,6 +34,24 @@ export function SyncSection({ sync: face, workspaceSnapshot, subscribeWorkspaces
   const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
+  const [fill, setFill] = useState<readonly FillField[]>(() => readFillFields())
+  /** Persist immediately: the "more tasks" page reads the same key on handover. */
+  const toggleFill = (id: FillField) => {
+    setFill(current => {
+      const next = current.includes(id) ? current.filter(entry => entry !== id) : [...current, id]
+      writeFillFields(next)
+      return next
+    })
+  }
+  const [filters, setFilters] = useState<readonly FilterFieldId[]>(() => readFilterFields())
+  /** Same contract as the fill switch: the filter bar reads this key as it mounts. */
+  const toggleFilter = (id: FilterFieldId) => {
+    setFilters(current => {
+      const next = current.includes(id) ? current.filter(entry => entry !== id) : [...current, id]
+      writeFilterFields(next)
+      return next
+    })
+  }
   const generation = useRef(0)
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
   const refresh = useCallback(async () => {
@@ -65,6 +85,30 @@ export function SyncSection({ sync: face, workspaceSnapshot, subscribeWorkspaces
     ]} onChange={next => { setTab(next); setView('list'); setNotice('') }} />
     {error !== null && <SyncFailure error={error} t={t} />}
     {notice && <p role="status">{notice}</p>}
+    {/* Which work-item data a new task starts with; a browser preference, saved
+        on change, read by the "more tasks" page when it hands over a draft. */}
+    <div className={css.fillSettings}>
+      <h3>{t('fillSettingsTitle')}</h3>
+      <p className={css.hint}>{t('fillSettingsHint')}</p>
+      <div className={css.fillGrid} role="group" aria-label={t('fillSettingsTitle')}>
+        {FILL_FIELDS.map(field => <label key={field.id} className={css.fillRow}>
+          <input type="checkbox" checked={fill.includes(field.id)} onChange={() => toggleFill(field.id)} />
+          <span>{t(field.label)}</span>
+        </label>)}
+      </div>
+    </div>
+    {/* Which filters the "more tasks" bar offers, and how many it may show at once. */}
+    <div className={css.fillSettings}>
+      <h3>{t('filterSettingsTitle')}</h3>
+      <p className={css.hint}>{t('filterSettingsHint')}</p>
+      <div className={css.fillGrid} role="group" aria-label={t('filterSettingsTitle')}>
+        {FILTER_FIELDS.map(field => <label key={field.id} className={css.fillRow}>
+          <input type="checkbox" checked={filters.includes(field.id)} onChange={() => toggleFilter(field.id)} />
+          <span>{t(field.label)}</span>
+        </label>)}
+      </div>
+      <p className={css.hint}>{t('filterParticipantsNote')}</p>
+    </div>
     <div role="tabpanel" id={tab === 'connections' ? 'sync-connections-panel' : 'sync-rules-panel'} aria-labelledby={tab === 'connections' ? 'sync-connections-tab' : 'sync-rules-tab'}>
       {loading ? <p>{t('loading')}</p> : tab === 'connections' ? view === 'edit'
         ? <ConnectionSettings key={editingConnection?.id ?? 'new'} connection={editingConnection} face={face} t={t} onSaved={async next => { setEditingConnection(next); await saved() }} onBack={back} onDeleted={removed} />

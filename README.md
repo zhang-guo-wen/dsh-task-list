@@ -42,6 +42,16 @@ Results distinguish imported, pulled, pushed, merged, unchanged and failed; pend
 
 Limits: official public-cloud origins only; Yunxiao region mode is unavailable; TAPD BPM and unsafe transitions are refused conservatively. Remote attachments are not downloaded and local files are not uploaded. Offline adapter/recovery tests exist; **the installed Web settings and callback have been checked; real account sign-in, project permissions and writes are not integration-tested**. See the [capability matrix](docs/sync-capabilities.md).
 
+## More tasks (paged Yunxiao work items)
+
+**More tasks**, next to the report button in the task page header, opens a read-only page; **Close** in its top-right returns to the list. Pick a **connection, project and category (requirement/bug/task)**; **Header settings** opens a right-hand drawer that lists **every field this project configures**, grouped into shown and hidden — custom fields such as priority, story points and 所属模块 appear under the platform's own names, with a search box and a switch per field. The table scrolls in the middle and the **paging bar stays pinned at the bottom** (previous/next plus 20/50/100/200 per page).
+
+The list asks for **only the fields behind the shown columns** — never the description, comments, relations or activity; those belong to a detail read. A page holds at most 200 rows, and `page × perPage` may not exceed 10000; an out-of-range window is refused before any request. Yunxiao exposes no readable path for images embedded in a work item body, so those stay invisible here.
+
+The filter bar is **one title search plus at most two conditions**. Which fields it may offer is chosen under **Settings → Task sync**, in "Available filter fields": status, status stage, assignee, creator, priority, sprint, type and created (date range). Candidate values come from the platform itself (status from the workflow, people from project members, priority from the field config, sprint from the project's iterations). The title search and every condition apply together (AND); a blank condition value is simply left out. Yunxiao's "participants" filter answers zero results silently, so it is not offered.
+
+Every row carries **Start** and **Sync**: both close this page and open the **new task** form prefilled with the work item — Sync just prefills, while Start also arms "start immediately" so saving opens the session. Which data is copied is configured under **Settings → Task sync**, in the "Prefill a new task with" checkboxes (title, description, number, status, assignee, sprint, priority, custom fields, source number). Only the description costs an extra detail request, and only when its box is checked; every other field comes from the list itself.
+
 ### Sync troubleshooting
 
 <a id="credentials"></a>**Credentials:** enter manual credentials in the connection settings; environment variable references remain an alternative. Never paste secrets into tasks or chat. If startup reports an unknown `secret` record kind for `task-list/connection-…-secret`, back up `~/.dsh/.credentials.yaml` and change only those records' `kind` to `grant`, preserving their keys and payloads, then rebuild/upgrade this plugin and restart DSH.

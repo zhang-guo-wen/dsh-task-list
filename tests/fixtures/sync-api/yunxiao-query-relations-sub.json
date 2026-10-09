@@ -1,0 +1,4 @@
+[
+  { "id": "r1", "relationType": "SUB", "resourceType": "Req", "resourceId": "1000000000000000003", "gmtCreate": 1791400000000 },
+  { "id": "r2", "relationType": "SUB", "resourceType": "Bug", "resourceId": "1000000000000000004", "gmtCreate": 1791410000000 }
+]

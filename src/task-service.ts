@@ -11,8 +11,10 @@ import type { SyncService } from './sync/service.ts'
 import type {
   CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
   DeleteResult, EmptyRequest, GetSyncRunRequest, ListItemResultsRequest, ListOrganizationsRequest,
-  ListRunsRequest, MetadataScope, OrganizationChoice, Page, SafeConnection, SafeItemResult, SafeRun,
+  ListRunsRequest, ListWorkitemFieldsRequest, ListWorkitemsRequest, MetadataScope, OrganizationChoice, Page,
+  SafeConnection, SafeItemResult, SafeRun, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage,
   StartSyncResult, SyncMetadata, SyncRule, TestConnectionResult, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  GetWorkitemDescriptionRequest,
 } from './sync/dto.ts'
 import { type StatisticsRequest, type StatisticsRunState, type StatisticsSnapshot } from './statistics.ts'
 import { statisticsRunRequest, type StatisticsService } from './statistics-service.ts'
@@ -138,6 +140,24 @@ export class TaskService extends TypertRemoteService {
   @Remote('listSyncOrganizations')
   async listSyncOrganizations(request: ListOrganizationsRequest): Promise<OrganizationChoice[]> {
     return this.sync.listSyncOrganizations(request)
+  }
+
+  /** One page of remote work items, projected to the fields the caller named. */
+  @Remote('listWorkitems')
+  async listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage> {
+    return this.sync.listWorkitems(request)
+  }
+
+  /** The platform's own column catalog for one project category. */
+  @Remote('listWorkitemFields')
+  async listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]> {
+    return this.sync.listWorkitemFields(request)
+  }
+
+  /** One work item's body, for prefilling a new local task. */
+  @Remote('getWorkitemDescription')
+  async getWorkitemDescription(request: GetWorkitemDescriptionRequest): Promise<SafeWorkitemDescriptionResult> {
+    return this.sync.getWorkitemDescription(request)
   }
 
   @Remote('listSyncRules')
