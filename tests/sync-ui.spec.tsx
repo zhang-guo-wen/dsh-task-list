@@ -6,21 +6,22 @@ import { TaskPanel, WorktreeNotGitError } from '../src/client/TaskPanel.tsx'
 import { local } from './fixtures/sync.ts'
 import { RuleSettings } from '../src/client/sync/RuleSettings.tsx'
 import { SyncSection } from '../src/client/sync/SyncSection.tsx'
-import { mappingReady, RuleFields } from '../src/client/sync/RuleFields.tsx'
+import { StatusWriteMap } from '../src/client/sync/RuleFields.tsx'
+import { statusMappingReady } from '../src/sync/mapping.ts'
 import { SyncActions, SyncStatus } from '../src/client/sync/SyncControls.tsx'
 import { useSyncPanel } from '../src/client/sync/use-sync-panel.ts'
 import { zh } from '../src/client/locales.ts'
 import type { TaskKey } from '../src/client/locales.ts'
 import type { SyncFace } from '../src/client/sync/face.ts'
-import type { SafeRun } from '../src/sync/dto.ts'
+import type { SafeRun, StatusWriteStates } from '../src/sync/dto.ts'
 
 afterEach(() => { cleanup(); sessionStorage.clear() })
 const t = (key: TaskKey) => zh[key]
 const completed: SafeRun = { id: 'run1', status: 'completed', phase: 'finished', startedAt: 1, finishedAt: 2, counts: { imported: 1, pulled: 0, pushed: 0, merged: 0, unchanged: 0, failed: 0, pending: 0 }, unprocessedKnown: 0, discoveryComplete: true, scopeSummary: '', errors: [] }
 function face(): SyncFace {
   return {
-    listSyncConnections: async () => [{ id: 'c1', revision: 1, name: 'TAPD', platform: 'tapd', companyId: '1', userEnv: 'USER', passwordEnv: 'PASS', instance: 'tapd:1', enabled: true, credentialPresent: true }],
-    listSyncRules: async () => [{ id: 'r1', revision: 1, connectionId: 'c1', projectId: 'p1', enabled: true, workspaceId: null, filters: { assignees: [], typeIds: ['task'], statusIds: [], iterationIds: [] }, mappings: [] }],
+    listSyncConnections: async () => [{ id: 'c1', revision: 1, name: '云效 · 示例组织', platform: 'yunxiao', mode: 'center', organizationId: '1', regionHost: null, tokenEnv: 'USER', instance: 'org-1', enabled: true, credentialPresent: true }],
+    listSyncRules: async () => [{ id: 'r1', revision: 1, connectionId: 'c1', projectId: 'p1', projectName: null, enabled: true, workspaceId: null, conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' } }],
     listSyncRuns: async () => ({ items: [], total: 0, page: 1, pageSize: 1 }),
     getSyncRun: async () => completed,
     listSyncItemResults: async () => ({ items: [], total: 0, page: 1, pageSize: 20 }),
@@ -44,7 +45,8 @@ async function clickSyncRow() {
 const noWorkspaces = { items: [] as readonly { workspaceId: string; title: string }[] }
 function section(api: SyncFace, workspaces: { items: readonly { workspaceId: string; title: string }[] } = noWorkspaces) {
   return <SyncSection sync={api} t={t} close={() => {}}
-    workspaceSnapshot={() => workspaces} subscribeWorkspaces={() => () => {}} />
+    workspaceSnapshot={() => workspaces} subscribeWorkspaces={() => () => {}}
+    listWorkitemFields={async () => []} />
 }
 
 describe('manual sync controls', () => {
@@ -129,33 +131,88 @@ describe('manual sync controls', () => {
     await screen.findByText(/宿主缺少凭据/)
     expect(document.body.textContent).not.toContain('secret-provider-body')
   })
-  it('optional fields are opt-in and use the remotely confirmed field identifier', () => {
-    let result: any
-    const mapping = { typeId: 'task', category: 'task', readStates: {}, writeStates: { todo: '', in_progress: '', done: '' }, optionalFields: [], fieldIds: {}, valueMaps: {} }
-    const capability = { typeId: 'task', fields: ['title', 'description', 'status', 'priority'], readStates: [], writeStates: [], representation: { format: 'text', roundTrip: true }, paging: { kind: 'cursor' }, workflow: { readOnly: false }, candidateFields: [{ field: 'priority', remoteId: 'priority_label', writable: true, format: 'select' }] }
-    render(<RuleFields mapping={mapping as any} capability={capability as any} t={t} tapd onChange={next => { result = next }} />)
-    fireEvent.click(screen.getByRole('checkbox', { name: '优先级' }))
-    expect(result.optionalFields).toEqual(['priority'])
-    expect(result.fieldIds.priority).toBe('priority_label')
+  it('a rule maps each local status to one platform status, and an unmapped rule cannot enable', () => {
+    let result: StatusWriteStates | undefined
+    render(<StatusWriteMap value={{ todo: '', in_progress: '', done: '' }} options={[{ id: 'open', label: 'Open' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }]}
+      t={t} onChange={next => { result = next }} />)
+    expect(statusMappingReady({ todo: '', in_progress: '', done: '' })).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '云效状态 · 待办' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open' }))
+    expect(result).toEqual({ todo: 'open', in_progress: '', done: '' })
   })
-  it('late metadata from the previous connection cannot replace new candidates', async () => {
+  it('late metadata from the previous connection cannot replace new projects', async () => {
     const api = face()
-    const connection = (id: string) => ({ id, revision: 1, name: id, platform: 'tapd', companyId: id, userEnv: 'USER', passwordEnv: 'PASS', instance: `tapd:${id}`, enabled: false, credentialPresent: true })
+    const connection = (id: string) => ({ id, revision: 1, name: id, platform: 'yunxiao', mode: 'center', organizationId: id, regionHost: null, tokenEnv: 'USER', instance: `org-${id}`, enabled: false, credentialPresent: true })
     api.listSyncConnections = async () => [connection('A'), connection('B')] as any
     api.listSyncRules = async () => []
     let first!: (value: any) => void
     api.getSyncMetadata = request => request.connectionId === 'A' ? new Promise(resolve => { first = resolve }) : Promise.resolve({ connectionId: 'B', credentialPresent: true, readOnly: false, projects: [{ id: 'new', label: 'New project' }], members: [], iterations: [], types: [], typeCapabilities: [] })
-    render(<RuleSettings rule={null} connections={[connection('A'), connection('B')] as any} face={api} t={t} workspaces={[]} onBack={() => {}} onSaved={async () => {}} />)
+    // The editor loads the connection's projects by itself; opening the picker
+    // only matters when that first read is still in flight.
+    render(<RuleSettings rule={null} connections={[connection('A'), connection('B')] as any} face={api} t={t} onBack={() => {}} onSaved={async () => {}} />)
     await waitFor(() => expect(screen.getByRole('button', { name: '连接与凭据' })).toBeDefined())
-    fireEvent.click(screen.getByRole('button', { name: '连接与凭据' })); fireEvent.click(await screen.findByRole('menuitem', { name: 'A' }))
-    fireEvent.click(screen.getByRole('button', { name: '读取候选' }))
     fireEvent.click(screen.getByRole('button', { name: '连接与凭据' })); fireEvent.click(await screen.findByRole('menuitem', { name: 'B' }))
-    fireEvent.click(screen.getByRole('button', { name: '读取候选' }))
     await waitFor(() => expect((screen.getByRole('button', { name: '项目' }) as HTMLButtonElement).disabled).toBe(false))
     first({ connectionId: 'A', credentialPresent: true, readOnly: false, projects: [{ id: 'old', label: 'Old project' }], members: [], iterations: [], types: [], typeCapabilities: [] })
     fireEvent.click(screen.getByRole('button', { name: '项目' }))
     await screen.findByRole('menuitem', { name: 'New project' })
     expect(screen.queryByRole('menuitem', { name: 'Old project' })).toBeNull()
+  })
+  it('choosing a connection loads its projects without a separate read button', async () => {
+    const api = face()
+    const connection = (id: string) => ({ id, revision: 1, name: id, platform: 'yunxiao', mode: 'center', organizationId: id, regionHost: null, tokenEnv: 'USER', instance: `org-${id}`, enabled: false, credentialPresent: true })
+    api.listSyncConnections = async () => [connection('A'), connection('B')] as any
+    api.listSyncRules = async () => []
+    const reads: string[] = []
+    api.getSyncMetadata = async request => {
+      reads.push(request.connectionId)
+      return { connectionId: request.connectionId, credentialPresent: true, readOnly: false, projects: [{ id: `p-${request.connectionId}`, label: `Project ${request.connectionId}` }], members: [], iterations: [], types: [], typeCapabilities: [] }
+    }
+    render(<RuleSettings rule={null} connections={[connection('A'), connection('B')] as any} face={api} t={t} onBack={() => {}} onSaved={async () => {}} />)
+    // The initial connection is read on mount, with no button to click.
+    await waitFor(() => expect(reads).toEqual(['A']))
+    expect(screen.queryByRole('button', { name: '读取候选' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '连接与凭据' })); fireEvent.click(await screen.findByRole('menuitem', { name: 'B' }))
+    await waitFor(() => expect(reads).toEqual(['A', 'B']))
+    await waitFor(() => expect(screen.getByRole('button', { name: '项目' }).textContent).toContain('Project B'))
+  })
+  it('a new rule saves the conditions and the three status targets, disabled', async () => {
+    const api = face()
+    const connection = { id: 'A', revision: 1, name: 'A', platform: 'yunxiao', mode: 'center', organizationId: 'org-A', regionHost: null, tokenEnv: 'USER', instance: 'org-A', enabled: false, credentialPresent: true }
+    const created: unknown[] = []
+    api.listSyncConnections = async () => [connection] as any
+    api.listSyncRules = async () => []
+    api.getSyncMetadata = async request => ({
+      connectionId: request.connectionId, credentialPresent: true, readOnly: false,
+      projects: [{ id: 'p-1', label: '平台项目集' }],
+      members: [{ id: 'user-1', label: '黄强' }], iterations: [], types: [],
+      typeCapabilities: [{ typeId: 't-1', fields: ['title', 'status'], readStates: [], writeStates: [{ id: 's-todo', label: '待处理' }, { id: 's-doing', label: '处理中' }, { id: 's-done', label: '已完成' }], representation: { format: 'richtext', roundTrip: true }, paging: { kind: 'page' }, workflow: { readOnly: false }, candidateFields: [] }],
+    } as any)
+    api.createSyncRule = async request => { created.push(request); return { ...request, id: 'r-new', revision: 1 } as any }
+    render(<RuleSettings rule={null} connections={[connection] as any} face={api} listWorkitemFields={async () => []} t={t} onBack={() => {}} onSaved={async () => {}} />)
+    // Scope: the connection is read on mount and its first project preselected.
+    await waitFor(() => expect(screen.getByRole('button', { name: '项目' }).textContent).toContain('平台项目集'))
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    // Query: one assignee condition.
+    fireEvent.click(await screen.findByRole('button', { name: '添加条件' }))
+    fireEvent.click(screen.getByRole('button', { name: '条件 1' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '负责人' }))
+    fireEvent.click(screen.getByRole('button', { name: 'assignedTo 1' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '黄强' }))
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    // Write-back: map all three local statuses.
+    await screen.findByText('状态回写')
+    for (const [local, target] of [['待办', '待处理'], ['进行中', '处理中'], ['已完成', '已完成']] as const) {
+      fireEvent.click(screen.getByRole('button', { name: `云效状态 · ${local}` }))
+      fireEvent.click(await screen.findByRole('menuitem', { name: target }))
+    }
+    fireEvent.click(screen.getByRole('button', { name: '保存规则' }))
+    await waitFor(() => expect(created).toHaveLength(1))
+    expect(created[0]).toEqual({
+      connectionId: 'A', projectId: 'p-1', projectName: '平台项目集', workspaceId: null, enabled: false,
+      conditions: [[{ field: 'assignedTo', operator: 'EQUALS', value: ['user-1'] }]],
+      statusWriteStates: { todo: 's-todo', in_progress: 's-doing', done: 's-done' },
+    })
   })
   it('the roster row owns the enable switch, not the editor', async () => {
     const api = face()
@@ -164,15 +221,13 @@ describe('manual sync controls', () => {
     const toggle = await screen.findByRole('switch', { name: '启用连接' })
     expect(toggle).toBeDefined()
     // ...and the editor that row opens does not duplicate it.
-    fireEvent.click(screen.getByRole('button', { name: '配置: TAPD' }))
-    await screen.findByLabelText('公司 ID')
+    fireEvent.click(screen.getByRole('button', { name: '配置: 云效 · 示例组织' }))
+    await screen.findByRole('button', { name: '登录并授权云效' })
     expect(screen.queryByRole('switch', { name: '启用连接' })).toBeNull()
   })
-  it('contradictory read and write targets cannot enable a rule', () => {
-    const states = [{ id: 'open', label: 'Open' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }]
-    const mapping = { typeId: 'task', category: 'task', readStates: { open: 'todo', doing: 'in_progress', done: 'done' }, writeStates: { todo: 'done', in_progress: 'doing', done: 'open' }, optionalFields: [], fieldIds: {}, valueMaps: {} }
-    const capability = { typeId: 'task', fields: ['title', 'status', 'description'], readStates: states, writeStates: states, representation: { format: 'text', roundTrip: true }, paging: { kind: 'cursor' }, workflow: { readOnly: false }, candidateFields: [] }
-    expect(mappingReady(mapping as any, capability as any)).toBe(false)
+  it('a fully mapped rule is the only one that may be enabled', () => {
+    expect(statusMappingReady({ todo: 'open', in_progress: 'doing', done: 'done' })).toBe(true)
+    expect(statusMappingReady({ todo: 'open', in_progress: 'doing', done: '' })).toBe(false)
   })
   it('external source is retained through the non-Git Worktree initialization retry', async () => {
     const task = local({ title: 'Independent title', workspaceId: 'ws', useWorktree: true, source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'T-123', url: null, lastSuccess: null, error: null } })
@@ -230,19 +285,28 @@ describe('manual sync controls', () => {
   it('settings saves a disabled connection without executing sync', async () => {
     const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
     let saved: unknown
-    api.createSyncConnection = async request => { saved = request; return { ...request, id: 'new', revision: 1, credentialPresent: false, instance: 'tapd:1' } as any }
+    api.createSyncConnection = async request => { saved = request; return { ...request, id: 'new', revision: 1, credentialPresent: false, instance: 'org-1' } as any }
+    // A typed token is what resolves the organization list; nothing is read
+    // until the menu is opened.
+    api.listSyncOrganizations = async request => {
+      expect(request).toEqual({ token: 'yunxiao-pat' })
+      return [{ id: '56474829', name: '示例组织' }] as any
+    }
     const start = vi.fn(api.startSync); api.startSync = start
     render(section(api))
     fireEvent.click(await screen.findByRole('button', { name: '新增连接' }))
-    fireEvent.click(screen.getByRole('button', { name: '平台' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'TAPD' }))
-    fireEvent.change(screen.getByLabelText('公司 ID'), { target: { value: '2001' } })
-    fireEvent.change(screen.getByLabelText('API 用户'), { target: { value: 'TAPD_USER' } })
-    fireEvent.change(screen.getByLabelText('API 密码'), { target: { value: 'TAPD_PASS' } })
+    fireEvent.click(screen.getByRole('button', { name: '鉴权方式' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '手动填写（个人访问令牌）' }))
+    fireEvent.change(screen.getByLabelText('个人访问令牌'), { target: { value: 'yunxiao-pat' } })
+    fireEvent.click(screen.getByRole('button', { name: '组织' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '示例组织' }))
     fireEvent.click(screen.getByRole('button', { name: '保存连接' }))
     await waitFor(() => expect(saved).toEqual({
-      platform: 'tapd', name: 'TAPD · 2001', companyId: '2001', userEnv: 'TASK_LIST_TAPD_USER', passwordEnv: 'TASK_LIST_TAPD_PASSWORD',
-      enabled: false, authentication: { mode: 'manual' }, secret: { platform: 'tapd', user: 'TAPD_USER', password: 'TAPD_PASS' },
+      platform: 'yunxiao', mode: 'center', regionHost: null, organizationId: '56474829',
+      name: '云效 · 示例组织', tokenEnv: 'TASK_LIST_YUNXIAO_TOKEN',
+      enabled: false, authentication: { mode: 'manual' },
+      fillFields: ['title', 'description', 'number', 'status', 'assignee', 'priority'],
+      secret: { platform: 'yunxiao', token: 'yunxiao-pat' },
     }))
     expect(start).not.toHaveBeenCalled()
   })
@@ -266,6 +330,7 @@ describe('manual sync controls', () => {
     await waitFor(() => expect(saved).toEqual({
       platform: 'yunxiao', name: '云效 · 示例企业', mode: 'center', regionHost: null, organizationId: 'org-1',
       tokenEnv: 'TASK_LIST_YUNXIAO_TOKEN', enabled: false, authentication: { mode: 'manual' },
+      fillFields: ['title', 'description', 'number', 'status', 'assignee', 'priority'],
       secret: { platform: 'yunxiao', token: 'pat-secret' },
     }))
   })

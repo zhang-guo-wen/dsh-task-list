@@ -86,7 +86,7 @@ function yunxiaoConnection(overrides: Partial<SafeConnection> = {}): SafeConnect
 function tapdConnection(overrides: Partial<SafeConnection> = {}): SafeConnection {
   return {
     id: '1', name: 'TAPD', enabled: true, revision: 1, credentialPresent: true, instance: '20000001',
-    platform: 'tapd', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS',
+    platform: 'tapd', companyId: '20000001', tokenEnv: 'TAPD_TOKEN',
     ...overrides,
   } as SafeConnection
 }
@@ -151,9 +151,9 @@ describe('resolveCredentials', () => {
     expect(credentials).toEqual({ kind: 'yunxiao', token: 'tok-123' })
   })
 
-  it('resolves tapd user and password from the referenced variables', () => {
-    const credentials = resolveCredentials(tapdConnection(), { TAPD_USER: 'u', TAPD_PASS: 'p' })
-    expect(credentials).toEqual({ kind: 'tapd', user: 'u', password: 'p' })
+  it('resolves the tapd personal access token from the referenced variable', () => {
+    const credentials = resolveCredentials(tapdConnection(), { TAPD_TOKEN: 'p' })
+    expect(credentials).toEqual({ kind: 'tapd', token: 'p' })
   })
 
   it('throws CredentialMissing when the yunxiao token variable is missing or empty', () => {
@@ -162,8 +162,8 @@ describe('resolveCredentials', () => {
     expect(detailCode(capture(() => resolveCredentials(yunxiaoConnection(), {})))).toBe('CredentialMissing')
   })
 
-  it('throws CredentialMissing when the tapd password is missing', () => {
-    const err = capture(() => resolveCredentials(tapdConnection(), { TAPD_USER: 'u' }))
+  it('throws CredentialMissing when the tapd token variable is missing', () => {
+    const err = capture(() => resolveCredentials(tapdConnection(), { TAPD_TOKEN: '' }))
     expect(detailCode(err)).toBe('CredentialMissing')
   })
 

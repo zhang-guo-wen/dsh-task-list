@@ -36,6 +36,8 @@ export interface SyncServiceOptions {
   secrets?: () => ManualSecretStore | undefined
   /** Organization discovery for a typed token; absent when the Host has no credential store. */
   organizations?: OrganizationLister
+  /** TAPD organization discovery; the same question asked of a TAPD personal access token. */
+  tapdOrganizations?: OrganizationLister
   /** Live OAuth access token of one connection (云效 official authorization). */
   oauthToken?: (connectionId: string) => Promise<string | null>
   /** Read-only work-item query surface; absent on a Host built before this feature. */
@@ -67,6 +69,7 @@ export class SyncService {
   readonly adapterFactory: AdapterFactory
   private readonly secrets: (() => ManualSecretStore | undefined) | undefined
   private readonly organizations: OrganizationLister | undefined
+  private readonly tapdOrganizations: OrganizationLister | undefined
   private readonly oauthToken: ((connectionId: string) => Promise<string | null>) | undefined
   private readonly queryFactory: WorkitemQueryFactory | undefined
 
@@ -79,6 +82,7 @@ export class SyncService {
     this.adapterFactory = options.adapterFactory
     this.secrets = options.secrets
     this.organizations = options.organizations
+    this.tapdOrganizations = options.tapdOrganizations
     this.oauthToken = options.oauthToken
     this.queryFactory = options.queryFactory
   }
@@ -131,21 +135,30 @@ export class SyncService {
   async forgetSecret(id: string): Promise<void> { await this.secretStore()?.remove(id) }
 
   /**
-   * List the organizations a 云效 personal access token can see. The token is
+   * List the organizations a personal access token belongs to. The token is
    * either the one just typed in the editor or the connection's stored one; it
-   * is never persisted by this call.
+   * is never persisted by this call. A TAPD token answers with the account's
+   * own organization, so its editor never has to ask for the company by hand.
    */
   async listSyncOrganizations(request: ListOrganizationsRequest): Promise<OrganizationChoice[]> {
-    if (this.organizations === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'connection', field: 'secret' }))
     let token = request.token
+    let platform = request.platform
+    if (request.connectionId !== undefined) {
+      const connection = this.config.getConnection(request.connectionId)
+      platform = platform ?? connection?.platform
+    }
     if (token === undefined && request.connectionId !== undefined) {
       const stored = await this.secretStore()?.read(request.connectionId)
       // A typed credential wins; an official authorization's own access token
       // answers the same question for a saved OAuth connection.
-      token = stored?.platform === 'yunxiao' ? stored.token : (await this.oauthToken?.(request.connectionId)) ?? undefined
+      token = stored != null && (platform === undefined || stored.platform === platform)
+        ? stored.token
+        : (await this.oauthToken?.(request.connectionId)) ?? undefined
     }
     if (token === undefined || !token.trim()) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'token' }))
-    return this.organizations(token)
+    const lister = platform === 'tapd' ? this.tapdOrganizations : this.organizations
+    if (lister === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'connection', field: 'secret' }))
+    return lister(token)
   }
 
   listSyncRules(): SyncRule[] {
@@ -255,8 +268,9 @@ export class SyncService {
   }
 
   /**
-   * Every selectable field of one project category, so the caller can offer the
-   * platform's own column catalog (native fields and custom fields alike).
+   * Every selectable field of one project category — or of a comma-joined set
+   * of them — so the caller can offer the platform's own column catalog (native
+   * fields and custom fields alike) while a category-free list is shown.
    */
   async listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]> {
     const connection = this.requireConnection(request.connectionId)
@@ -264,7 +278,7 @@ export class SyncService {
     if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
     const query = await this.queryFactory(connection)
     return query.listFields(
-      { projectId: request.projectId, category: request.category },
+      { projectId: request.projectId, categories: request.categories },
       new AbortController().signal,
     )
   }

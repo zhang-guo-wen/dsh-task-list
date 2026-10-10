@@ -1,12 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { syncError, syncRemoteError } from './errors.ts'
-import type { BeginAuthResult, OAuthConnection, OAuthGrant, SafeAuthState, SyncCredentialStore, TapdAppConfig } from './oauth-types.ts'
+import type { BeginAuthResult, OAuthConnection, OAuthGrant, SafeAuthState, SyncCredentialStore } from './oauth-types.ts'
 const CLOUD = 'https://openapi-rdc.aliyuncs.com'
 const AUTHORIZE = 'https://account-devops.aliyun.com'
 export const OAUTH_CALLBACK_PATH = '/task-list/oauth/callback'
 const ATTEMPT_MS = 10 * 60_000
 const MAX_BODY = 2 * 1024 * 1024
-interface Options { store: SyncCredentialStore; fetch: typeof fetch; now: () => number; callbackBaseUrl: string; tapdAppConfig?: TapdAppConfig }
+interface Options { store: SyncCredentialStore; fetch: typeof fetch; now: () => number; callbackBaseUrl: string }
 interface Attempt {
   id: string; connection: OAuthConnection; state: string; verifier: string; clientId: string; tokenEndpoint: string
   redirectUri: string; expiresAt: number; controller: AbortController; epoch: number; consumed: boolean; timer: ReturnType<typeof setTimeout>
@@ -99,17 +99,13 @@ export class OAuthManager {
   private async beginInner(connection: OAuthConnection): Promise<BeginAuthResult> {
     if (this.disposed || this.withdrawing.has(connection.id) || this.preparing.has(connection.id) || this.attempts.has(connection.id)) fail()
     if (!/^[a-z0-9-]{1,100}$/u.test(connection.id) || !Number.isInteger(connection.revision) || connection.revision < 1) fail()
-    // A 云效 grant is account-scoped, so signing in before its organization is
-    // known is legitimate; a TAPD grant is instance-bound and still requires one.
-    if (connection.platform === 'tapd' && !connection.instance.trim()) fail()
-    if (connection.platform === 'tapd' && !this.options.tapdAppConfig) fail()
     const controller = new AbortController()
     this.controllers.add(controller); this.preparing.add(connection.id)
     const epoch = this.epoch(connection.id)
     try {
-      let clientId: string; let tokenEndpoint: string; let authorizationEndpoint: string; let redirectUri = this.callbackUrl
+      let clientId: string; let tokenEndpoint: string; let authorizationEndpoint: string; const redirectUri = this.callbackUrl
       const verifier = randomBytes(32).toString('base64url')
-      if (connection.platform === 'yunxiao') {
+      {
         const metadata = await this.request(CLOUD + '/.well-known/oauth-authorization-server', { method: 'GET' }, controller.signal)
         if (metadata.issuer !== CLOUD || !Array.isArray(metadata.code_challenge_methods_supported) || !metadata.code_challenge_methods_supported.includes('S256') || !Array.isArray(metadata.token_endpoint_auth_methods_supported) || !metadata.token_endpoint_auth_methods_supported.includes('none')) fail()
         authorizationEndpoint = officialEndpoint(metadata.authorization_endpoint, 'authorize')
@@ -120,13 +116,6 @@ export class OAuthManager {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'DeepSeek Harness Task List', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
         }, controller.signal)
         clientId = text(registration.client_id, 512)
-      } else {
-        const app = this.options.tapdAppConfig!
-        clientId = text(app.clientId, 512)
-        if (app.callbackUrl !== this.callbackUrl || app.scopes.length === 0 || app.scopes.some(scope => !/^[a-z_]+(?:#(?:read|write))?$/u.test(scope))) fail()
-        if (!await app.secret()) fail('CredentialMissing')
-        authorizationEndpoint = 'https://www.tapd.cn/oauth/'
-        tokenEndpoint = 'https://api.tapd.cn/tokens/request_token'
       }
       this.live(connection.id, epoch, controller.signal)
       const state = randomBytes(32).toString('base64url')
@@ -140,8 +129,7 @@ export class OAuthManager {
       this.attempts.set(connection.id, attempt); this.failures.delete(connection.id)
       const url = new URL(authorizationEndpoint)
       url.searchParams.set('response_type', 'code'); url.searchParams.set('client_id', clientId); url.searchParams.set('redirect_uri', redirectUri); url.searchParams.set('state', state)
-      if (connection.platform === 'yunxiao') { url.searchParams.set('code_challenge_method', 'S256'); url.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url')) }
-      else { url.searchParams.set('auth_by', 'user'); url.searchParams.set('scope', this.options.tapdAppConfig!.scopes.join(' ')) }
+      url.searchParams.set('code_challenge_method', 'S256'); url.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'))
       return { attemptId: id, authorizationUrl: url.href, expiresAt }
     } finally { this.preparing.delete(connection.id); this.controllers.delete(controller) }
   }
@@ -165,15 +153,10 @@ export class OAuthManager {
       const code = text(url.searchParams.get('code'), 4096)
       const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: attempt.redirectUri })
       const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' }
-      if (attempt.connection.platform === 'yunxiao') { body.set('client_id', attempt.clientId); body.set('code_verifier', attempt.verifier) }
-      else {
-        const secret = await this.options.tapdAppConfig!.secret()
-        if (!secret) fail('CredentialMissing')
-        headers.authorization = 'Basic ' + Buffer.from(`${attempt.clientId}:${secret}`).toString('base64')
-      }
+      body.set('client_id', attempt.clientId); body.set('code_verifier', attempt.verifier)
       const result = await this.request(attempt.tokenEndpoint, { method: 'POST', headers, body: body.toString() }, attempt.controller.signal)
       this.live(attempt.connection.id, attempt.epoch, attempt.controller.signal)
-      const payload = attempt.connection.platform === 'tapd' ? result.status === 1 ? object(result.data) : fail('AuthDenied') : result
+      const payload = result
       const grant = this.parseGrant(payload, attempt)
       await this.options.store.modify(attempt.connection.id, async () => { this.live(attempt.connection.id, attempt.epoch, attempt.controller.signal); return grant })
       this.live(attempt.connection.id, attempt.epoch, attempt.controller.signal)
@@ -186,67 +169,23 @@ export class OAuthManager {
   private parseGrant(payload: Record<string, unknown>, attempt: Attempt): OAuthGrant {
     const accessToken = text(payload.access_token)
     if (typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer' || typeof payload.expires_in !== 'number' || !Number.isInteger(payload.expires_in) || payload.expires_in < 1 || payload.expires_in > 90 * 86400) fail('InvalidRemoteResponse')
-    const resourceIds: string[] = []
-    if (attempt.connection.platform === 'tapd' && payload.resource !== undefined) {
-      const resource = object(payload.resource)
-      if (resource.type === 'workspace' && (typeof resource.workspace_id === 'string' || typeof resource.workspace_id === 'number' && Number.isSafeInteger(resource.workspace_id))) resourceIds.push(String(resource.workspace_id))
-      else fail('InvalidRemoteResponse')
-    }
     return {
-      platform: attempt.connection.platform, instance: attempt.connection.instance, connectionRevision: attempt.connection.revision,
+      platform: 'yunxiao', instance: attempt.connection.instance, connectionRevision: attempt.connection.revision,
       accessToken, refreshToken: payload.refresh_token === undefined ? null : text(payload.refresh_token), expiresAt: this.options.now() + payload.expires_in * 1000,
-      clientId: attempt.clientId, tokenEndpoint: attempt.tokenEndpoint, purpose: attempt.connection.platform === 'yunxiao' ? 'yunxiao-api' : 'tapd-user',
-      accountLabel: null, resourceIds, scopes: typeof payload.scope === 'string' ? payload.scope.split(/\s+/u).filter(Boolean) : [],
+      clientId: attempt.clientId, tokenEndpoint: attempt.tokenEndpoint, purpose: 'yunxiao-api',
+      accountLabel: null, resourceIds: [], scopes: typeof payload.scope === 'string' ? payload.scope.split(/\s+/u).filter(Boolean) : [],
     }
-  }
-  projectToken(connection: OAuthConnection, projectId: string, beforeRequest?: () => void): Promise<string> { return this.track(this.projectTokenInner(connection, projectId, beforeRequest)) }
-  private async projectTokenInner(connection: OAuthConnection, projectId: string, beforeRequest?: () => void): Promise<string> {
-    const app = this.options.tapdAppConfig
-    if (connection.platform !== 'tapd' || !app || !/^[A-Za-z0-9_-]{1,200}$/u.test(projectId)) fail()
-    const epoch = this.epoch(connection.id)
-    this.live(connection.id, epoch)
-    const grant = await this.options.store.modify(connection.id + '-project', async current => {
-      this.live(connection.id, epoch)
-      if (current && (current.purpose !== 'tapd-project' || current.instance !== connection.instance || current.clientId !== app.clientId)) fail()
-      let candidate = current
-      if (!candidate || candidate.expiresAt <= this.options.now() + 60_000) {
-        const secret = await app.secret()
-        if (!secret) fail('CredentialMissing')
-        const result = await this.request('https://api.tapd.cn/tokens/request_token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: 'Basic ' + Buffer.from(`${app.clientId}:${secret}`).toString('base64') }, body: new URLSearchParams({ grant_type: 'client_credentials' }).toString() }, undefined, beforeRequest)
-        if (result.status !== 1) fail('AuthDenied')
-        const payload = object(result.data)
-        const resource = object(payload.resource)
-        if (resource.type !== 'open_app_auth' || String(resource.app_id) !== app.clientId) fail('AuthDenied')
-        const scopes = text(payload.scope, 4096).split(/\s+/u).filter(Boolean)
-        for (const category of ['story', 'task', 'bug']) if (!scopes.includes(category) && (!scopes.includes(category + '#read') || !scopes.includes(category + '#write'))) fail('AuthDenied')
-        if (typeof payload.expires_in !== 'number' || !Number.isInteger(payload.expires_in) || payload.expires_in < 1 || payload.expires_in > 86400 * 90 || typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer') fail('InvalidRemoteResponse')
-        candidate = { platform: 'tapd', instance: connection.instance, connectionRevision: connection.revision, accessToken: text(payload.access_token), refreshToken: null, expiresAt: this.options.now() + payload.expires_in * 1000, clientId: app.clientId, tokenEndpoint: 'https://api.tapd.cn/tokens/request_token', purpose: 'tapd-project', accountLabel: null, resourceIds: [], scopes }
-      }
-      if (!candidate.resourceIds.includes(projectId)) {
-        const probe = new URL('https://api.tapd.cn/stories')
-        probe.searchParams.set('workspace_id', projectId); probe.searchParams.set('limit', '1'); probe.searchParams.set('fields', 'id')
-        const observed = await this.request(probe.href, { method: 'GET', headers: { authorization: 'Bearer ' + candidate.accessToken } }, undefined, beforeRequest)
-        if (observed.status !== 1 || !Array.isArray(observed.data)) fail('AuthDenied')
-        candidate = { ...candidate, resourceIds: [...candidate.resourceIds, projectId] }
-      }
-      this.live(connection.id, epoch)
-      return candidate
-    })
-    this.live(connection.id, epoch)
-    if (!grant) fail('CredentialMissing')
-    return grant.accessToken
   }
   async state(connectionId: string): Promise<SafeAuthState> {
     const attempt = this.attempts.get(connectionId)
     const grant = await this.options.store.read(connectionId)
-    const project = await this.options.store.read(connectionId + '-project')
     const error = this.failures.get(connectionId) ?? null
     // A completed exchange outranks a leftover attempt: the official page can
     // finish while the polling client is closed, and reporting "waiting" for a
     // sign-in that already succeeded leaves the editor stuck forever.
     const live = grant !== null && grant.expiresAt > this.options.now()
     if (live && attempt !== undefined) this.clearAttempt(attempt)
-    return { connectionId, status: live ? 'authorized' : attempt !== undefined ? 'waiting' : grant !== null ? 'expired' : error !== null ? 'failed' : 'signed-out', attemptId: live ? null : attempt?.id ?? null, expiresAt: live ? grant.expiresAt : attempt?.expiresAt ?? grant?.expiresAt ?? null, accountLabel: grant?.accountLabel ?? null, resourceIds: [...new Set([...(grant?.resourceIds ?? []), ...(project?.resourceIds ?? [])])], projectAccess: project && project.expiresAt > this.options.now() && project.resourceIds.length > 0 ? 'ready' : 'unverified', error }
+    return { connectionId, status: live ? 'authorized' : attempt !== undefined ? 'waiting' : grant !== null ? 'expired' : error !== null ? 'failed' : 'signed-out', attemptId: live ? null : attempt?.id ?? null, expiresAt: live ? grant.expiresAt : attempt?.expiresAt ?? grant?.expiresAt ?? null, accountLabel: grant?.accountLabel ?? null, resourceIds: [...new Set(grant?.resourceIds ?? [])], error }
   }
   async cancel(connectionId: string, attemptId: string): Promise<void> {
     const attempt = this.attempts.get(connectionId)
@@ -262,7 +201,6 @@ export class OAuthManager {
       // Deny new operations first, then let every admitted commit settle before removal.
       await Promise.allSettled([...this.running])
       await this.options.store.remove(connectionId)
-      await this.options.store.remove(connectionId + '-project')
       this.failures.delete(connectionId)
     } finally { this.withdrawing.delete(connectionId) }
   }

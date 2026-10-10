@@ -1,6 +1,5 @@
 import type { TaskRecord } from '../types.ts'
-import { projectionFor } from './mapping.ts'
-import { projectLocal, projectRemote } from './snapshot.ts'
+import { projectLocal, projectRemote, projectionFor } from './snapshot.ts'
 import type {
   FieldValue, RemoteItem, SyncBaseline, SyncField, SyncFields, SyncPatch, SyncPlan,
 } from './types.ts'
@@ -30,15 +29,15 @@ function hasPatch(patch: SyncPatch): boolean {
 
 /**
  * Decide the task-level action for one linked item. Only the canonical snapshots of
- * selected fields are compared; timestamps never drive the decision. When both sides
- * changed, non-status fields take the remote value and the status field takes the
- * local value — the whole status, never a per-field merge.
+ * selected fields are compared; timestamps never drive the decision. The selected
+ * set is the rule's own projection — today just the status — so the only patch a
+ * plan can carry is a status the local task changed after the last sync.
  */
 export function planSync(input: {
   local: TaskRecord | null; remote: RemoteItem; baseline: SyncBaseline | null; rule: SyncRule
 }): SyncPlan {
   const { local, remote, baseline, rule } = input
-  const projection = projectionFor(rule, remote.key.typeId)
+  const projection = projectionFor(rule)
   const selected = selectedFields(remote, projection.fields)
 
   if (local === null) {
@@ -69,30 +68,10 @@ export function planSync(input: {
     return { kind: 'unchanged', localPatch: {}, remotePatch: {}, selectedFields: selected }
   }
 
-  if (remoteChanged.length === 0) {
-    const remotePatch: SyncPatch = {}
-    for (const field of localChanged) {
-      if (!deepEqual(localFields[field], remoteFields[field])) setField(remotePatch, field, localFields[field])
-    }
-    return { kind: 'push', localPatch: {}, remotePatch, selectedFields: selected }
-  }
-
-  if (localChanged.length === 0) {
-    const localPatch: SyncPatch = {}
-    for (const field of remoteChanged) {
-      if (!deepEqual(remoteFields[field], localFields[field])) setField(localPatch, field, remoteFields[field])
-    }
-    return { kind: 'pull', localPatch, remotePatch: {}, selectedFields: selected }
-  }
-
-  const localPatch: SyncPatch = {}
+  // Status is the only reconciled field and the local side always wins it: the
+  // user's own status change is the intent, so the remote target is written back
+  // whether or not the platform moved the status in the meantime.
   const remotePatch: SyncPatch = {}
-  for (const field of selected) {
-    if (field === 'status') {
-      if (!deepEqual(localFields.status, remoteFields.status)) setField(remotePatch, 'status', localFields.status)
-    } else if (!deepEqual(remoteFields[field], localFields[field])) {
-      setField(localPatch, field, remoteFields[field])
-    }
-  }
-  return { kind: 'merge', localPatch, remotePatch, selectedFields: selected }
+  if (localChanged.includes('status')) setField(remotePatch, 'status', localFields.status)
+  return { kind: hasPatch(remotePatch) ? 'push' : 'unchanged', localPatch: {}, remotePatch, selectedFields: selected }
 }

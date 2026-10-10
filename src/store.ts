@@ -12,7 +12,7 @@ import {
 import { ATTACHMENT_BYTE_LIMIT, contentAttachments, contentText, textContent, validateContent } from './content.ts'
 import type { TaskAttachmentUpload, TaskContent } from './types.ts'
 import { withSqliteTransaction } from './sqlite-transaction.ts'
-import { migrateSyncSchema } from './sync/schema.ts'
+import { migrateSyncSchema, SYNC_SCHEMA_VERSION } from './sync/schema.ts'
 import { statisticsSchema } from './statistics-store.ts'
 
 const statuses = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
@@ -21,8 +21,10 @@ const titleLimit = 200
 const notesLimit = 20_000
 const subtaskNotesLimit = 2_000
 
-/** Current schema version; the store refuses anything newer. */
-const schemaVersion = 10
+/** Current schema version; the store refuses anything newer. This is the sync
+ * migration's own version, which writes the same `user_version`, so the two can
+ * never drift apart. */
+const schemaVersion = SYNC_SCHEMA_VERSION
 /** Newest rows first inside each status group, with a stable id tie-break. */
 const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
 

@@ -1,59 +1,101 @@
 import type {
-  HostCredentials, RemoteItem, RemoteKey, SyncAdapter, SyncField, SyncPatch, SyncTransport, WriteEvidence, WriteIntent,
+  HostCredentials, RemoteItem, RemoteKey, SyncAdapter, SyncPatch, SyncTransport, WriteEvidence, WriteIntent,
 } from '../types.ts'
 import type {
-  MetadataScope, Option, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, TypeMapping,
+  MetadataScope, Option, OrganizationChoice, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities,
 } from '../dto.ts'
 import {
   classifyWriteBusinessError, decodeCollection, decodeEnvelope, decodeFieldMap, decodeOptionCollection,
   decodeStatusMap, decodeStatusOptions, decodeTapdFilterIdentity, decodeTapdItem, decodeTapdItemId,
-  decodeTransitions, decodeWorkflows, decodeWorkitemTypes, hasFieldConfig, storySubtypeRelation, TAPD_CATEGORY_FIELDS,
+  decodeTransitions, decodeWorkflows, decodeWorkitemTypes, hasFieldConfig, TAPD_CATEGORY_FIELDS,
   TAPD_COLLECTION, TAPD_WORKFLOW_SYSTEM, TAPD_WORKFLOW_SYSTEM_NAME, TAPD_WRAPPER,
   type TapdCategory, type TapdWorkflow, type TapdWorkitemType,
 } from './tapd-codec.ts'
 import { resolveCredentials } from '../credentials.ts'
-import { encodeDescription } from '../description-codec.ts'
-import { encodeStatus, mappingFor } from '../mapping.ts'
+import { encodeStatus } from '../mapping.ts'
 import { syncError, syncRemoteError } from '../errors.ts'
 
 const PAGE_SIZE = 200
 const ORIGIN = 'https://api.tapd.cn'
 
-function basicAuth(user: string, password: string): string {
-  return `Basic ${btoa(`${user}:${password}`)}`
-}
-
-function categoryOf(mapping: TypeMapping): TapdCategory {
-  if (mapping.category === 'story' || mapping.category === 'bug' || mapping.category === 'task') return mapping.category
+/**
+ * TAPD splits work items across three collections, so a rule's own type *is* one
+ * of them. The rule names it with a `category` condition — the TAPD counterpart
+ * of 云效's type — and every other condition becomes a query parameter.
+ */
+function categoryOf(rule: SyncRule): TapdCategory {
+  const value = rule.conditions.flat().find(condition => String(condition.field) === 'category')?.value[0]
+  if (value === 'story' || value === 'bug' || value === 'task') return value
   throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'category' }))
 }
 
+/** One condition field → the TAPD query parameter that selects the same rows. */
+const CONDITION_PARAMS: Readonly<Record<string, string>> = {
+  category: 'workitem_type', workitemType: 'workitem_type_id', status: 'status', statusStage: 'status',
+  assignedTo: 'owner', creator: 'creator', priority: 'priority', sprint: 'iteration_id',
+  gmtCreate: 'created', gmtModified: 'modified', subject: 'name', tag: 'label',
+}
+
+/** The three collections a TAPD rule can target, in the platform's own order. */
+const TAPD_CATEGORIES: readonly TapdCategory[] = ['story', 'bug', 'task']
+/** TAPD's own names for them, as its own UI shows them. */
+const TAPD_TYPE_LABELS: Readonly<Record<TapdCategory, string>> = { story: '需求', bug: '缺陷', task: '任务' }
+
+function isTapdCategory(value: string): value is TapdCategory {
+  return value === 'story' || value === 'bug' || value === 'task'
+}
+
+/** The equality values of one condition field, if the rule set any. */
+function conditionValues(rule: SyncRule, field: string): string[] {
+  return rule.conditions.flat()
+    .filter(condition => String(condition.field) === field)
+    .flatMap(condition => condition.value)
+    .filter(value => value !== '')
+}
+
 /**
- * Build a TAPD (public cloud) adapter for one connection. The Basic-auth API
- * user/password are resolved from the referenced environment variables inside
- * the factory, so a missing credential fails before any request and the
- * credentials never enter a DTO. Only `https://api.tapd.cn` is used.
+ * Build a TAPD (public cloud) adapter for one connection. The personal access
+ * token is resolved from the Host credential store or the referenced
+ * environment variable inside the factory, so a missing credential fails before
+ * any request and the credential never enters a DTO. The token travels as
+ * `Authorization: Bearer`, exactly as WorkBuddy's TAPD connector uses it, and
+ * only `https://api.tapd.cn` is used.
  */
+/**
+ * List the organizations a TAPD personal access token belongs to. Verified live
+ * on 2026-10-10: `/workspaces/projects` demands a `company_id`, while
+ * `/workspaces/user_participant_projects` answers with no parameter at all and
+ * includes the account's organization as a row whose `category` is
+ * `organization`. So the company never has to be typed in by hand.
+ */
+export async function listTapdOrganizations(token: string, transport: SyncTransport, signal: AbortSignal): Promise<OrganizationChoice[]> {
+  if (!token.trim()) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'token' }))
+  const response = await transport.read({
+    url: new URL(`${ORIGIN}/workspaces/user_participant_projects`),
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}` },
+    readOnly: true,
+  }, signal)
+  return decodeOptionCollection(response.value, 'Workspace', 'id', 'name', item => item.category === 'organization')
+    .map(option => ({ id: option.id, name: option.label }))
+}
+
 export function createTapdAdapter(
   connection: SafeConnection,
   transport: SyncTransport,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
-  projectCredential?: HostCredentials,
+  storedCredential?: HostCredentials,
 ): SyncAdapter {
   if (connection.platform !== 'tapd') {
     throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
   }
-  if (connection.authentication?.mode === 'oauth' && !projectCredential) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection', field: 'authentication' }))
-  const credentials = projectCredential ?? resolveCredentials(connection, env)
-  if (credentials.kind !== 'tapd' && credentials.kind !== 'tapd-project') throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
+  const credentials = storedCredential ?? resolveCredentials(connection, env)
+  if (credentials.kind !== 'tapd') throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'tokenEnv' }))
   const companyId = connection.companyId
   const instance = companyId
-  const authorization = credentials.kind === 'tapd-project' ? 'Bearer ' + credentials.token : basicAuth(credentials.user, credentials.password)
-  /** The application-project grant, when this adapter runs on one; it bounds workspaces. */
-  const project = credentials.kind === 'tapd-project' ? credentials : undefined
+  const authorization = 'Bearer ' + credentials.token
 
   const url = (path: string, params: Record<string, string> = {}): URL => {
-    if (project && params.workspace_id && !project.projectIds.includes(params.workspace_id)) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection' }))
     const built = new URL(`${ORIGIN}${path}`)
     for (const [key, value] of Object.entries(params)) built.searchParams.set(key, value)
     return built
@@ -64,13 +106,19 @@ export function createTapdAdapter(
   const wrapperFor = (category: TapdCategory): string => TAPD_WRAPPER[category]
 
   async function listProjects(signal: AbortSignal): Promise<Option[]> {
+    // A personal access token cannot enumerate a company's projects: TAPD
+    // answers 403 (`not allowed to access project <company>`), verified live on
+    // 2026-10-10. It can list the projects its own account participates in,
+    // which is exactly the set a rule may target, so the company id stays only
+    // as the connection's identity. The company workspace itself is not a
+    // project and is filtered out.
     const response = await transport.read({
-      url: url('/workspaces/projects', { company_id: companyId }),
+      url: url('/workspaces/user_participant_projects'),
       method: 'GET',
       headers: auth(),
       readOnly: true,
     }, signal)
-    return decodeOptionCollection(response.value, 'Workspace', 'id', 'name')
+    return decodeOptionCollection(response.value, 'Workspace', 'id', 'name', item => item.category !== 'organization')
   }
 
   async function fetchFieldMap(projectId: string, category: TapdCategory, signal: AbortSignal): Promise<Record<string, unknown>> {
@@ -159,9 +207,7 @@ export function createTapdAdapter(
 
   async function capability(
     projectId: string,
-    typeId: string,
     category: TapdCategory,
-    workflowId: string | null,
     fieldMap: Record<string, unknown>,
     workflows: TapdWorkflow[],
     signal: AbortSignal,
@@ -176,7 +222,7 @@ export function createTapdAdapter(
 
     const readStates = category === 'task'
       ? decodeStatusOptions(fieldMap)
-      : await fetchStatusMap(projectId, category, typeId, signal)
+      : await fetchStatusMap(projectId, category, category, signal)
 
     let workflow: TypeCapabilities['workflow'] = { readOnly: true }
     let writeStates: Option[] = []
@@ -185,7 +231,7 @@ export function createTapdAdapter(
       workflow = { readOnly: false }
       writeStates = readStates
     } else {
-      const resolved = resolveWorkflow(category, workflowId, workflows)
+      const resolved = resolveWorkflow(category, null, workflows)
       if (resolved !== null && resolved.type === 'classic') {
         workflow = { readOnly: false }
         writeStates = readStates
@@ -193,46 +239,32 @@ export function createTapdAdapter(
     }
 
     return {
-      typeId,
+      typeId: category,
       fields: ['title', 'description', 'status'],
       readStates,
       writeStates,
-      representation: { format: 'richtext', roundTrip: true },
+      representation: { format: 'text', roundTrip: true },
       paging: { kind: 'cursor' },
       workflow,
       candidateFields,
     }
   }
 
-  /** Throw MappingIncompatible for a local optional value with no known remote candidate. */
-  function mappedValue(localValue: string, valueMap: Record<string, string> | undefined, field: SyncField): string {
-    if (!valueMap) throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field }))
-    const remote = valueMap[localValue]
-    if (remote === undefined || remote === '') throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field }))
-    return remote
-  }
-
   /** Gate a real status transition on a classic workflow plus a known safe edge; tasks skip the workflow API. */
   async function gateStatusWrite(
     key: RemoteKey,
     category: TapdCategory,
-    mapping: TypeMapping,
     currentRaw: string,
     targetRaw: string,
     signal: AbortSignal,
   ): Promise<void> {
     if (category === 'task') return
     const workflows = await fetchWorkflows(key.projectId, category, signal)
-    let workflowId: string | null = null
-    if (category === 'story') {
-      const workitemTypes = await fetchWorkitemTypes(key.projectId, signal)
-      workflowId = workitemTypes.find(t => t.id === mapping.typeId)?.workflowId ?? null
-    }
-    const workflow = resolveWorkflow(category, workflowId, workflows)
+    const workflow = resolveWorkflow(category, null, workflows)
     if (workflow === null || workflow.type !== 'classic') {
       throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
     }
-    const transitions = await fetchTransitions(key.projectId, category, mapping.typeId, signal)
+    const transitions = await fetchTransitions(key.projectId, category, category, signal)
     const edge = transitions.find(t => t.source === currentRaw && t.target === targetRaw)
     if (edge === undefined || edge.requiresUnsupported) {
       throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
@@ -244,7 +276,7 @@ export function createTapdAdapter(
 
   return {
     async metadata(scope: MetadataScope, signal: AbortSignal): Promise<SyncMetadata> {
-      const projects = project ? project.projectIds.map(id => ({ id, label: id })) : await listProjects(signal)
+      const projects = await listProjects(signal)
       let members: Option[] = []
       let iterations: Option[] = []
       let types: Option[] = []
@@ -265,31 +297,14 @@ export function createTapdAdapter(
         }, signal)
         iterations = decodeOptionCollection(iterationResponse.value, 'Iteration', 'id', 'name')
 
-        const workitemTypes = await fetchWorkitemTypes(scope.projectId, signal)
-        const storySubtypes = workitemTypes.filter(t => t.entityType === 'story')
-        types = [
-          ...storySubtypes.map(t => ({ id: t.id, label: t.name })),
-          { id: 'bug', label: 'Bug' },
-          { id: 'task', label: 'Task' },
-        ]
-
-        const targetIds = scope.typeId !== undefined ? [scope.typeId] : types.map(t => t.id)
-        const categoriesNeeded = new Set(targetIds.map(typeId => categoryForTypeId(typeId, workitemTypes)))
-        const fieldMaps = new Map<TapdCategory, Record<string, unknown>>()
-        const workflowLists = new Map<TapdCategory, TapdWorkflow[]>()
-        for (const category of categoriesNeeded) {
-          fieldMaps.set(category, await fetchFieldMap(scope.projectId, category, signal))
-          if (category !== 'task') workflowLists.set(category, await fetchWorkflows(scope.projectId, category, signal))
-        }
-        for (const typeId of targetIds) {
-          const category = categoryForTypeId(typeId, workitemTypes)
-          const workflowId = category === 'story'
-            ? (workitemTypes.find(t => t.id === typeId)?.workflowId ?? null)
-            : null
-          typeCapabilities.push(await capability(
-            scope.projectId, typeId, category, workflowId,
-            fieldMaps.get(category)!, workflowLists.get(category) ?? [], signal,
-          ))
+        // The three TAPD collections are the selectable types; each carries its own
+        // field configuration and its own status set.
+        types = TAPD_CATEGORIES.map(category => ({ id: category, label: TAPD_TYPE_LABELS[category] }))
+        const targets = scope.typeId !== undefined && isTapdCategory(scope.typeId) ? [scope.typeId] : TAPD_CATEGORIES
+        for (const category of targets) {
+          const fieldMap = await fetchFieldMap(scope.projectId, category, signal)
+          const workflows = category === 'task' ? [] : await fetchWorkflows(scope.projectId, category, signal)
+          typeCapabilities.push(await capability(scope.projectId, category, fieldMap, workflows, signal))
         }
       }
       return {
@@ -305,79 +320,82 @@ export function createTapdAdapter(
     },
 
     async *discover(rule: SyncRule, signal: AbortSignal): AsyncIterable<RemoteItem[]> {
-      const { assignees, iterationIds, statusIds, typeIds } = rule.filters
-      for (const mapping of rule.mappings) {
-        const category = categoryOf(mapping)
-        if (typeIds.length > 0 && !typeIds.includes(mapping.typeId)) continue
-        const ownerField = TAPD_CATEGORY_FIELDS[category].owner
-        let cursor: string | null = null
-        for (;;) {
-          const params: Record<string, string> = {
-            workspace_id: rule.projectId,
-            limit: String(PAGE_SIZE),
-            order: 'id desc',
-          }
-          if (cursor === null) params.page = '1'
-          else params.cursor = cursor
-          const response = await transport.read({
-            url: url(`/${collectionFor(category)}`, params),
-            method: 'GET',
-            headers: auth(),
-            readOnly: true,
-          }, signal)
-          const rawItems = decodeCollection(response.value, wrapperFor(category))
-          if (rawItems.length > PAGE_SIZE) {
-            throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'connection', field: 'page' }))
-          }
-          const batch: RemoteItem[] = []
-          for (const rawItem of rawItems) {
-            const raw = rawItem as Record<string, unknown>
-            if (category === 'story' && mapping.typeId !== 'story') {
-              const relation = storySubtypeRelation(raw.workitem_type_id, mapping.typeId)
-              if (relation === 'malformed') {
-                throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'workitem_type_id' }))
-              }
-              if (relation === 'skip') continue
-            }
-            const item = decodeTapdItem(rawItem, { instance, projectId: rule.projectId, typeId: mapping.typeId, category, mapping })
-            if (statusIds.length > 0 && !statusIds.includes(item.rawStatus)) continue
-            const identity = decodeTapdFilterIdentity(rawItem, ownerField)
-            if (assignees.length > 0) {
-              if (identity.owner.kind === 'absent' || identity.owner.kind === 'malformed') {
-                throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: ownerField }))
-              }
-              if (identity.owner.kind === 'null') continue
-              if (!assignees.includes(identity.owner.id)) continue
-            }
-            if (iterationIds.length > 0) {
-              if (identity.iteration.kind === 'absent' || identity.iteration.kind === 'malformed') {
-                throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'iteration_id' }))
-              }
-              if (identity.iteration.kind === 'null') continue
-              if (!iterationIds.includes(identity.iteration.id)) continue
-            }
-            batch.push(item)
-          }
-          yield batch
-          if (rawItems.length < PAGE_SIZE) break
-          // Full page: advance the ID cursor from the last raw item's id.
-          let lastId: string
-          try {
-            lastId = decodeTapdItemId(rawItems[rawItems.length - 1]!)
-          } catch {
-            throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
-          }
-          if (cursor !== null && lastId === cursor) {
-            throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
-          }
-          cursor = lastId
+      // The rule's own type is the collection to walk; its category condition is
+      // spent on that choice and never sent as a filter parameter.
+      const category = categoryOf(rule)
+      const ownerField = TAPD_CATEGORY_FIELDS[category].owner
+      const assignees = conditionValues(rule, 'assignedTo')
+      const iterationIds = conditionValues(rule, 'sprint')
+      const statusIds = conditionValues(rule, 'status')
+      const filters = Object.entries(CONDITION_PARAMS)
+        .filter(([field]) => field !== 'category')
+        .flatMap(([field, parameter]) => {
+          const values = conditionValues(rule, field)
+          return values.length > 0 ? [[parameter, values.join('|')] as const] : []
+        })
+      let cursor: string | null = null
+      for (;;) {
+        const params: Record<string, string> = {
+          workspace_id: rule.projectId,
+          limit: String(PAGE_SIZE),
+          order: 'id desc',
         }
+        for (const [parameter, value] of filters) params[parameter] = value
+        if (cursor === null) params.page = '1'
+        else params.cursor = cursor
+        const response = await transport.read({
+          url: url(`/${collectionFor(category)}`, params),
+          method: 'GET',
+          headers: auth(),
+          readOnly: true,
+        }, signal)
+        const rawItems = decodeCollection(response.value, wrapperFor(category))
+        if (rawItems.length > PAGE_SIZE) {
+          throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'connection', field: 'page' }))
+        }
+        const batch: RemoteItem[] = []
+        for (const rawItem of rawItems) {
+          const item = decodeTapdItem(rawItem, {
+            instance, projectId: rule.projectId, typeId: category, category, statusWriteStates: rule.statusWriteStates,
+          })
+          // The platform already filtered, but a silently ignored parameter would
+          // widen the scope, so the identity-bearing ones are verified once more.
+          if (statusIds.length > 0 && !statusIds.includes(item.rawStatus)) continue
+          const identity = decodeTapdFilterIdentity(rawItem, ownerField)
+          if (assignees.length > 0) {
+            if (identity.owner.kind === 'absent' || identity.owner.kind === 'malformed') {
+              throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: ownerField }))
+            }
+            if (identity.owner.kind === 'null') continue
+            if (!assignees.includes(identity.owner.id)) continue
+          }
+          if (iterationIds.length > 0) {
+            if (identity.iteration.kind === 'absent' || identity.iteration.kind === 'malformed') {
+              throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'iteration_id' }))
+            }
+            if (identity.iteration.kind === 'null') continue
+            if (!iterationIds.includes(identity.iteration.id)) continue
+          }
+          batch.push(item)
+        }
+        yield batch
+        if (rawItems.length < PAGE_SIZE) break
+        // Full page: advance the ID cursor from the last raw item's id.
+        let lastId: string
+        try {
+          lastId = decodeTapdItemId(rawItems[rawItems.length - 1]!)
+        } catch {
+          throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
+        }
+        if (cursor !== null && lastId === cursor) {
+          throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
+        }
+        cursor = lastId
       }
     },
 
     async read(key: RemoteKey, rule: SyncRule, signal: AbortSignal): Promise<RemoteItem> {
-      const mapping = mappingFor(rule, key.typeId)
-      const category = categoryOf(mapping)
+      const category = isTapdCategory(key.typeId) ? key.typeId : categoryOf(rule)
       const response = await transport.read({
         url: url(`/${collectionFor(category)}`, { workspace_id: key.projectId, id: key.id }),
         method: 'GET',
@@ -392,46 +410,34 @@ export function createTapdAdapter(
         throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'detail' }))
       }
       return decodeTapdItem(rawItems[0], {
-        instance, projectId: key.projectId, typeId: key.typeId, category, id: key.id, mapping,
+        instance, projectId: key.projectId, typeId: category, category, id: key.id, statusWriteStates: rule.statusWriteStates,
       })
     },
 
+    /**
+     * Write back the one field a rule owns: the status, as the rule's own map
+     * decides. Every other patch key is a configuration error, never a silent
+     * write attempt — the same contract 云效's adapter implements.
+     */
     async write(key: RemoteKey, patch: SyncPatch, observed: RemoteItem, rule: SyncRule, signal: AbortSignal): Promise<void> {
-      const mapping = mappingFor(rule, key.typeId)
-      const category = categoryOf(mapping)
-      const body: Record<string, string> = { workspace_id: key.projectId, id: key.id }
-      const titleField = mapping.fieldIds.title ?? TAPD_CATEGORY_FIELDS[category].title
-      if (patch.title !== undefined) body[titleField] = patch.title
-      if (patch.description !== undefined) {
-        if (!observed.description.roundTrip) {
-          throw syncRemoteError(syncError('UnsupportedRepresentation', { scope: 'item', field: 'description' }))
-        }
-        body.description = encodeDescription(patch.description, observed.description.format)
-      }
-      if (patch.priority !== undefined) {
-        body[mapping.fieldIds.priority ?? 'priority_label'] = mappedValue(patch.priority, mapping.valueMaps?.priority, 'priority')
-      }
-      if (patch.tags !== undefined) {
-        const labels = patch.tags.map(tag => mappedValue(tag, mapping.valueMaps?.tags, 'tags'))
-        body[mapping.fieldIds.tags ?? 'label'] = labels.join('|')
-      }
-      if (patch.storyPoints !== undefined) {
-        throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'storyPoints' }))
-      }
-      if (patch.status !== undefined) {
-        const targetRaw = encodeStatus(patch.status, observed, mapping)
-        if (targetRaw !== observed.rawStatus) {
-          await gateStatusWrite(key, category, mapping, observed.rawStatus, targetRaw, signal)
-          body[mapping.fieldIds.status ?? 'status'] = targetRaw
-          if (category === 'story') body.is_auto_close_task = '0'
-          else if (category === 'task') body.auto_complete_effort = '0'
-          else body.keep_owner = '1'
+      for (const field of Object.keys(patch) as (keyof SyncPatch)[]) {
+        if (field !== 'status' && patch[field] !== undefined) {
+          throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field }))
         }
       }
-      if (Object.keys(body).length <= 2) return
+      if (patch.status === undefined) return
+      const category = isTapdCategory(key.typeId) ? key.typeId : categoryOf(rule)
+      const targetRaw = encodeStatus(patch.status, observed.rawStatus, rule.statusWriteStates)
+      if (targetRaw === observed.rawStatus) return
+      await gateStatusWrite(key, category, observed.rawStatus, targetRaw, signal)
+      const body: Record<string, string> = { workspace_id: key.projectId, id: key.id, status: targetRaw }
+      // Keep TAPD's own automatic side effects out of a status write.
+      if (category === 'story') body.is_auto_close_task = '0'
+      else if (category === 'task') body.auto_complete_effort = '0'
+      else body.keep_owner = '1'
 
       const response = await transport.write({
-        url: url(`/${collectionFor(category)}`),
+        url: url(`/${collectionFor(category)}/update`),
         method: 'POST',
         headers: auth({ 'content-type': 'application/x-www-form-urlencoded' }),
         body: new URLSearchParams(body).toString(),

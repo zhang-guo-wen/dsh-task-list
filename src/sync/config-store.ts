@@ -2,8 +2,12 @@ import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import type {
   CreateConnectionRequest, CreateSyncRuleRequest, DeleteConnectionRequest, DeleteSyncRuleRequest,
-  SafeConnection, SyncRule, SyncRuleFilters, TypeMapping, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  SafeConnection, StatusWriteStates, SyncRule, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  WorkitemConditionGroups, WorkitemFillField,
 } from './dto.ts'
+import { DEFAULT_WORKITEM_FILL_FIELDS, WORKITEM_FILL_FIELDS_BY_PLATFORM } from './dto.ts'
+import { statusMappingReady } from './mapping.ts'
+import { buildConditions } from './query/filters.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 import { parseConnectionAuth } from './validation.ts'
 import { withSqliteTransaction } from '../sqlite-transaction.ts'
@@ -51,10 +55,22 @@ function validateCenterOrganizationId(mode: 'center' | 'region', organizationId:
   }
 }
 
-function validateRuleSize(filters: SyncRuleFilters, mappings: TypeMapping[]): void {
-  const lists = [filters.assignees.length, filters.typeIds.length, filters.iterationIds.length, filters.statusIds.length]
-  if (lists.some(count => count > LIST_LIMIT)) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'filters' }))
-  if (mappings.length > LIST_LIMIT) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'mappings' }))
+/** The stored rule query, through the same validator the platform request uses. */
+function validateRuleQuery(conditions: WorkitemConditionGroups | undefined): void {
+  if (!Array.isArray(conditions)) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'conditions' }))
+  try {
+    buildConditions(conditions)
+  } catch {
+    throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'conditions' }))
+  }
+  if (conditions.length > LIST_LIMIT) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'conditions' }))
+}
+
+/** Refuse an incomplete status mapping: a rule that cannot write status back is not usable. */
+function validateStatusMap(statusWriteStates: StatusWriteStates | undefined): void {
+  if (!statusMappingReady(statusWriteStates ?? null)) {
+    throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'statusWriteStates' }))
+  }
 }
 
 interface ConnectionRow {
@@ -69,9 +85,8 @@ interface ConnectionRow {
   region_host: string | null
   token_env: string | null
   company_id: string | null
-  user_env: string | null
-  password_env: string | null
   authentication: string
+  fill_fields: string | null
 }
 
 interface RuleRow {
@@ -83,8 +98,8 @@ interface RuleRow {
   project_name: string | null
   enabled: number
   workspace_id: string | null
-  filters: string
-  mappings: string
+  conditions: string
+  status_write_states: string
 }
 
 function parseStored<T>(text: string, field: string): T {
@@ -114,9 +129,11 @@ function instanceOf(connection: {
 
 function toSafeConnection(row: ConnectionRow, env: Env): SafeConnection {
   const authentication = parseConnectionAuth(parseStored(row.authentication, 'authentication'))
+  const fillFields = toFillFields(row.fill_fields, row.platform)
   if (row.platform === 'yunxiao') {
     const credentialPresent = env()[row.token_env!] !== undefined
     return {
+      fillFields,
       id: row.id, name: row.name, enabled: row.enabled === 1, revision: row.revision,
       authentication, credentialPresent: authentication.mode === 'oauth' ? false : credentialPresent, instance: row.instance, platform: 'yunxiao',
       mode: row.mode as 'center' | 'region',
@@ -125,12 +142,48 @@ function toSafeConnection(row: ConnectionRow, env: Env): SafeConnection {
       tokenEnv: row.token_env!,
     }
   }
-  const credentialPresent = env()[row.user_env!] !== undefined && env()[row.password_env!] !== undefined
+  const credentialPresent = env()[row.token_env!] !== undefined
   return {
+    fillFields,
     id: row.id, name: row.name, enabled: row.enabled === 1, revision: row.revision,
     authentication, credentialPresent: authentication.mode === 'oauth' ? false : credentialPresent, instance: row.instance, platform: 'tapd',
-    companyId: row.company_id!, userEnv: row.user_env!, passwordEnv: row.password_env!,
+    companyId: row.company_id!, tokenEnv: row.token_env!,
   }
+}
+
+/**
+ * The stored prefill selection normalized to the connection's platform, or the
+ * default set when a connection predates the column (NULL) or carries something
+ * unreadable. The two platforms carry different fields, so an id belonging to
+ * the other one is dropped rather than handed to a caller that cannot use it.
+ */
+function toFillFields(stored: string | null, platform: 'yunxiao' | 'tapd'): WorkitemFillField[] {
+  const allowed = new Set<string>(WORKITEM_FILL_FIELDS_BY_PLATFORM[platform])
+  if (stored === null) return [...DEFAULT_WORKITEM_FILL_FIELDS]
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stored) as unknown
+  } catch {
+    return [...DEFAULT_WORKITEM_FILL_FIELDS]
+  }
+  if (!Array.isArray(parsed)) return [...DEFAULT_WORKITEM_FILL_FIELDS]
+  const kept = WORKITEM_FILL_FIELDS_BY_PLATFORM[platform]
+    .filter(field => parsed.includes(field) && allowed.has(field))
+  return kept.length > 0 ? [...kept] : [...DEFAULT_WORKITEM_FILL_FIELDS]
+}
+
+/** Refuse a selection that names a field the connection's platform cannot carry. */
+function validateFillFields(platform: 'yunxiao' | 'tapd', fields: readonly WorkitemFillField[]): void {
+  const allowed = new Set<string>(WORKITEM_FILL_FIELDS_BY_PLATFORM[platform])
+  for (const field of fields) {
+    if (!allowed.has(field)) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'fillFields' }))
+  }
+}
+
+/** The selection as stored: the platform's own order, defaults when empty. */
+function storedFillFields(platform: 'yunxiao' | 'tapd', fields: readonly WorkitemFillField[]): string {
+  const kept = WORKITEM_FILL_FIELDS_BY_PLATFORM[platform].filter(field => fields.includes(field))
+  return JSON.stringify(kept.length > 0 ? kept : DEFAULT_WORKITEM_FILL_FIELDS)
 }
 
 function toSyncRule(row: RuleRow): SyncRule {
@@ -142,8 +195,8 @@ function toSyncRule(row: RuleRow): SyncRule {
     projectName: row.project_name ?? null,
     enabled: row.enabled === 1,
     workspaceId: row.workspace_id,
-    filters: parseStored<SyncRuleFilters>(row.filters, 'filters'),
-    mappings: parseStored<TypeMapping[]>(row.mappings, 'mappings'),
+    conditions: parseStored<WorkitemConditionGroups>(row.conditions, 'conditions'),
+    statusWriteStates: parseStored<StatusWriteStates>(row.status_write_states, 'statusWriteStates'),
   }
 }
 
@@ -170,22 +223,24 @@ export class SyncConfigStore {
     const id = randomUUID()
     validateName('connection', input.name)
     if (input.platform === 'yunxiao') { validateEnvName('connection', 'tokenEnv', input.tokenEnv); validateRegionHost(input.mode, input.regionHost); validateCenterOrganizationId(input.mode, input.organizationId, (input.authentication ?? { mode: 'manual' }).mode === 'oauth') }
-    else { validateEnvName('connection', 'userEnv', input.userEnv); validateEnvName('connection', 'passwordEnv', input.passwordEnv) }
+    else validateEnvName('connection', 'tokenEnv', input.tokenEnv)
     const authentication = parseConnectionAuth(input.authentication ?? { mode: 'manual' })
+    if (input.fillFields !== undefined) validateFillFields(input.platform, input.fillFields)
     const instance = instanceOf(input)
     withSqliteTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO sync_connections
-        (id, name, enabled, revision, instance, platform, mode, organization_id, region_host, token_env, company_id, user_env, password_env, authentication)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        (id, name, enabled, revision, instance, platform, mode, organization_id, region_host, token_env, company_id, user_env, password_env, authentication, fill_fields)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id, input.name, input.enabled ? 1 : 0, instance, input.platform,
         input.platform === 'yunxiao' ? input.mode : null,
         input.platform === 'yunxiao' ? input.organizationId : null,
         input.platform === 'yunxiao' ? input.regionHost : null,
-        input.platform === 'yunxiao' ? input.tokenEnv : null,
+        input.tokenEnv,
         input.platform === 'tapd' ? input.companyId : null,
-        input.platform === 'tapd' ? input.userEnv : null,
-        input.platform === 'tapd' ? input.passwordEnv : null,
+        null,
+        null,
         JSON.stringify(authentication),
+        storedFillFields(input.platform, input.fillFields ?? DEFAULT_WORKITEM_FILL_FIELDS),
       )
     })
     return this.getConnection(id)!
@@ -196,17 +251,17 @@ export class SyncConfigStore {
     if (!row) throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'id' }))
     if (input.name !== undefined) validateName('connection', input.name)
     if (input.tokenEnv !== undefined) validateEnvName('connection', 'tokenEnv', input.tokenEnv)
-    if (input.userEnv !== undefined) validateEnvName('connection', 'userEnv', input.userEnv)
-    if (input.passwordEnv !== undefined) validateEnvName('connection', 'passwordEnv', input.passwordEnv)
     // Reject other-platform keys against the existing row's platform, not the flat request.
     if (row.platform === 'yunxiao') {
-      if (input.companyId !== undefined || input.userEnv !== undefined || input.passwordEnv !== undefined) {
+      if (input.companyId !== undefined) {
         throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
       }
-    } else if (input.mode !== undefined || input.organizationId !== undefined || input.regionHost !== undefined || input.tokenEnv !== undefined) {
+    } else if (input.mode !== undefined || input.organizationId !== undefined || input.regionHost !== undefined) {
       throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
     }
     const authentication = parseConnectionAuth(input.authentication ?? parseStored(row.authentication, 'authentication'))
+    // TAPD keeps exactly one credential path: a personal access token.
+    if (row.platform === 'tapd' && authentication.mode === 'oauth') throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'authentication' }))
     const name = input.name ?? row.name
     const enabled = input.enabled === undefined ? row.enabled === 1 : input.enabled
     const mode = input.mode !== undefined ? input.mode : row.mode
@@ -214,8 +269,6 @@ export class SyncConfigStore {
     const regionHost = input.regionHost !== undefined ? input.regionHost : row.region_host
     const tokenEnv = input.tokenEnv !== undefined ? input.tokenEnv : row.token_env
     const companyId = input.companyId !== undefined ? input.companyId : row.company_id
-    const userEnv = input.userEnv !== undefined ? input.userEnv : row.user_env
-    const passwordEnv = input.passwordEnv !== undefined ? input.passwordEnv : row.password_env
     if (row.platform === 'yunxiao') { validateRegionHost(mode as 'center' | 'region', regionHost); validateCenterOrganizationId(mode as 'center' | 'region', organizationId, authentication.mode === 'oauth') }
     const instance = row.platform === 'yunxiao'
       ? instanceOf({ platform: 'yunxiao', mode: mode as 'center' | 'region', organizationId: organizationId!, regionHost })
@@ -224,11 +277,13 @@ export class SyncConfigStore {
       const referenced = this.db.prepare('SELECT 1 FROM sync_rules WHERE connection_id = ? LIMIT 1').get(input.id)
       if (referenced) throw syncRemoteError(syncError('MappingIncompatible', { scope: 'connection' }))
     }
+    if (input.fillFields !== undefined) validateFillFields(row.platform, input.fillFields)
+    const fillFields = input.fillFields === undefined ? toFillFields(row.fill_fields, row.platform) : input.fillFields
     withSqliteTransaction(this.db, () => {
       const result = this.db.prepare(`UPDATE sync_connections SET name = ?, enabled = ?, instance = ?, mode = ?,
-        organization_id = ?, region_host = ?, token_env = ?, company_id = ?, user_env = ?, password_env = ?, authentication = ?,
+        organization_id = ?, region_host = ?, token_env = ?, company_id = ?, user_env = ?, password_env = ?, authentication = ?, fill_fields = ?,
         revision = revision + 1 WHERE id = ? AND revision = ?`).run(
-        name, enabled ? 1 : 0, instance, mode, organizationId, regionHost, tokenEnv, companyId, userEnv, passwordEnv, JSON.stringify(authentication),
+        name, enabled ? 1 : 0, instance, mode, organizationId, regionHost, tokenEnv, companyId, null, null, JSON.stringify(authentication), storedFillFields(row.platform, fillFields),
         input.id, input.revision,
       )
       if (result.changes !== 1) throw syncRemoteError(syncError('LocalVersionConflict', { scope: 'connection' }))
@@ -291,17 +346,18 @@ export class SyncConfigStore {
     const connection = this.db.prepare('SELECT instance FROM sync_connections WHERE id = ?').get(input.connectionId) as { instance: string } | undefined
     if (!connection) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'connectionId' }))
     validateId('rule', 'projectId', input.projectId)
-    validateRuleSize(input.filters, input.mappings)
+    validateRuleQuery(input.conditions)
+    validateStatusMap(input.statusWriteStates)
     const instance = connection.instance
     const duplicate = this.db.prepare('SELECT 1 FROM sync_rules WHERE instance = ? AND project_id = ?').get(instance, input.projectId)
     if (duplicate) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'projectId' }))
     const id = randomUUID()
     withSqliteTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO sync_rules
-        (id, revision, connection_id, instance, project_id, project_name, enabled, workspace_id, filters, mappings)
+        (id, revision, connection_id, instance, project_id, project_name, enabled, workspace_id, conditions, status_write_states)
         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id, input.connectionId, instance, input.projectId, input.projectName ?? null, input.enabled ? 1 : 0,
-        input.workspaceId, JSON.stringify(input.filters), JSON.stringify(input.mappings),
+        input.workspaceId, JSON.stringify(input.conditions), JSON.stringify(input.statusWriteStates),
       )
     })
     return this.getRule(id)!
@@ -311,11 +367,10 @@ export class SyncConfigStore {
     const row = this.db.prepare('SELECT * FROM sync_rules WHERE id = ?').get(input.id) as unknown as RuleRow | undefined
     if (!row) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'id' }))
     if (input.projectId !== undefined) validateId('rule', 'projectId', input.projectId)
-    if (input.filters !== undefined || input.mappings !== undefined) {
-      const mergedFilters = input.filters ?? parseStored<SyncRuleFilters>(row.filters, 'filters')
-      const mergedMappings = input.mappings ?? parseStored<TypeMapping[]>(row.mappings, 'mappings')
-      validateRuleSize(mergedFilters, mergedMappings)
-    }
+    const conditions = input.conditions ?? parseStored<WorkitemConditionGroups>(row.conditions, 'conditions')
+    const statusWriteStates = input.statusWriteStates ?? parseStored<StatusWriteStates>(row.status_write_states, 'statusWriteStates')
+    if (input.conditions !== undefined) validateRuleQuery(conditions)
+    if (input.statusWriteStates !== undefined) validateStatusMap(statusWriteStates)
     const projectId = input.projectId !== undefined ? input.projectId : row.project_id
     if (input.projectId !== undefined && input.projectId !== row.project_id) {
       const duplicate = this.db.prepare('SELECT 1 FROM sync_rules WHERE instance = ? AND project_id = ? AND id != ?').get(row.instance, projectId, input.id)
@@ -324,12 +379,11 @@ export class SyncConfigStore {
     const enabled = input.enabled === undefined ? row.enabled === 1 : input.enabled
     const projectName = input.projectName !== undefined ? input.projectName : row.project_name
     const workspaceId = input.workspaceId !== undefined ? input.workspaceId : row.workspace_id
-    const filters = input.filters === undefined ? row.filters : JSON.stringify(input.filters)
-    const mappings = input.mappings === undefined ? row.mappings : JSON.stringify(input.mappings)
     withSqliteTransaction(this.db, () => {
-      const result = this.db.prepare(`UPDATE sync_rules SET project_id = ?, project_name = ?, enabled = ?, workspace_id = ?, filters = ?, mappings = ?,
+      const result = this.db.prepare(`UPDATE sync_rules SET project_id = ?, project_name = ?, enabled = ?, workspace_id = ?, conditions = ?, status_write_states = ?,
         revision = revision + 1 WHERE id = ? AND revision = ?`).run(
-        projectId, projectName, enabled ? 1 : 0, workspaceId, filters, mappings, input.id, input.revision,
+        projectId, projectName, enabled ? 1 : 0, workspaceId, JSON.stringify(conditions), JSON.stringify(statusWriteStates),
+        input.id, input.revision,
       )
       if (result.changes !== 1) throw syncRemoteError(syncError('LocalVersionConflict', { scope: 'rule' }))
     })

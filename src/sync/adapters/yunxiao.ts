@@ -3,16 +3,17 @@ import type {
   WriteEvidence, WriteIntent,
 } from '../types.ts'
 import type {
-  MetadataScope, Option, OrganizationChoice, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, TypeMapping,
+  MetadataScope, Option, OrganizationChoice, SafeConnection, StatusWriteStates, SyncMetadata, SyncRule, TypeCapabilities,
 } from '../dto.ts'
-import { decodeOptionList, decodeSearchIdentity, decodeWorkflowStatuses, decodeWorkitem, decodeWorkitemFilterIdentity } from './yunxiao-codec.ts'
+import { decodeOptionList, decodeSearchIdentity, decodeWorkflowStatuses, decodeWorkitem } from './yunxiao-codec.ts'
+import { buildConditions } from '../query/filters.ts'
 import { resolveCredentials } from '../credentials.ts'
-import { encodeStatus, mappingFor } from '../mapping.ts'
-import { encodeDescription } from '../description-codec.ts'
+import { encodeStatus } from '../mapping.ts'
 import { syncError, syncRemoteError } from '../errors.ts'
 
 const PAGE_SIZE = 200
-const TYPE_CATEGORIES = ['Req', 'Bug', 'Task'] as const
+/** The three 云效 work-item categories a project-wide query covers. */
+const CATEGORIES = 'Req,Bug,Task'
 
 function fail(field: string): never {
   throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field }))
@@ -40,10 +41,6 @@ function nextPage(headers: Headers, currentPage: number): number | null {
   if (page !== undefined && totalPages !== undefined && page >= totalPages) return null
   if (next !== undefined && next > currentPage) return next
   throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
-}
-
-function fieldId(mapping: TypeMapping, field: 'title' | 'status', fallback: string): string {
-  return mapping.fieldIds[field] ?? fallback
 }
 
 /**
@@ -144,10 +141,10 @@ export function createYunxiaoAdapter(
     return response.value
   }
 
-  async function readDetail(key: RemoteKey, mapping: TypeMapping, signal: AbortSignal): Promise<RemoteItem> {
+  async function readDetail(key: RemoteKey, statusWriteStates: StatusWriteStates, signal: AbortSignal): Promise<RemoteItem> {
     const raw = await fetchDetailRaw(key, signal)
     return decodeWorkitem(raw, {
-      instance, projectId: key.projectId, typeId: key.typeId, id: key.id, mapping,
+      instance, projectId: key.projectId, typeId: key.typeId, id: key.id, statusWriteStates,
     })
   }
 
@@ -178,7 +175,7 @@ export function createYunxiaoAdapter(
 
   async function listTypes(projectId: string, signal: AbortSignal): Promise<unknown[]> {
     const out: unknown[] = []
-    for (const category of TYPE_CATEGORIES) {
+    for (const category of CATEGORIES.split(',')) {
       const response = await transport.read({
         url: url(`/projects/${encodeURIComponent(projectId)}/workitemTypes?category=${category}`),
         method: 'GET',
@@ -255,82 +252,64 @@ export function createYunxiaoAdapter(
       }
     },
 
+    /**
+     * Discover every work item the rule's query selects. The query is applied by
+     * the platform (`conditions`), so a rule that names 负责人/迭代/状态/类型 never
+     * fetches the project's whole backlog; every returned item is then read once
+     * because the packed task description needs its body and its own fields
+     * (the search summary carries neither).
+     */
     async *discover(rule: SyncRule, signal: AbortSignal): AsyncIterable<RemoteItem[]> {
-      const categories = [...new Set(rule.mappings.map(mapping => mapping.category))]
-      const mappedTypes = new Set(rule.mappings.map(mapping => mapping.typeId))
-      const { assignees, iterationIds, statusIds, typeIds } = rule.filters
-      for (const category of categories) {
-        let page = 1
-        for (;;) {
-          const response = await transport.read({
-            url: url('/workitems:search'),
-            method: 'POST',
-            headers: auth({ 'content-type': 'application/json' }),
-            body: JSON.stringify({ category, spaceId: rule.projectId, page, perPage: PAGE_SIZE, orderBy: 'gmtCreate', sort: 'asc' }),
-            readOnly: true,
-          }, signal)
-          if (!Array.isArray(response.value)) fail('search')
-          const next = nextPage(response.headers, page)
-          const batch: RemoteItem[] = []
-          for (const raw of response.value) {
-            const { id, typeId } = decodeSearchIdentity(raw, rule.projectId)
-            if (!mappedTypes.has(typeId)) continue
-            if (typeIds.length > 0 && !typeIds.includes(typeId)) continue
-            const key = { instance, projectId: rule.projectId, typeId, id }
-            const rawDetail = await fetchDetailRaw(key, signal)
-            const item = decodeWorkitem(rawDetail, { ...key, mapping: mappingFor(rule, typeId) })
-            if (statusIds.length > 0 && !statusIds.includes(item.rawStatus)) continue
-            const identity = decodeWorkitemFilterIdentity(rawDetail)
-            if (assignees.length > 0) {
-              const assignee = identity.assignee
-              // Absent or malformed assignedTo under a non-empty filter cannot
-              // be read as "unassigned"; fail closed instead of silently
-              // dropping the item into a zero-match.
-              if (assignee.kind === 'absent' || assignee.kind === 'malformed') {
-                throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'assignedTo' }))
-              }
-              if (assignee.kind === 'null') continue
-              if (!assignees.includes(assignee.id)) continue
-            }
-            if (iterationIds.length > 0) {
-              const sprint = identity.sprint
-              if (sprint.kind === 'absent' || sprint.kind === 'malformed') {
-                throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'sprint' }))
-              }
-              if (sprint.kind === 'null') continue
-              if (!iterationIds.includes(sprint.id)) continue
-            }
-            batch.push(item)
-          }
-          yield batch
-          if (next === null) break
-          page = next
+      const conditions = buildConditions(rule.conditions)
+      let page = 1
+      for (;;) {
+        const response = await transport.read({
+          url: url('/workitems:search'),
+          method: 'POST',
+          headers: auth({ 'content-type': 'application/json' }),
+          body: JSON.stringify({
+            category: CATEGORIES,
+            spaceId: rule.projectId,
+            page,
+            perPage: PAGE_SIZE,
+            orderBy: 'gmtCreate',
+            sort: 'asc',
+            ...(conditions === undefined ? {} : { conditions }),
+          }),
+          readOnly: true,
+        }, signal)
+        if (!Array.isArray(response.value)) fail('search')
+        const next = nextPage(response.headers, page)
+        const batch: RemoteItem[] = []
+        for (const raw of response.value) {
+          const { id, typeId } = decodeSearchIdentity(raw, rule.projectId)
+          const key = { instance, projectId: rule.projectId, typeId, id }
+          batch.push(await readDetail(key, rule.statusWriteStates, signal))
         }
+        yield batch
+        if (next === null) break
+        page = next
       }
     },
 
     async read(key: RemoteKey, rule: SyncRule, signal: AbortSignal): Promise<RemoteItem> {
-      return readDetail(key, mappingFor(rule, key.typeId), signal)
+      return readDetail(key, rule.statusWriteStates, signal)
     },
 
+    /**
+     * Write back the one field a rule owns: the status, as the rule's own map
+     * decides. Every other patch key is a configuration error, never a silent
+     * write attempt.
+     */
     async write(key: RemoteKey, patch: SyncPatch, observed: RemoteItem, rule: SyncRule, signal: AbortSignal): Promise<void> {
-      const mapping = mappingFor(rule, key.typeId)
-      for (const optional of ['priority', 'tags', 'storyPoints'] as const) {
-        if (patch[optional] !== undefined) {
-          throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: optional }))
+      for (const field of Object.keys(patch) as (keyof SyncPatch)[]) {
+        if (field !== 'status' && patch[field] !== undefined) {
+          throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field }))
         }
       }
-      const body: Record<string, unknown> = {}
-      if (patch.title !== undefined) body[fieldId(mapping, 'title', 'subject')] = patch.title
-      if (patch.description !== undefined) {
-        if (!observed.description.roundTrip) {
-          throw syncRemoteError(syncError('UnsupportedRepresentation', { scope: 'item', field: 'description' }))
-        }
-        body.description = encodeDescription(patch.description, observed.description.format)
-        body.formatType = observed.description.format === 'markdown' ? 'MARKDOWN' : 'RICHTEXT'
-      }
-      if (patch.status !== undefined) {
-        body[fieldId(mapping, 'status', 'status')] = encodeStatus(patch.status, observed, mapping)
+      if (patch.status === undefined) return
+      const body: Record<string, unknown> = {
+        status: encodeStatus(patch.status, observed.rawStatus, rule.statusWriteStates),
       }
       const result = await transport.write({
         url: url(`/workitems/${encodeURIComponent(key.id)}`),

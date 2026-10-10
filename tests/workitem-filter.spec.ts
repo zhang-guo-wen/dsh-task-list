@@ -1,36 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_FILTER_FIELDS, FILTER_FIELDS, MAX_CONDITIONS, buildFilterConditions, readFilterFields, writeFilterFields,
-  type FilterFieldId,
+  FILTER_FIELDS, MAX_CONDITIONS, buildFilterConditions, type FilterFieldId,
 } from '../src/client/workitem-filter.ts'
 import { zh, type TaskKey } from '../src/client/locales.ts'
 
 const t = (key: TaskKey) => zh[key]
 
-function memoryStorage(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial))
-  return {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value) },
-    raw: store,
-  }
-}
-
-describe('filter field settings', () => {
-  it('defaults to status and assignee, and round-trips a selection', () => {
-    const storage = memoryStorage()
-    expect(readFilterFields(storage)).toEqual([...DEFAULT_FILTER_FIELDS])
-    writeFilterFields(['priority', 'gmtCreate'], storage)
-    expect(readFilterFields(storage)).toEqual(['priority', 'gmtCreate'])
-  })
-
-  it('drops unknown ids and survives a broken value', () => {
-    expect(readFilterFields(memoryStorage({ 'dsh-task-list.workitem-filters': JSON.stringify(['status', 'nope']) }))).toEqual(['status'])
-    expect(readFilterFields(memoryStorage({ 'dsh-task-list.workitem-filters': 'not json' }))).toEqual([...DEFAULT_FILTER_FIELDS])
-    expect(readFilterFields(null)).toEqual([...DEFAULT_FILTER_FIELDS])
-  })
-
-  it('offers the verified fields, each with a label, and never participants', () => {
+describe('filter field catalog', () => {
+  it('offers every verified field, each with a label, and never participants', () => {
     const ids = FILTER_FIELDS.map(field => field.id)
     expect(ids).toEqual(['status', 'statusStage', 'assignedTo', 'creator', 'priority', 'sprint', 'workitemType', 'gmtCreate'])
     expect(ids).not.toContain('participants')

@@ -64,7 +64,7 @@ function build(s: Setup, adapterFactory: AdapterFactory): { service: SyncService
   return { service, executor }
 }
 
-const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', tokenEnv: 'TAPD_TOKEN', enabled: false }
 
 function noAdapter(): AdapterFactory {
   return () => { throw new Error('adapter should not be constructed') }
@@ -103,12 +103,12 @@ describe('RPC descriptor contract', () => {
     const create = TYPERT_REMOTE.descriptors.find(row => row.method === 'createSyncConnection')!
     const requestSchema = create.parameters[0]!.codec.create()
     // A valid create defaults `enabled` to false and rejects an unsafe secret key.
-    expect(requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'U', passwordEnv: 'P' }))
+    expect(requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'U' }))
       .toMatchObject({ platform: 'tapd', enabled: false })
-    expect(() => requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'U', passwordEnv: 'P', token: 'sk-live-secret' })).toThrow()
+    expect(() => requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'U', token: 'sk-live-secret' })).toThrow()
 
     const resultSchema = create.result.create()
-    const valid = { id: 'x', name: 'T', enabled: false, revision: 1, credentialPresent: false, instance: 'api.tapd.cn', platform: 'tapd', companyId: 'c', userEnv: 'U', passwordEnv: 'P' }
+    const valid = { id: 'x', name: 'T', enabled: false, revision: 1, credentialPresent: false, instance: 'api.tapd.cn', platform: 'tapd', companyId: 'c', tokenEnv: 'U' }
     expect(resultSchema.parse(valid)).toMatchObject({ platform: 'tapd' })
     expect(() => resultSchema.parse({ ...valid, raw: 'sk-live-secret' })).toThrow()
 
@@ -126,12 +126,11 @@ describe('SyncService connections and rules', () => {
     const listed = await service.listSyncConnections()
     expect(listed).toHaveLength(1)
     expect(listed[0]!.platform).toBe('tapd')
-    expect(listed[0]!.userEnv).toBe('TAPD_USER')
-    expect(listed[0]!.passwordEnv).toBe('TAPD_PASS')
+    expect(listed[0]!.tokenEnv).toBe('TAPD_TOKEN')
     const json = JSON.stringify(listed)
     for (const key of FORBIDDEN_OUTPUT) expect(json).not.toContain(`"${key}":`)
     expect(Object.keys(listed[0]!).sort()).toEqual(
-      ['id', 'name', 'enabled', 'revision', 'authentication', 'credentialPresent', 'instance', 'platform', 'companyId', 'userEnv', 'passwordEnv'].sort(),
+      ['id', 'name', 'enabled', 'revision', 'authentication', 'fillFields', 'credentialPresent', 'instance', 'platform', 'companyId', 'tokenEnv'].sort(),
     )
   })
 
@@ -141,7 +140,7 @@ describe('SyncService connections and rules', () => {
     const connection = await service.createSyncConnection(tapdInput)
     const rule = service.createSyncRule({
       connectionId: connection.id, projectId: '20000001', workspaceId: null, enabled: false,
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [mapping],
+      conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' }, mappings: [mapping],
     })
     expect(rule.enabled).toBe(false)
     const json = JSON.stringify(service.listSyncRules())
@@ -159,6 +158,34 @@ describe('SyncService connections and rules', () => {
     expect(updateError?.details.code).toBe('LocalVersionConflict')
     const deleteError = await rejected(() => service.deleteSyncConnection({ id: created.id, revision: 999 }))
     expect(deleteError?.details.code).toBe('LocalVersionConflict')
+  })
+
+  it('asks the organization lister the platform the caller names', async () => {
+    const s = setup()
+    const seen: string[] = []
+    const executor = new SyncExecutor({ tasks: s.store, config: s.config, links: s.links, runs: s.runs, adapterFactory: noAdapter(), clock: s.clock })
+    const service = new SyncService({
+      tasks: s.store, config: s.config, links: s.links, runs: s.runs, executor, adapterFactory: noAdapter(),
+      organizations: async token => { seen.push(`yunxiao:${token}`); return [{ id: 'org-1', name: '云效企业' }] },
+      tapdOrganizations: async token => { seen.push(`tapd:${token}`); return [{ id: '56474829', name: '示例公司' }] },
+    })
+
+    // A new TAPD connection has no saved id yet, so the name is explicit.
+    expect(await service.listSyncOrganizations({ platform: 'tapd', token: 'pat' })).toEqual([{ id: '56474829', name: '示例公司' }])
+    // Without a platform the 云效 lister stays the default.
+    expect(await service.listSyncOrganizations({ token: 'pat' })).toEqual([{ id: 'org-1', name: '云效企业' }])
+    expect(seen).toEqual(['tapd:pat', 'yunxiao:pat'])
+
+    // A saved connection decides by itself, from the stored credential.
+    const connection = await service.createSyncConnection(tapdInput)
+    await service.forgetSecret(connection.id)
+    const withSecret = new SyncService({
+      tasks: s.store, config: s.config, links: s.links, runs: s.runs, executor, adapterFactory: noAdapter(),
+      secrets: () => ({ read: async () => ({ platform: 'tapd', token: 'stored-pat' }) }),
+      organizations: async () => { throw new Error('云效 lister must not answer for a TAPD connection') },
+      tapdOrganizations: async token => [{ id: '56474829', name: token }],
+    })
+    expect(await withSecret.listSyncOrganizations({ connectionId: connection.id })).toEqual([{ id: '56474829', name: 'stored-pat' }])
   })
 })
 
@@ -179,7 +206,7 @@ describe('read-only queries and configuration', () => {
     await service.createSyncConnection(tapdInput)
     service.createSyncRule({
       connectionId: (await service.listSyncConnections())[0]!.id, projectId: 'p', workspaceId: null, enabled: false,
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [mapping],
+      conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' }, mappings: [mapping],
     })
     expect(service.listSyncRuns({ page: 1, pageSize: 20 }).total).toBe(0)
   })
@@ -188,7 +215,7 @@ describe('read-only queries and configuration', () => {
 describe('metadata and connection test', () => {
   it('loads metadata through the adapter factory for a disabled connection without a run', async () => {
     const s = setup()
-    const created = s.config.createConnection({ platform: 'tapd', name: 'T', companyId: 'c', userEnv: 'U', passwordEnv: 'P', enabled: false })
+    const created = s.config.createConnection({ platform: 'tapd', name: 'T', companyId: 'c', tokenEnv: 'U', enabled: false })
     const metadata: SyncMetadata = { connectionId: created.id, credentialPresent: false, readOnly: true, projects: [], members: [], iterations: [], types: [], typeCapabilities: [] }
     const calls: { connection: SafeConnection; context: AdapterContext }[] = []
     const adapter: SyncAdapter = {
@@ -223,7 +250,7 @@ describe('metadata and connection test', () => {
 
   it('reports a successful read-only test against a disabled connection', async () => {
     const s = setup()
-    const created = s.config.createConnection({ platform: 'tapd', name: 'T', companyId: 'c', userEnv: 'U', passwordEnv: 'P', enabled: false })
+    const created = s.config.createConnection({ platform: 'tapd', name: 'T', companyId: 'c', tokenEnv: 'U', enabled: false })
     const adapter: SyncAdapter = {
       metadata: async () => ({ connectionId: created.id, credentialPresent: true, readOnly: true, projects: [], members: [], iterations: [], types: [], typeCapabilities: [] }),
       discover: async function* () {},
@@ -242,10 +269,10 @@ describe('metadata and connection test', () => {
 describe('startSync', () => {
   it('returns a fresh run id then the existing active id and keeps one owner', async () => {
     const s = setup()
-    const connection = s.config.createConnection({ platform: 'tapd', name: 'T', companyId: 'c', userEnv: 'U', passwordEnv: 'P', enabled: true })
+    const connection = s.config.createConnection({ platform: 'yunxiao', name: '云效', mode: 'center', organizationId: 'org-1', regionHost: null, tokenEnv: 'U', enabled: true })
     s.config.createRule({
       connectionId: connection.id, projectId: 'p', workspaceId: null, enabled: true,
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [mapping],
+      conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })
     const adapter: SyncAdapter = {
       metadata: async () => { throw new Error('unused') },

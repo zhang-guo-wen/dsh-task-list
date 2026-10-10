@@ -25,17 +25,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+const tapdInput: CreateConnectionRequest = { platform: 'yunxiao', name: '云效', mode: 'center', organizationId: 'org-1', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false }
 function ruleInput(connectionId: string): CreateSyncRuleRequest {
   return {
     connectionId, projectId: '20000001', workspaceId: null, enabled: false,
-    filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-    mappings: [{
-      typeId: 'story', category: 'story',
-      readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-      writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-      optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {},
-    }],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
   }
 }
 
@@ -248,7 +242,8 @@ describe('scale — bounded single-page processing', () => {
     const s = setup()
     const item = buildRemote('faulty')
     const task = s.links.importItem(item, s.rule, s.fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    // Only a status change enters the write path; that is what this fault targets.
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     const adapter = fakeAdapter(new Map([[item.key.id, buildRemote('faulty')]]))
     s.db.exec(`CREATE TRIGGER fail_intent BEFORE INSERT ON sync_write_intents BEGIN SELECT RAISE(ABORT, 'busy'); END;`)
     const result = await executeItem(itemInput(s, item.key, adapter))
@@ -260,7 +255,7 @@ describe('scale — bounded single-page processing', () => {
     const s = setup()
     const item = buildRemote('finalize-faulty')
     const task = s.links.importItem(item, s.rule, s.fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     const adapter = fakeAdapter(new Map([[item.key.id, buildRemote('finalize-faulty')]]))
     s.db.exec(`CREATE TRIGGER fail_baseline BEFORE INSERT ON sync_baselines BEGIN SELECT RAISE(ABORT, 'busy'); END;`)
     const result = await executeItem(itemInput(s, item.key, adapter))

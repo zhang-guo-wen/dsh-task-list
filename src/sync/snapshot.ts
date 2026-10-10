@@ -1,6 +1,5 @@
 import type { TaskContent, TaskPriority, TaskRecord } from '../types.ts'
 import { canonicalDescription } from './description-codec.ts'
-import { mappingFor, projectionFor } from './mapping.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 import type {
   FieldValue, RemoteItem, SyncBaseline, SyncFields, SyncPatch, SyncProjection,
@@ -8,6 +7,18 @@ import type {
 import type { SyncRule } from './dto.ts'
 
 const EMPTY: TaskContent = { version: 1, blocks: [] }
+
+/**
+ * The one field a rule reconciles. Everything else a work item carries is packed
+ * into the imported task's description once and never compared again, so a
+ * remote edit to any other field cannot invent a local change.
+ */
+export const RULE_FIELDS: readonly SyncProjection['fields'][number][] = ['status']
+
+/** The projection every rule uses: status only, tagged with the rule's revision. */
+export function projectionFor(rule: SyncRule): SyncProjection {
+  return { fields: [...RULE_FIELDS], mappingRevision: rule.revision, normalizationVersion: 1 }
+}
 
 /** Tags are compared after trimming and case-insensitive dedup, matching the store's own limit semantics. */
 function normalizeTags(tags: string[]): string[] {
@@ -46,9 +57,12 @@ export function projectLocal(task: TaskRecord, _projection: SyncProjection): Syn
   }
 }
 
-/** Canonical remote snapshot; the adapter already decoded the fields to the shared vocabulary. */
+/**
+ * Canonical remote snapshot; the adapter already decoded the fields to the shared
+ * vocabulary. The description here is the task's own packed body at import time,
+ * not the platform's raw HTML, so a baseline always round-trips the local shape.
+ */
 export function projectRemote(item: RemoteItem, rule: SyncRule): SyncFields {
-  mappingFor(rule, item.key.typeId)
   return {
     title: essential(item.fields.title, 'title'),
     status: essential(item.fields.status, 'status'),
@@ -72,15 +86,14 @@ export function presenceOf(item: RemoteItem): SyncBaseline['remotePresence'] {
 
 /** Build a baseline snapshot of both sides at one point in time. */
 export function buildBaseline(task: TaskRecord, item: RemoteItem, rule: SyncRule): SyncBaseline {
-  const projection = projectionFor(rule, item.key.typeId)
   return {
-    local: projectLocal(task, projection),
+    local: projectLocal(task, projectionFor(rule)),
     remote: projectRemote(item, rule),
     localVersion: task.version,
     localUpdatedAt: task.updatedAt,
     remoteUpdatedToken: item.updatedToken,
     rawStatus: item.rawStatus,
-    projection,
+    projection: projectionFor(rule),
     remotePresence: presenceOf(item),
     remoteDescription: item.description,
   }
@@ -92,38 +105,16 @@ function sameProjection(a: SyncProjection, b: SyncProjection): boolean {
 }
 
 /**
- * Rebase a stored baseline onto the rule's current projection. Only newly enabled
- * fields are initialized from the remote side; other fields keep any pending edits.
- * An unchanged projection returns the existing baseline untouched so no business
- * change is ever invented by a mapping-only configuration change.
+ * Rebase a stored baseline onto the rule's current projection. A status-map edit
+ * only changes which platform status a local status targets; it never re-reads a
+ * stored baseline, so the remote side is refreshed from the live item instead and
+ * the local side keeps any pending edit.
  */
 export function rebaseProjection(input: {
   task: TaskRecord; remote: RemoteItem; baseline: SyncBaseline; rule: SyncRule
 }): { baseline: SyncBaseline; initializePatch: SyncPatch } {
   const { remote, baseline, rule } = input
-  const projection = projectionFor(rule, remote.key.typeId)
+  const projection = projectionFor(rule)
   if (sameProjection(projection, baseline.projection)) return { baseline, initializePatch: {} }
-
-  // A mapping change re-reads the stored raw status under the new read map; it
-  // must still mean the same decoded status, otherwise the old baseline cannot
-  // be safely re-interpreted and no business patch is invented.
-  const mapping = mappingFor(rule, remote.key.typeId)
-  if (mapping.readStates[baseline.rawStatus] !== baseline.remote.status) {
-    throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'status' }))
-  }
-
-  const newRemote = projectRemote(remote, rule)
-  const oldFields = new Set(baseline.projection.fields)
-  const initializePatch: SyncPatch = {}
-  const local: SyncFields = { ...baseline.local }
-  const remoteFields: SyncFields = { ...baseline.remote }
-  for (const field of projection.fields) {
-    if (!oldFields.has(field)) {
-      const value = newRemote[field]
-      ;(initializePatch as Record<string, unknown>)[field] = value
-      ;(local as Record<string, unknown>)[field] = value
-      ;(remoteFields as Record<string, unknown>)[field] = value
-    }
-  }
-  return { baseline: { ...baseline, local, remote: remoteFields, projection }, initializePatch }
+  return { baseline: { ...baseline, remote: projectRemote(remote, rule), projection }, initializePatch: {} }
 }

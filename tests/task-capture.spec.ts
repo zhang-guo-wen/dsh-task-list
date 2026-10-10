@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  captureDraft, handleCaptureKey, installCaptureShortcut, isCaptureShortcut, isComposerFocused,
-  type CaptureEvent, type CaptureKeyDeps, type CaptureOutcome,
+  captureDraft, captureTarget, handleCaptureKey, installCaptureShortcut, isCaptureShortcut, isComposerFocused,
+  type CaptureEvent, type CaptureKeyDeps, type CaptureOutcome, type CaptureTargetSources,
 } from '../src/client/capture.ts'
 
 const plainKey = { key: 's', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }
@@ -70,6 +70,12 @@ describe('captureDraft', () => {
     const create = vi.fn(async () => ({}))
     await captureDraft('保存当前会话任务', { create, clearDraft: vi.fn(), sessionId: 'session-current' })
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-current' }))
+  })
+
+  it('carries the resolved workspace and agent into the created task', async () => {
+    const create = vi.fn(async () => ({}))
+    await captureDraft('带上工作区和 agent', { create, clearDraft: vi.fn(), sessionId: 'session-current', workspaceId: 'ws-1', agent: 'preset-alpha' })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-current', workspaceId: 'ws-1', agent: 'preset-alpha' }))
   })
 
   it('keeps the originating session while attachment capture is pending', async () => {
@@ -141,6 +147,44 @@ describe('captureDraft', () => {
 
     expect(await captureDraft('写代码', { create, clearDraft })).toEqual({ kind: 'failed', message: 'store is read-only' })
     expect(clearDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('capture target', () => {
+  const workspaces = [{ workspaceId: 'ws-1', sessionIds: ['session-started', 'session-blank'] }]
+  function sources(overrides: Partial<CaptureTargetSources> = {}): CaptureTargetSources {
+    return {
+      sessionId: 'session-started',
+      session: { blank: false, projectionValues: { agentPreset: 'preset-alpha' } },
+      workspaces,
+      defaultAgent: 'preset-default',
+      ...overrides,
+    }
+  }
+
+  it('links a started session together with its workspace and agent', () => {
+    expect(captureTarget(sources())).toEqual({ sessionId: 'session-started', workspaceId: 'ws-1', agent: 'preset-alpha' })
+  })
+
+  it('keeps the workspace and agent while dropping the reusable blank session', () => {
+    expect(captureTarget(sources({ sessionId: 'session-blank', session: { blank: true, projectionValues: { agentPreset: 'preset-alpha' } } })))
+      .toEqual({ sessionId: null, workspaceId: 'ws-1', agent: 'preset-alpha' })
+  })
+
+  it('falls back to the host default while a session records no preset', () => {
+    expect(captureTarget(sources({ session: { blank: true } }))).toMatchObject({ sessionId: null, workspaceId: 'ws-1', agent: 'preset-default' })
+    expect(captureTarget(sources({ session: { blank: false, projectionValues: { agentPreset: '' } } })))
+      .toMatchObject({ sessionId: 'session-started', agent: 'preset-default' })
+    expect(captureTarget(sources({ session: { blank: false, projectionValues: { agentPreset: 7 } } })))
+      .toMatchObject({ sessionId: 'session-started', agent: 'preset-default' })
+  })
+
+  it('leaves the workspace unset when no workspace accounts for the session', () => {
+    expect(captureTarget(sources({ sessionId: 'session-orphan' }))).toMatchObject({ sessionId: 'session-orphan', workspaceId: null })
+  })
+
+  it('links a session whose catalog row has not arrived yet', () => {
+    expect(captureTarget(sources({ session: undefined }))).toMatchObject({ sessionId: 'session-started', workspaceId: 'ws-1', agent: 'preset-default' })
   })
 })
 

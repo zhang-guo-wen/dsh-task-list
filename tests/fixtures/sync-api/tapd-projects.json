@@ -2,7 +2,8 @@
   "status": 1,
   "info": "success",
   "data": [
-    { "Workspace": { "id": "20000001", "name": "Project One", "status": "open" } },
-    { "Workspace": { "id": "20000002", "name": "Project Two", "status": "closed" } }
+    { "Workspace": { "id": "20000001", "name": "Project One", "status": "open", "category": "project" } },
+    { "Workspace": { "id": "20000002", "name": "Project Two", "status": "closed", "category": "product" } },
+    { "Workspace": { "id": "20000003", "name": "Company Workspace", "status": "normal", "category": "organization" } }
   ]
 }

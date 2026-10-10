@@ -12,18 +12,32 @@
 }
 /* The same content box as the built-in Automation tasks page: one centred
    960px column whose side padding shrinks with the panel, so moving between
-   the two pages does not change the width of the list. */
-.inner { max-width: 960px; margin: 0 auto; padding: 0 clamp(24px, 4vw, 48px) 48px; }
+   the two pages does not change the width of the list. `border-box` is part of
+   the contract: the report and the work-item page already size their box that
+   way, and without it here the list alone would be one padding wider (1056px
+   against their 960px). The top offset belongs to this box rather than to one
+   header, so the list, the report and the work-item page keep the title at the
+   same height — and, because the box height is bounded, they keep the bottom
+   controls inside the panel. */
+.inner { max-width: 960px; margin: 0 auto; box-sizing: border-box; padding: 28px clamp(24px, 4vw, 48px) 48px; }
 /* The report owns the panel height so its grid can fit one screen instead of
-   scrolling; the list keeps its natural height. Border-box matters here: without
+   scrolling. Border-box matters here: without
    it the bottom padding pushed the panel exactly one padding past its height and
    every report showed a scrollbar. */
-.page[data-report='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 16px; }
+.page[data-report='true'] .inner { display: flex; flex-direction: column; height: 100%; padding-bottom: 16px; }
 /* The work-item page follows the same rule: the table scrolls inside the panel,
    and the paging controls stay pinned at the bottom instead of scrolling away. */
-.page[data-more='true'] .inner { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding-bottom: 0; }
+.page[data-more='true'] .inner { display: flex; flex-direction: column; height: 100%; padding-bottom: 0; }
 .page[data-more='true'] { overflow: hidden; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 28px; margin-bottom: 20px; }
+/* The task list has three bounded zones: fixed controls, the only scrolling
+   body (including sync/error/empty states), and the bottom paging bar. Keep
+   the shared content width and side padding rather than fixing to the viewport. */
+.page[data-list='true'] { overflow: hidden; }
+.page[data-list='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
+.page[data-list='true'] .header, .page[data-list='true'] .toolbar { flex: none; }
+.listBody { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; margin-top: 18px; }
+.listBody .list { margin-top: 0; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
 /* The list header's right end: the report button and the create/sync split
    block, kept on one baseline. */
@@ -34,26 +48,29 @@
 .primary { height: 32px; padding: 0 12px; border: 0; border-radius: 16px; background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-bg-base, #fff); font-size: 13px; line-height: 20px; white-space: nowrap; }
 .primary:hover { opacity: .86; }
 /* Status tabs on the left; search, the workspace filter, and refresh on the right. */
-.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.filters { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .filter, .selected { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 14px; background: transparent; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 14px; line-height: 22px; white-space: nowrap; }
 .filter:hover, .selected { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 .selected { color: var(--dsw-alias-label-primary, #0f1115); }
-.toolbarRight { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+/* The right group yields width to the status tabs instead of wrapping below
+   them. The search input, not the whole group, absorbs the remaining space. */
+.toolbarRight { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; margin-left: auto; }
 .toolbar select, .dialog select {
   font: inherit; height: 36px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--dsw-alias-border-l3, #ddd);
   color: inherit; background: var(--dsw-alias-bg-base, #fff);
 }
-.toolbar select { flex: none; width: auto; min-width: 150px; max-width: 240px; }
+.toolbar select { flex: none; width: clamp(120px, 16vw, 180px); min-width: 120px; max-width: 180px; }
+.toolbarRight > .textButton { flex: none; }
 .toolbar select:hover, .dialog select:hover { border-color: var(--dsw-alias-border-l2, #b8bbc0); }
 .toolbar select:focus-visible, .dialog select:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
 .searchBox {
-  display: flex; flex: none; align-items: center; gap: 6px; height: 36px; box-sizing: border-box;
+  display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; height: 36px; box-sizing: border-box;
   padding: 0 4px 0 10px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
   background: var(--dsw-alias-bg-base, #fff);
 }
 .searchBox:focus-within { border-color: var(--dsw-alias-state-business-primary, #326dca); }
-.searchBox input { width: clamp(140px, 22vw, 260px); min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; outline: none; }
+.searchBox input { width: 100%; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; outline: none; }
 .searchBox input::placeholder { color: var(--dsw-alias-label-tertiary, #81858c); }
 .searchClear { flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--dsw-alias-label-tertiary, #81858c); font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
 .searchClear:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
@@ -126,7 +143,7 @@
 .placeholder { padding: 28px 4px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .empty { display: flex; flex-direction: column; gap: 8px; padding: 48px 20px; align-items: center; color: var(--dsw-alias-label-tertiary, #81858c); }
 .empty strong { color: var(--dsw-alias-label-primary, #0f1115); }
-.pager { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.pager { display: flex; flex: none; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 0; }
 .pageSize { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .pageSize select {
   font: inherit; height: 32px; padding: 0 8px; border-radius: 10px;
@@ -230,9 +247,10 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
   .rowLine { grid-template-columns: minmax(0, 1fr) auto; }
   .statusChip, .workspaceMeta, .rowActions .delete, .doneState { display: none; }
   .reportButton { display: none; }
-  .toolbarRight { width: 100%; margin-left: 0; }
+  .toolbar { flex-wrap: wrap; }
+  .toolbarRight { flex: none; flex-wrap: wrap; width: 100%; margin-left: 0; }
   .toolbar select { flex: 1; max-width: none; }
-  .searchBox { width: 100%; }
+  .searchBox { flex: none; width: 100%; }
   .searchBox input { width: 100%; flex: 1; }
 }
 /* A dialog narrower than two usable columns falls back to one field per row. */

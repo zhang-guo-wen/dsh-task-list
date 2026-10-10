@@ -3,7 +3,7 @@ import type { RemoteKey } from './types.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 
 /** Schema version the sync tables land in; the store refuses anything newer. */
-export const SYNC_SCHEMA_VERSION = 10
+export const SYNC_SCHEMA_VERSION = 13
 
 /**
  * Stable, unique serialization of a remote identity. Ids stay strings and may
@@ -39,7 +39,8 @@ CREATE TABLE sync_connections (
   company_id TEXT,
   user_env TEXT,
   password_env TEXT,
-  authentication TEXT NOT NULL DEFAULT '{"mode":"manual"}'
+  authentication TEXT NOT NULL DEFAULT '{"mode":"manual"}',
+  fill_fields TEXT
 ) STRICT;
 
 CREATE TABLE sync_rules (
@@ -51,8 +52,8 @@ CREATE TABLE sync_rules (
   project_name TEXT,
   enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
   workspace_id TEXT,
-  filters TEXT NOT NULL,
-  mappings TEXT NOT NULL,
+  conditions TEXT NOT NULL DEFAULT '[]',
+  status_write_states TEXT NOT NULL DEFAULT '{}',
   UNIQUE(instance, project_id)
 ) STRICT;
 CREATE INDEX sync_rules_connection ON sync_rules(connection_id);
@@ -267,6 +268,35 @@ export function migrateSyncSchema(db: DatabaseSync): void {
     // roster can name it without a platform request; existing rows keep NULL and
     // fall back to the id until they are saved again.
     if (!tableColumns(db, 'sync_rules').has('project_name')) db.exec('ALTER TABLE sync_rules ADD COLUMN project_name TEXT')
+    // v11 lets each connection choose which work-item data a new task starts
+    // with; existing connections keep NULL and fall back to the default set.
+    if (!tableColumns(db, 'sync_connections').has('fill_fields')) db.exec('ALTER TABLE sync_connections ADD COLUMN fill_fields TEXT')
+    // v12 removes TAPD's API-account and open-application paths: a TAPD
+    // connection now carries one personal access token, referenced by
+    // `token_env` like 云效 does. Existing rows stay usable without a rewrite —
+    // a TAPD row that never recorded a variable gets the default token name
+    // (its old API user/password variables become inert), and a row that still
+    // points at an open application falls back to manual, because that grant
+    // can no longer be minted. Each step is skipped when the table shape it
+    // touches predates the column, so an old fixture database still migrates.
+    const connectionColumns = tableColumns(db, 'sync_connections')
+    if (connectionColumns.has('authentication')) {
+      db.exec(`UPDATE sync_connections SET authentication = '{"mode":"manual"}' WHERE platform = 'tapd' AND authentication LIKE '%"oauth"%'`)
+    }
+    if (connectionColumns.has('token_env')) {
+      db.exec(`UPDATE sync_connections SET token_env = 'TASK_LIST_TAPD_TOKEN' WHERE platform = 'tapd' AND (token_env IS NULL OR token_env = '')`)
+    }
+    if (connectionColumns.has('user_env') && connectionColumns.has('password_env')) {
+      db.exec(`UPDATE sync_connections SET user_env = NULL, password_env = NULL WHERE platform = 'tapd'`)
+    }
+    // v13 replaces the rule's filter dimensions and per-type field mappings with
+    // one platform query (`conditions`) plus the three status write targets. The
+    // legacy `filters`/`mappings` columns stay in place but are no longer read:
+    // dropping columns is heuristic data loss, and an existing rule simply starts
+    // from an empty query and an unmapped status set until it is saved again.
+    const ruleColumns = tableColumns(db, 'sync_rules')
+    if (!ruleColumns.has('conditions')) db.exec(`ALTER TABLE sync_rules ADD COLUMN conditions TEXT NOT NULL DEFAULT '[]'`)
+    if (!ruleColumns.has('status_write_states')) db.exec(`ALTER TABLE sync_rules ADD COLUMN status_write_states TEXT NOT NULL DEFAULT '{}'`)
   }
   db.exec(`PRAGMA user_version = ${SYNC_SCHEMA_VERSION}`)
 }

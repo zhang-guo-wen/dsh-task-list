@@ -29,6 +29,48 @@ export type CaptureOutcome =
   | { readonly kind: 'empty' }
   | { readonly kind: 'failed'; readonly message: string }
 
+/** Session catalog row the capture link reads: blankness and the recorded agent preset. */
+export interface CaptureSessionRow {
+  readonly blank?: boolean | undefined
+  readonly projectionValues?: { readonly agentPreset?: unknown } | undefined
+}
+
+/** Live snapshots one capture link resolves against. */
+export interface CaptureTargetSources {
+  /** Session currently owning the composer. */
+  readonly sessionId: string
+  /** Catalog row of that Session; absent before its list row arrives. */
+  readonly session: CaptureSessionRow | undefined
+  /** Workspace registry, in host order. */
+  readonly workspaces: readonly { readonly workspaceId: string; readonly sessionIds: readonly string[] }[]
+  /** Host-effective default preset, read only while a Session records none. */
+  readonly defaultAgent: string | null
+}
+
+/** What one captured task links: its Session, that Session's Workspace, and its agent. */
+export interface CaptureTarget {
+  readonly sessionId: string | null
+  readonly workspaceId: string | null
+  readonly agent: string | null
+}
+
+/**
+ * Resolve the link one capture writes. A blank Session is the reusable seat of
+ * the next New Session — its identity does not stand for the work — so the task
+ * keeps no Session link while it lasts. The Workspace the Session was opened in
+ * and the agent preset it runs describe the captured work either way.
+ * @param sources - live catalog, Workspace registry, and default-preset reads.
+ * @returns the Session, Workspace, and agent triple to persist.
+ */
+export function captureTarget(sources: CaptureTargetSources): CaptureTarget {
+  const preset = sources.session?.projectionValues?.agentPreset
+  return {
+    sessionId: sources.session?.blank === true ? null : sources.sessionId,
+    workspaceId: sources.workspaces.find(workspace => workspace.sessionIds.includes(sources.sessionId))?.workspaceId ?? null,
+    agent: typeof preset === 'string' && preset !== '' ? preset : sources.defaultAgent,
+  }
+}
+
 export interface CaptureDeps {
   /** Persist the task built from the draft. */
   create(request: CreateTaskRequest): Promise<unknown>
@@ -39,6 +81,10 @@ export interface CaptureDeps {
   hasAttachments?: boolean
   /** Session owning the draft, captured before asynchronous attachment reads. */
   sessionId?: string | null
+  /** Workspace that Session belongs to, captured with it. */
+  workspaceId?: string | null
+  /** Agent preset that Session runs, captured with it. */
+  agent?: string | null
   clearAttachments?(): void
 }
 
@@ -93,7 +139,8 @@ export async function captureDraft(draft: string, deps: CaptureDeps): Promise<Ca
     title = deriveTaskTitle('', notes)
     await deps.create({
       title, notes, content, attachments: captured.uploads, priority: 'medium', storyPoints: null, tags: [],
-      workspaceId: null, sendImmediately: false, sessionId: deps.sessionId ?? null, agent: null, useWorktree: false,
+      workspaceId: deps.workspaceId ?? null, sendImmediately: false, sessionId: deps.sessionId ?? null,
+      agent: deps.agent ?? null, useWorktree: false,
     })
   } catch (error) {
     return { kind: 'failed', message: error instanceof Error ? error.message : String(error) }

@@ -1,60 +1,44 @@
-import type { SafeWorkitemDescription } from '../sync/dto.ts'
+import { WORKITEM_FILL_FIELDS_BY_PLATFORM, type SafeWorkitemDescription, type WorkitemFillField } from '../sync/dto.ts'
 import type { TaskKey } from './locales.ts'
 
 /**
- * Which work-item data a new task's content starts with. The selection is a
- * browser preference (the settings page owns the checkboxes), and the body is
- * built as Markdown so the composer's first line still becomes the task title.
+ * Which work-item data a new task's content starts with. The selection lives on
+ * the connection (its editor owns the checkboxes); the body is built as Markdown
+ * so the composer's first line still becomes the task title.
+ *
+ * The catalog is per platform: 云效 exposes custom fields and a source number,
+ * TAPD exposes 标签 and 创建人, and the editor must not offer a field the chosen
+ * platform cannot carry.
  */
-export const FILL_FIELDS: readonly { id: FillField; label: TaskKey }[] = [
-  { id: 'title', label: 'fillTitle' },
-  { id: 'description', label: 'fillDescription' },
-  { id: 'number', label: 'fillNumber' },
-  { id: 'status', label: 'fillStatus' },
-  { id: 'assignee', label: 'fillAssignee' },
-  { id: 'sprint', label: 'fillSprint' },
-  { id: 'priority', label: 'fillPriority' },
-  { id: 'customFields', label: 'fillCustomFields' },
-  { id: 'source', label: 'fillSource' },
-]
-
-export type FillField = 'title' | 'description' | 'number' | 'status' | 'assignee' | 'sprint' | 'priority' | 'customFields' | 'source'
-
-export const DEFAULT_FILL_FIELDS: readonly FillField[] = ['title', 'description', 'number', 'status', 'assignee', 'priority']
-
-const STORAGE_KEY = 'dsh-task-list.workitem-fill'
-const IDS = new Set<string>(FILL_FIELDS.map(field => field.id))
-
-interface Readable { getItem(key: string): string | null }
-interface Writable { setItem(key: string, value: string): void }
-
-/** The saved selection, filtered to known ids; an absent or broken value means the defaults. */
-export function readFillFields(storage: Readable | null = safeStorage()): FillField[] {
-  if (storage === null) return [...DEFAULT_FILL_FIELDS]
-  const raw = storage.getItem(STORAGE_KEY)
-  if (raw === null) return [...DEFAULT_FILL_FIELDS]
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return [...DEFAULT_FILL_FIELDS]
-    const kept = parsed.filter((id): id is FillField => typeof id === 'string' && IDS.has(id))
-    return kept.length > 0 ? kept : [...DEFAULT_FILL_FIELDS]
-  } catch {
-    return [...DEFAULT_FILL_FIELDS]
-  }
+const FIELD_LABELS: Readonly<Record<WorkitemFillField, TaskKey>> = {
+  title: 'fillTitle',
+  description: 'fillDescription',
+  number: 'fillNumber',
+  status: 'fillStatus',
+  assignee: 'fillAssignee',
+  sprint: 'fillSprint',
+  priority: 'fillPriority',
+  customFields: 'fillCustomFields',
+  source: 'fillSource',
+  tags: 'fillTags',
+  creator: 'fillCreator',
 }
 
-export function writeFillFields(fields: readonly FillField[], storage: Writable | null = safeStorage()): void {
-  if (storage === null) return
-  storage.setItem(STORAGE_KEY, JSON.stringify(fields.filter(field => IDS.has(field))))
+export const FILL_FIELDS: readonly { id: WorkitemFillField; label: TaskKey }[] =
+  WORKITEM_FILL_FIELDS_BY_PLATFORM.yunxiao.map(id => ({ id, label: FIELD_LABELS[id] }))
+
+/** The same list for one platform, in that platform's own order. */
+export function fillFieldsFor(platform: 'yunxiao' | 'tapd'): readonly { id: WorkitemFillField; label: TaskKey }[] {
+  return WORKITEM_FILL_FIELDS_BY_PLATFORM[platform].map(id => ({ id, label: FIELD_LABELS[id] }))
 }
 
-function safeStorage(): Storage | null {
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage
-  } catch {
-    return null
-  }
+/** Drop ids the platform cannot carry, keeping the platform's own order. */
+export function normalizeFillFields(platform: 'yunxiao' | 'tapd', fields: readonly WorkitemFillField[]): WorkitemFillField[] {
+  const allowed = WORKITEM_FILL_FIELDS_BY_PLATFORM[platform]
+  return allowed.filter(field => fields.includes(field))
 }
+
+export type FillField = WorkitemFillField
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -65,6 +49,12 @@ function referenceName(value: unknown): string {
   const record = value as Record<string, unknown>
   const name = typeof record.displayName === 'string' && record.displayName !== '' ? record.displayName : record.name
   return typeof name === 'string' ? name : ''
+}
+
+/** The `{ id, name }` list of a label/tag array, joined for one body line. */
+function namesOf(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value.map(entry => referenceName(entry)).filter(name => name !== '').join('、')
 }
 
 /** `fieldId -> { name, value }` for every custom field carried by the row. */
@@ -130,6 +120,15 @@ export function buildWorkitemBody(
     }
   }
   if (fields.includes('source') && serial !== '') meta.push(`${t('fillSource')}: ${serial}`)
+  // TAPD's own two extra fields; a 云效 row maps 标签 onto its labels.
+  if (fields.includes('tags')) {
+    const tags = namesOf(row.tags ?? row.labels)
+    if (tags !== '') meta.push(`${t('fillTags')}: ${tags}`)
+  }
+  if (fields.includes('creator')) {
+    const creator = referenceName(row.creator)
+    if (creator !== '') meta.push(`${t('fillCreator')}: ${creator}`)
+  }
   if (meta.length > 0) blocks.push(meta.join('\n'))
 
   const body = fields.includes('description') ? description?.plain.trim() ?? '' : ''

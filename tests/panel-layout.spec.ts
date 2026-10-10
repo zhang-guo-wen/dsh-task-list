@@ -8,6 +8,9 @@ import { describe, expect, it } from 'vitest'
 // in the component and its stylesheet.
 const css = readFileSync(new URL('../src/client/TaskPanel.module.css', import.meta.url), 'utf8')
 const panel = readFileSync(new URL('../src/client/TaskPanel.tsx', import.meta.url), 'utf8')
+const calendarCss = readFileSync(new URL('../src/client/StatisticsCalendar.module.css', import.meta.url), 'utf8')
+const calendar = readFileSync(new URL('../src/client/StatisticsCalendar.tsx', import.meta.url), 'utf8')
+const moreCss = readFileSync(new URL('../src/client/MoreTasks.module.css', import.meta.url), 'utf8')
 
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -28,7 +31,70 @@ describe('panel layout', () => {
     const inner = rule('.inner')
     expect(inner).toContain('max-width: 960px')
     expect(inner).toContain('margin: 0 auto')
-    expect(inner).toContain('padding: 0 clamp(24px, 4vw, 48px) 48px')
+    // Border-box is what makes 960px the whole column: the report and the
+    // work-item page size their box that way, so without it the list alone
+    // renders one padding wider than every page the user switches to.
+    expect(inner).toContain('box-sizing: border-box')
+    expect(inner).toContain('padding: 28px clamp(24px, 4vw, 48px) 48px')
+  })
+
+  it('bounds the task list to the panel and scrolls only its middle body', () => {
+    expect(panel).toContain('<main className={css.page} data-list="true">')
+    expect(rule(".page[data-list='true']")).toContain('overflow: hidden')
+    const inner = rule(".page[data-list='true'] .inner")
+    expect(inner).toContain('display: flex')
+    expect(inner).toContain('flex-direction: column')
+    expect(inner).toContain('height: 100%')
+    expect(inner).toContain('min-height: 0')
+    expect(inner).toContain('padding-bottom: 0')
+    const body = rule('.listBody')
+    expect(body).toContain('flex: 1')
+    expect(body).toContain('min-height: 0')
+    expect(body).toContain('overflow: auto')
+    expect(rule(".page[data-list='true'] .header, .page[data-list='true'] .toolbar")).toContain('flex: none')
+    const pager = rule('.pager')
+    expect(pager).toContain('flex: none')
+    expect(pager).toContain('padding: 16px 0')
+    expect(pager).not.toMatch(/position:\s*(fixed|absolute)/)
+    const bodyStart = at('<div className={css.listBody} ref={listBody}>')
+    expect(bodyStart).toBeLessThan(at('<SyncStatus panel={syncPanel} t={t} />'))
+    expect(panel.slice(bodyStart, at('{total > 0 && <div className={css.pager}>'))).toMatch(/<\/ul>}\s*<\/div>\s*$/)
+  })
+
+  it('keeps desktop filters and search on one row while only the input shrinks', () => {
+    expect(rule('.toolbar')).not.toContain('flex-wrap: wrap')
+    expect(rule('.filters')).toContain('flex: none')
+    expect(rule('.toolbarRight')).toContain('flex: 1')
+    expect(rule('.toolbarRight')).toContain('min-width: 0')
+    expect(rule('.toolbarRight')).not.toContain('flex-wrap: wrap')
+    expect(rule('.searchBox')).toContain('flex: 1')
+    expect(rule('.searchBox')).toContain('min-width: 0')
+    expect(rule('.searchBox input')).toContain('flex: 1')
+    expect(rule('.searchBox input')).toContain('min-width: 0')
+    expect(rule('.toolbarRight > .textButton')).toContain('flex: none')
+    const mobile = /@media \(max-width: 760px\) \{([\s\S]*?)\n\}/.exec(css)?.[1]
+    expect(mobile).toContain('.toolbar { flex-wrap: wrap; }')
+    expect(mobile).toContain('.toolbarRight { flex: none; flex-wrap: wrap; width: 100%; margin-left: 0; }')
+    expect(mobile).toContain('.searchBox { flex: none; width: 100%; }')
+  })
+
+  it('keeps the report title on the list title row', () => {
+    // One content box owns the top offset and one title type is shared by all
+    // three headers (the list's, the work-item page's and the report's), so
+    // switching pages neither moves nor resizes the title.
+    const inner = rule('.inner')
+    expect(inner).toContain('padding: 28px')
+    expect(rule('.header')).not.toContain('padding-top')
+    expect(rule('.header h1')).toContain('font-size: 20px')
+    expect(rule('.header h1')).toContain('line-height: 28px')
+    // The report keeps its own header component; that component repeats the same
+    // type for its own `h1` so a page-level rule cannot shrink it.
+    expect(calendarCss).toContain('font-size: 20px')
+    expect(calendar).toContain('className={css.title}')
+    // The work-item page follows the same rule: its content box carries the top
+    // offset, so its header must not add a second one.
+    expect(moreCss).toMatch(/\.header \{[^}]*\}/u)
+    expect(/\.header \{([^}]*)\}/u.exec(moreCss)?.[1]).not.toContain('padding-top')
   })
 
   it('shows content, status, workspace, and actions only in a task row', () => {

@@ -4,7 +4,7 @@ import type {
   FieldValue, RemoteItem, RemoteKey, SyncAdapter, SyncBaseline, SyncPatch, SyncProjection,
   SyncFields, WriteEvidence, WriteIntent,
 } from '../../src/sync/types.ts'
-import type { SyncMetadata, SyncRule, TypeMapping } from '../../src/sync/dto.ts'
+import type { SyncMetadata, SyncRule } from '../../src/sync/dto.ts'
 
 const fixedTime = 1_700_000_000_000
 
@@ -90,17 +90,8 @@ export function baseline(overrides: Partial<SyncBaseline> = {}): SyncBaseline {
   }
 }
 
-/** A valid, disabled rule with one story mapping. */
+/** A valid, disabled rule: one status-only rule with a project-wide query. */
 export function rule(overrides: Partial<SyncRule> = {}): SyncRule {
-  const mapping: TypeMapping = {
-    typeId: 'story',
-    category: 'story',
-    readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-    writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-    optionalFields: [],
-    fieldIds: { title: 'name', status: 'status' },
-    valueMaps: {},
-  }
   return {
     id: '22222222-2222-4222-8222-222222222222',
     revision: 1,
@@ -108,8 +99,8 @@ export function rule(overrides: Partial<SyncRule> = {}): SyncRule {
     projectId: '20000001',
     enabled: false,
     workspaceId: null,
-    filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-    mappings: [mapping],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]],
+    statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     ...overrides,
   }
 }

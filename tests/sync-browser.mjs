@@ -64,8 +64,7 @@ try {
   await page.getByRole('menuitem', { name: 'TAPD', exact: true }).click()
   // A pasted workbench address is reduced to its company id.
   await settings.getByRole('textbox', { name: '公司 ID' }).fill('https://www.tapd.cn/2001/prong/stories')
-  await settings.getByRole('textbox', { name: 'API 用户' }).fill('api-user')
-  await settings.getByRole('textbox', { name: 'API 密码' }).fill('api-secret')
+  await settings.getByRole('textbox', { name: '个人访问令牌' }).fill('tapd-personal-token')
   await page.screenshot({ path: resolve(root, 'sync-connection-editor-light.png') })
   await settings.getByRole('button', { name: '保存连接', exact: true }).click()
   await settings.getByText('设置已保存，不会自动同步。', { exact: true }).waitFor()

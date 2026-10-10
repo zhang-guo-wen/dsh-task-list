@@ -28,11 +28,12 @@ function keysIn(value: unknown, out: string[] = []): string[] {
   return out
 }
 
-const validMapping = rule().mappings[0]!
+/** One valid rule query: a work-item-type condition on the fixture rule's project. */
+const validConditions = rule().conditions
 
 describe('parseSyncRequest closed request parsing', () => {
   it('rejects raw secrets, urls, payloads, unknown keys and non-plain objects', () => {
-    const valid = { platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS' }
+    const valid = { platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'TAPD_TOKEN' }
     const bad: unknown[] = [
       null, 'x', 42, true, [], new Date(), () => {},
       { ...valid, url: 'https://evil.example.com' },
@@ -48,7 +49,7 @@ describe('parseSyncRequest closed request parsing', () => {
   })
 
   it('rejects prototype pollution keys', () => {
-    const valid = { platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS' }
+    const valid = { platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'TAPD_TOKEN' }
     const pollution: unknown[] = [
       JSON.parse('{"__proto__": {"polluted": true}}'),
       { ...valid, constructor: { polluted: true } },
@@ -83,14 +84,29 @@ describe('parseSyncRequest closed request parsing', () => {
     expect(() => parseSyncRequest('createSyncConnection', { ...valid, tokenEnv: 'OK_TOKEN_1' })).not.toThrow()
   })
 
-  it('rejects filters with more than 100 entries', () => {
-    const request = {
+  it('rejects a query the platform endpoint would refuse', () => {
+    const base = {
       connectionId: '33333333-3333-4333-8333-333333333333',
       projectId: 'p',
-      filters: { assignees: [], typeIds: Array.from({ length: 101 }, (_, i) => `t${i}`), iterationIds: [], statusIds: [] },
-      mappings: [validMapping],
+      statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     }
-    expect(() => parseSyncRequest('createSyncRule', request)).toThrow()
+    const bad: unknown[] = [
+      // An unverified field, an operator the field does not accept, an empty
+      // value set, and a value with a control character.
+      { ...base, conditions: [[{ field: 'unknownField', value: ['x'] }]] },
+      { ...base, conditions: [[{ field: 'sprint', operator: 'EQUALS', value: ['s1'] }]] },
+      { ...base, conditions: [[{ field: 'status', operator: 'EQUALS', value: [] }]] },
+      { ...base, conditions: [[{ field: 'status', operator: 'EQUALS', value: ['\u0001'] }]] },
+      // An incomplete status map cannot write back.
+      { ...base, conditions: [], statusWriteStates: { todo: 'open', in_progress: '', done: 'done' } },
+      { ...base, conditions: [], statusWriteStates: { todo: 'open' } },
+    ]
+    // Diagnose each case by index: a query the parser accepts is the failure.
+    for (const [index, request] of bad.entries()) {
+      let threw = false
+      try { parseSyncRequest('createSyncRule', request) } catch { threw = true }
+      expect(threw, `case ${index} must be refused: ${JSON.stringify(request)}`).toBe(true)
+    }
   })
 
   it('rejects updates and deletes without a revision', () => {
@@ -105,14 +121,13 @@ describe('parseSyncRequest closed request parsing', () => {
 
   it('valid create requests default to disabled', () => {
     const conn = parseSyncRequest('createSyncConnection', {
-      platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS',
+      platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'TAPD_TOKEN',
     })
     if (conn.method === 'createSyncConnection') expect(conn.request.enabled).toBe(false)
     const req = parseSyncRequest('createSyncRule', {
       connectionId: '33333333-3333-4333-8333-333333333333',
       projectId: 'p',
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] },
-      mappings: [validMapping],
+      conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })
     if (req.method === 'createSyncRule') expect(req.request.enabled).toBe(false)
   })
@@ -122,10 +137,10 @@ describe('parseSyncRequest closed request parsing', () => {
     const req = parseSyncRequest('createSyncRule', {
       connectionId: '33333333-3333-4333-8333-333333333333',
       projectId: 'p',
-      filters: { assignees: [], typeIds: [giant], iterationIds: [], statusIds: [] },
-      mappings: [validMapping],
+      conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: [giant] }]],
+      statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })
-    if (req.method === 'createSyncRule') expect(req.request.filters.typeIds[0]).toBe(giant)
+    if (req.method === 'createSyncRule') expect(req.request.conditions[0]![0]!.value[0]).toBe(giant)
     const item = remote({ key: { instance: 'api.tapd.cn', projectId: 'p', typeId: 'story', id: giant } })
     expect(item.key.id).toBe(giant)
   })
@@ -144,11 +159,11 @@ describe('parseSyncRequest closed request parsing', () => {
     const connectionId = '33333333-3333-4333-8333-333333333333'
     const cases: [SyncMethod, unknown][] = [
       ['listSyncConnections', {}],
-      ['createSyncConnection', { platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'U', passwordEnv: 'P' }],
+      ['createSyncConnection', { platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'U' }],
       ['updateSyncConnection', { id: connectionId, revision: 1, name: 'New' }],
       ['deleteSyncConnection', { id: connectionId, revision: 1 }],
       ['listSyncRules', {}],
-      ['createSyncRule', { connectionId, projectId: 'p', filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] }, mappings: [validMapping] }],
+      ['createSyncRule', { connectionId, projectId: 'p', conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' } }],
       ['updateSyncRule', { id: '22222222-2222-4222-8222-222222222222', revision: 1, enabled: true }],
       ['deleteSyncRule', { id: '22222222-2222-4222-8222-222222222222', revision: 1 }],
       ['getSyncMetadata', { connectionId }],
@@ -161,7 +176,7 @@ describe('parseSyncRequest closed request parsing', () => {
         connectionId, projectId: 'space-1', categories: 'Req', page: 1, perPage: 20,
         fields: ['serialNumber', 'subject'], customFieldIds: [], orderBy: 'gmtCreate', sort: 'desc',
       }],
-      ['listWorkitemFields', { connectionId, projectId: 'space-1', category: 'Req' }],
+      ['listWorkitemFields', { connectionId, projectId: 'space-1', categories: 'Req,Bug,Task' }],
       ['getWorkitemDescription', { connectionId, projectId: 'space-1', id: 'w1' }],
     ]
     for (const [method, value] of cases) {
@@ -220,7 +235,7 @@ describe('sync fixtures', () => {
     expect(base.projection.normalizationVersion).toBe(1)
 
     const r = rule()
-    expect(r.mappings).toHaveLength(1)
+    expect(r.conditions).toHaveLength(1)
     expect(r.enabled).toBe(false)
 
     const adapter = fakeAdapter()
@@ -247,8 +262,7 @@ describe('parseSyncResponse closed response validation', () => {
       instance: 'api.tapd.cn',
       platform: 'tapd',
       companyId: '20000001',
-      userEnv: 'TAPD_USER',
-      passwordEnv: 'TAPD_PASS',
+      tokenEnv: 'TAPD_TOKEN',
       ...overrides,
     }
   }
@@ -326,16 +340,7 @@ describe('parseSyncResponse closed response validation', () => {
       projectId: '20000001',
       enabled: false,
       workspaceId: null,
-      filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-      mappings: [{
-        typeId: 'story',
-        category: 'story',
-        readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-        writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-        optionalFields: [],
-        fieldIds: { title: 'name', status: 'status' },
-        valueMaps: {},
-      }],
+      conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
       ...overrides,
     }
   }
@@ -359,7 +364,7 @@ describe('parseSyncResponse closed response validation', () => {
     expect(() => parseSyncResponse('getSyncMetadata', { ...validSyncMetadata(), intent: { raw: true } })).toThrow()
   })
 
-  it('rejects malformed times, counts, categories and mappings', () => {
+  it('rejects malformed times, counts, categories and rule queries', () => {
     expect(() => parseSyncResponse('getSyncRun', { ...validSafeRun(), startedAt: Number.POSITIVE_INFINITY })).toThrow()
     expect(() => parseSyncResponse('getSyncRun', { ...validSafeRun(), counts: { imported: -1, pulled: 0, pushed: 0, merged: 0, unchanged: 0, failed: 0, pending: 0 } })).toThrow()
     expect(() => parseSyncResponse('getSyncRun', { ...validSafeRun(), counts: { imported: 0, pulled: 0, pushed: 0, merged: 0, unchanged: 0, failed: 1, pending: 2 } })).toThrow()
@@ -436,35 +441,35 @@ describe('safe error builder validation', () => {
 
 describe('minor contract hardening', () => {
   const connectionId = '33333333-3333-4333-8333-333333333333'
-  const mapping = rule().mappings[0]!
 
   it('rejects whitespace-only ids without rewriting them', () => {
     expect(() => parseSyncRequest('getSyncRun', { id: '   ' })).toThrow()
     expect(() => parseSyncRequest('updateSyncConnection', { id: '   ', revision: 1 })).toThrow()
     expect(() => parseSyncRequest('createSyncRule', {
       connectionId: '   ', projectId: 'p',
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] },
-      mappings: [mapping],
+      conditions: [], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })).toThrow()
   })
 
-  it('bounds readStates keys and valueMaps inner keys', () => {
-    const longKey = 'x'.repeat(201)
+  it('bounds a condition value by length and control characters', () => {
+    const longValue = 'x'.repeat(201)
     expect(() => parseSyncRequest('createSyncRule', {
       connectionId, projectId: 'p',
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] },
-      mappings: [{ ...mapping, readStates: { [longKey]: 'todo' } }],
+      conditions: [[{ field: 'status', operator: 'EQUALS', value: [longValue] }]],
+      statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })).toThrow()
     expect(() => parseSyncRequest('createSyncRule', {
       connectionId, projectId: 'p',
-      filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] },
-      mappings: [{ ...mapping, valueMaps: { priority: { [longKey]: 'high' } } }],
+      conditions: [[{ field: 'status', operator: 'EQUALS', value: ['ok', ''] }]],
+      statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     })).toThrow()
   })
 
   it('rejects obvious mixed-platform update combinations', () => {
     expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, mode: 'region', companyId: 'c' })).toThrow()
-    expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, tokenEnv: 'TOKEN', companyId: 'c' })).toThrow()
+    expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, organizationId: 'org', companyId: 'c' })).toThrow()
+    // `tokenEnv` names the credential variable on both platforms, so it combines with either.
+    expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, tokenEnv: 'TOKEN', companyId: 'c' })).not.toThrow()
     expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, mode: 'region' })).not.toThrow()
     expect(() => parseSyncRequest('updateSyncConnection', { id: connectionId, revision: 1, companyId: 'c' })).not.toThrow()
   })

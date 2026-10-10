@@ -1,35 +1,32 @@
 import type { TaskStatus } from '../types.ts'
-import type { RemoteItem, SyncField, SyncProjection } from './types.ts'
-import type { SyncRule, TypeMapping } from './dto.ts'
+import type { StatusWriteStates } from './dto.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 
-/** Resolve the type mapping for a remote item's type; category is never guessed. */
-export function mappingFor(rule: SyncRule, typeId: string): TypeMapping {
-  const mapping = rule.mappings.find(candidate => candidate.typeId === typeId)
-  if (!mapping) throw syncRemoteError(syncError('MappingIncompatible', { scope: 'rule', field: 'typeId' }))
-  return mapping
-}
+/** The local statuses a rule maps; every one must carry a platform target. */
+export const RULE_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'done']
 
-/** Required fields plus the optional fields the mapping explicitly enables, in canonical order. */
-export function projectionFor(rule: SyncRule, typeId: string): SyncProjection {
-  const mapping = mappingFor(rule, typeId)
-  const fields: SyncField[] = ['title', 'description', 'status']
-  if (mapping.optionalFields.includes('priority')) fields.push('priority')
-  if (mapping.optionalFields.includes('tags')) fields.push('tags')
-  if (mapping.optionalFields.includes('storyPoints')) fields.push('storyPoints')
-  return { fields, mappingRevision: rule.revision, normalizationVersion: 1 }
+/**
+ * Whether a rule maps every local status to a platform status. A rule without a
+ * complete mapping cannot write back, so it is refused before it is enabled
+ * instead of failing item by item during a run.
+ */
+export function statusMappingReady(statusWriteStates: StatusWriteStates | null | undefined): boolean {
+  if (statusWriteStates === null || statusWriteStates === undefined) return false
+  return RULE_STATUSES.every(status => typeof statusWriteStates[status] === 'string' && statusWriteStates[status].trim() !== '')
 }
 
 /**
- * Encode a canonical status for writing. When the observed raw status already maps
- * to the target, the finer-grained raw value is preserved instead of collapsing it
- * to the write target. An unmapped target is rejected rather than guessed.
+ * Encode a canonical status for writing. When the observed raw status already
+ * maps to the target, the finer-grained raw value is preserved instead of
+ * collapsing it to the write target. An unmapped target is rejected rather than
+ * guessed.
  */
-export function encodeStatus(target: TaskStatus, observed: RemoteItem, mapping: TypeMapping): string {
-  const write = mapping.writeStates[target]
-  if (write === undefined || mapping.readStates[write] !== target) {
+export function encodeStatus(target: TaskStatus, observedRaw: string, statusWriteStates: StatusWriteStates): string {
+  const write = statusWriteStates[target]
+  if (write === undefined || write.trim() === '') {
     throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'status' }))
   }
-  if (mapping.readStates[observed.rawStatus] === target) return observed.rawStatus
-  return write
+  // The observed status is preserved only when it is the one this target maps
+  // to; an unmapped raw value simply means the write target is the right answer.
+  return observedRaw === write ? observedRaw : write
 }

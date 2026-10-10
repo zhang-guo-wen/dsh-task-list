@@ -43,14 +43,20 @@ describe('Host typed-credential store', () => {
     await store.remove('abc-123')
     expect(await store.read('abc-123')).toBeNull()
   })
-  it('round-trips the TAPD API pair and rejects a blank or foreign record', async () => {
+  it('round-trips the TAPD personal access token and rejects a blank or foreign record', async () => {
     const store = new HostManualSecretStore(provider())
-    await store.write('c-1', { platform: 'tapd', user: 'u', password: 'p' })
-    expect(await store.read('c-1')).toEqual({ platform: 'tapd', user: 'u', password: 'p' })
+    await store.write('c-1', { platform: 'tapd', token: 'tapd-pat' })
+    expect(await store.read('c-1')).toEqual({ platform: 'tapd', token: 'tapd-pat' })
     const blank = new HostManualSecretStore({ readRecord: async () => ({ kind: 'grant', payload: { platform: 'yunxiao', token: '   ' } }), modifyRecord: async () => undefined, deleteRecord: async () => {} })
     await expect(blank.read('c-1')).rejects.toMatchObject({ details: { code: 'StorageFailure' } })
     const foreign = new HostManualSecretStore({ readRecord: async () => ({ kind: 'api-key', key: 'x' }), modifyRecord: async () => undefined, deleteRecord: async () => {} })
     await expect(foreign.read('c-1')).rejects.toMatchObject({ details: { code: 'StorageFailure' } })
+  })
+  it('treats the removed TAPD API-user credential as absent rather than a storage failure', async () => {
+    // Written by the version that still had TAPD's Basic-auth path; the
+    // connection must report "no credential" instead of failing to open.
+    const legacy = new HostManualSecretStore({ readRecord: async () => ({ kind: 'grant', payload: { platform: 'tapd', user: 'u', password: 'p' } }), modifyRecord: async () => undefined, deleteRecord: async () => {} })
+    expect(await legacy.read('c-1')).toBeNull()
   })
   it('persists both manual and OAuth credentials in Host-supported records across a reload', async () => {
     const records = new Map<string, unknown>()
@@ -65,11 +71,11 @@ describe('Host typed-credential store', () => {
       }),
     }
     await new HostManualSecretStore(checked).write('abc-123', { platform: 'yunxiao', token: 'pat-secret' })
-    await new HostManualSecretStore(checked).write('tapd-123', { platform: 'tapd', user: 'user', password: 'password' })
+    await new HostManualSecretStore(checked).write('tapd-123', { platform: 'tapd', token: 'tapd-pat' })
     await new HostSyncCredentialStore(checked).modify('abc-123', async () => grant)
     const reloaded = provider(new Map(JSON.parse(JSON.stringify([...records]))))
     expect(await new HostManualSecretStore(reloaded).read('abc-123')).toEqual({ platform: 'yunxiao', token: 'pat-secret' })
-    expect(await new HostManualSecretStore(reloaded).read('tapd-123')).toEqual({ platform: 'tapd', user: 'user', password: 'password' })
+    expect(await new HostManualSecretStore(reloaded).read('tapd-123')).toEqual({ platform: 'tapd', token: 'tapd-pat' })
     expect(await new HostSyncCredentialStore(reloaded).read('abc-123')).toEqual(grant)
   })
   it('refuses a connection id outside the record-key grammar', async () => {

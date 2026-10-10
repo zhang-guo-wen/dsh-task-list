@@ -1,8 +1,8 @@
 import type { SyncErrorDto } from './dto.ts'
-export interface OAuthConnection { id: string; platform: 'yunxiao' | 'tapd'; instance: string; revision: number }
+export interface OAuthConnection { id: string; platform: 'yunxiao'; instance: string; revision: number }
 /** Host-only record, never an RPC value. */
 export interface OAuthGrant {
-  platform: 'yunxiao' | 'tapd'
+  platform: 'yunxiao'
   instance: string
   connectionRevision: number
   accessToken: string
@@ -10,7 +10,7 @@ export interface OAuthGrant {
   expiresAt: number
   clientId: string
   tokenEndpoint: string
-  purpose: 'yunxiao-api' | 'tapd-user' | 'tapd-project'
+  purpose: 'yunxiao-api'
   accountLabel: string | null
   resourceIds: string[]
   scopes: string[]
@@ -27,8 +27,6 @@ export interface SafeAuthState {
   expiresAt: number | null
   accountLabel: string | null
   resourceIds: string[]
-  projectAccess: 'unverified' | 'ready' | 'denied'
   error: SyncErrorDto | null
 }
 export interface BeginAuthResult { attemptId: string; authorizationUrl: string; expiresAt: number }
-export interface TapdAppConfig { clientId: string; secret: () => Promise<string | null>; callbackUrl: string; scopes: string[] }

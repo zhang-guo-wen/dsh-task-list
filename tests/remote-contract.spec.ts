@@ -36,12 +36,12 @@ describe('Host Remote parameter contract', () => {
   it('applies a closed request and result codec to sync methods while legacy stays passthrough', () => {
     const create = TYPERT_REMOTE.descriptors.find(row => row.method === 'createSyncConnection')!
     const requestSchema = create.parameters[0]!.codec.create()
-    expect(requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'U', passwordEnv: 'P' }))
+    expect(requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'U' }))
       .toMatchObject({ platform: 'tapd', enabled: false })
-    expect(() => requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', userEnv: 'U', passwordEnv: 'P', token: 'sk-live' })).toThrow()
+    expect(() => requestSchema.parse({ platform: 'tapd', name: 'TAPD', companyId: 'c', tokenEnv: 'U', token: 'sk-live' })).toThrow()
 
     const resultSchema = create.result.create()
-    const valid = { id: 'x', name: 'T', enabled: false, revision: 1, credentialPresent: false, instance: 'api.tapd.cn', platform: 'tapd', companyId: 'c', userEnv: 'U', passwordEnv: 'P' }
+    const valid = { id: 'x', name: 'T', enabled: false, revision: 1, credentialPresent: false, instance: 'api.tapd.cn', platform: 'tapd', companyId: 'c', tokenEnv: 'U' }
     expect(resultSchema.parse(valid)).toMatchObject({ platform: 'tapd' })
     expect(() => resultSchema.parse({ ...valid, raw: 'sk-live' })).toThrow()
 

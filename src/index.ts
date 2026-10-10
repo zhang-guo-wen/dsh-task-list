@@ -20,7 +20,7 @@ import { SyncService } from './sync/service.ts'
 import { SyncTransport } from './sync/transport.ts'
 import { createYunxiaoAdapter, listYunxiaoOrganizations } from './sync/adapters/yunxiao.ts'
 import { createYunxiaoQuery } from './sync/adapters/yunxiao-query.ts'
-import { createTapdAdapter } from './sync/adapters/tapd.ts'
+import { createTapdAdapter, listTapdOrganizations } from './sync/adapters/tapd.ts'
 import type { AdapterFactory, Clock } from './sync/types.ts'
 import type { WorkitemQueryFactory } from './sync/service.ts'
 
@@ -84,30 +84,22 @@ export function apply(ctx: Context, config: Config = {}): void {
   // resolve inside the adapter factory and never enter a DTO.
   const adapterFactory: AdapterFactory = async (connection, context) => {
     if (connection.authentication?.mode === 'oauth') {
-      if (connection.platform === 'yunxiao') {
-        // The OAuth access token is the open platform's own credential; it
-        // travels in `x-yunxiao-token`, exactly as a personal access token does.
-        context.beforeRequest()
-        const token = await authorization.yunxiaoToken(connection)
-        if (token === null) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'authentication' }))
-        const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
-        return createYunxiaoAdapter(connection, transport, undefined, { kind: 'yunxiao', token })
-      }
-      if (!context.projectId) throw syncRemoteError(syncError('AuthDenied', { scope: 'connection', field: 'authentication' }))
+      if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'authentication' }))
+      // The OAuth access token is the open platform's own credential; it
+      // travels in `x-yunxiao-token`, exactly as a personal access token does.
       context.beforeRequest()
-      const token = await authorization.projectToken(connection, context.projectId, context.beforeRequest)
-      context.beforeRequest()
-      const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
-      return createTapdAdapter(connection, transport, {}, { kind: 'tapd-project', token, projectIds: [context.projectId] })
+      const token = await authorization.yunxiaoToken(connection)
+      if (token === null) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'authentication' }))
+      const oauthTransport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
+      return createYunxiaoAdapter(connection, oauthTransport, undefined, { kind: 'yunxiao', token })
     }
     const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: context.beforeRequest })
     // A credential typed in the settings page wins over the referenced
     // environment variable; both are resolved here, so neither ever enters a DTO.
     const stored = secrets.store ? await secrets.store.read(connection.id) : null
-    if (connection.platform === 'yunxiao') {
-      return createYunxiaoAdapter(connection, transport, undefined, stored?.platform === 'yunxiao' ? { kind: 'yunxiao', token: stored.token } : undefined)
-    }
-    return createTapdAdapter(connection, transport, {}, stored?.platform === 'tapd' ? { kind: 'tapd', user: stored.user, password: stored.password } : undefined)
+    if (connection.platform === 'tapd') return createTapdAdapter(connection, transport, {}, stored?.platform === 'tapd' ? { kind: 'tapd', token: stored.token } : undefined)
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'connection', field: 'platform' }))
+    return createYunxiaoAdapter(connection, transport, undefined, stored?.platform === 'yunxiao' ? { kind: 'yunxiao', token: stored.token } : undefined)
   }
   const executor = new SyncExecutor({ tasks: store, config: configStore, links, runs, adapterFactory, clock: realClock })
   // The read-only query surface reuses the same credential resolution, but its
@@ -127,6 +119,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     tasks: store, config: configStore, links, runs, executor, adapterFactory,
     secrets: () => secrets.store ?? undefined,
     organizations: async token => listYunxiaoOrganizations(token, new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} }), AbortSignal.timeout(30_000)),
+    tapdOrganizations: async token => listTapdOrganizations(token, new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} }), AbortSignal.timeout(30_000)),
     oauthToken: async id => { const connection = configStore.getConnection(id); return connection === null ? null : authorization.yunxiaoToken(connection) },
     queryFactory,
   })

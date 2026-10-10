@@ -29,8 +29,12 @@ describe('non-secret connection authorization config', () => {
     migrateSyncSchema(db)
     const columns = db.prepare('PRAGMA table_info(sync_connections)').all() as any[]
     expect(columns.some(column => column.name === 'authentication')).toBe(true)
-    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
     expect((db.prepare('PRAGMA table_info(sync_rules)').all() as any[]).some(column => column.name === 'project_name')).toBe(true)
+    // Schema 11 stores each connection's prefill selection beside the connection.
+    expect((db.prepare('PRAGMA table_info(sync_connections)').all() as any[]).some(column => column.name === 'fill_fields')).toBe(true)
+    // Schema 13 replaces the rule's filter dimensions with one platform query.
+    expect((db.prepare('PRAGMA table_info(sync_rules)').all() as any[]).some(column => column.name === 'conditions')).toBe(true)
     tasks.close()
   })
 })

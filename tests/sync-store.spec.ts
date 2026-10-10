@@ -27,7 +27,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', tokenEnv: 'TAPD_TOKEN', enabled: false }
 const yunxiaoInput: CreateConnectionRequest = { platform: 'yunxiao', name: 'Yunxiao', mode: 'center', organizationId: 'org-1', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false }
 
 function fakeClock(initial = 1_700_000_000_000): Clock & { now(): number } {
@@ -48,13 +48,7 @@ function seedRun(db: DatabaseSync, runId: string, ownerId: string, generation: n
 function ruleInput(connectionId: string, projectId = '20000001'): CreateSyncRuleRequest {
   return {
     connectionId, projectId, workspaceId: null, enabled: false,
-    filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-    mappings: [{
-      typeId: 'story', category: 'story',
-      readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-      writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-      optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {},
-    }],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
   }
 }
 
@@ -104,22 +98,62 @@ describe('SyncConfigStore connections', () => {
   it('creates, lists and resolves a connection with computed credentials, never storing env values', () => {
     const store = new TaskStore(fixture())
     closable.push(store)
-    const config = new SyncConfigStore(store.db, () => ({ TAPD_USER: 'user-value', TAPD_PASS: 'pass-value' }))
+    const config = new SyncConfigStore(store.db, () => ({ TAPD_TOKEN: 'token-value' }))
     const created = config.createConnection(tapdInput)
     expect(created).toMatchObject({ platform: 'tapd', name: 'TAPD', enabled: false, revision: 1, credentialPresent: true, instance: '20000001', companyId: '20000001' })
     expect(config.listConnections()).toHaveLength(1)
     expect(config.getConnection(created.id)).toEqual(created)
 
-    // env values never land in the database; only the referenced variable names do
+    // env values never land in the database; only the referenced variable name does
     const raw = JSON.stringify(store.db.prepare('SELECT * FROM sync_connections').all())
-    expect(raw).not.toContain('user-value')
-    expect(raw).not.toContain('pass-value')
-    expect(raw).toContain('TAPD_USER')
-    expect(raw).toContain('TAPD_PASS')
+    expect(raw).not.toContain('token-value')
+    expect(raw).toContain('TAPD_TOKEN')
 
     // a store with no env reports credentialPresent false without storing anything stale
     const empty = new SyncConfigStore(store.db, () => ({}))
     expect(empty.getConnection(created.id)?.credentialPresent).toBe(false)
+  })
+
+  it('stores each connection own prefill selection and defaults an unset one', () => {
+    const store = new TaskStore(fixture())
+    closable.push(store)
+    const config = new SyncConfigStore(store.db)
+    // A new connection without an explicit choice keeps the default set.
+    const plain = config.createConnection(tapdInput)
+    expect(plain.fillFields).toEqual(['title', 'description', 'number', 'status', 'assignee', 'priority'])
+
+    const chosen = config.createConnection({ ...yunxiaoInput, name: 'Chosen', fillFields: ['title', 'source'] })
+    expect(chosen.fillFields).toEqual(['title', 'source'])
+    expect(config.getConnection(chosen.id)?.fillFields).toEqual(['title', 'source'])
+
+    const updated = config.updateConnection({ id: chosen.id, revision: chosen.revision, fillFields: ['number'] })
+    expect(updated.fillFields).toEqual(['number'])
+    // An update that does not mention the selection leaves it alone.
+    expect(config.updateConnection({ id: chosen.id, revision: updated.revision, name: 'Renamed' }).fillFields).toEqual(['number'])
+
+    // A row written before the column existed reads back as the default set.
+    store.db.prepare('UPDATE sync_connections SET fill_fields = NULL WHERE id = ?').run(plain.id)
+    expect(config.getConnection(plain.id)?.fillFields).toEqual(['title', 'description', 'number', 'status', 'assignee', 'priority'])
+  })
+
+  it('keeps each connection’s prefill selection on its own platform’s fields', () => {
+    const store = new TaskStore(fixture())
+    closable.push(store)
+    const config = new SyncConfigStore(store.db)
+
+    // TAPD offers 标签/创建人 and has no 自定义字段/来源编号; 云效 is the other way round.
+    const tapd = config.createConnection({ ...tapdInput, name: 'T', fillFields: ['title', 'tags', 'creator'] })
+    expect(tapd.fillFields).toEqual(['title', 'tags', 'creator'])
+    const yunxiao = config.createConnection({ ...yunxiaoInput, name: 'Y', fillFields: ['title'] })
+    expect(() => config.createConnection({ ...tapdInput, name: 'Bad', fillFields: ['customFields'] })).toThrow()
+    expect(() => config.createConnection({ ...yunxiaoInput, name: 'Bad2', fillFields: ['tags'] })).toThrow()
+
+    // A stored value from the other platform is dropped on read rather than handed out.
+    store.db.prepare('UPDATE sync_connections SET fill_fields = ? WHERE id = ?').run(JSON.stringify(['tags', 'priority']), yunxiao.id)
+    expect(config.getConnection(yunxiao.id)?.fillFields).toEqual(['priority'])
+
+    // An update naming a foreign field is refused too.
+    expect(() => config.updateConnection({ id: tapd.id, revision: tapd.revision, fillFields: ['source'] })).toThrow()
   })
 
   it('derives instance from the platform identity (org for center, region host for region, company for tapd)', () => {
@@ -216,7 +250,7 @@ describe('SyncConfigStore connections', () => {
     closable.push(store)
     const config = new SyncConfigStore(store.db)
     expectSyncError(() => config.createConnection({ ...tapdInput, name: 'x'.repeat(101) }), 'InvalidConfig')
-    expectSyncError(() => config.createConnection({ ...tapdInput, userEnv: '1BAD_NAME' }), 'InvalidConfig')
+    expectSyncError(() => config.createConnection({ ...tapdInput, tokenEnv: '1BAD_NAME' }), 'InvalidConfig')
   })
 })
 
@@ -226,7 +260,7 @@ describe('SyncConfigStore rules', () => {
     closable.push(store)
     const config = new SyncConfigStore(store.db)
     const first = config.createConnection(tapdInput)
-    const second = config.createConnection({ ...tapdInput, name: 'TAPD 2', userEnv: 'OTHER_USER', passwordEnv: 'OTHER_PASS' })
+    const second = config.createConnection({ ...tapdInput, name: 'TAPD 2', tokenEnv: 'OTHER_TOKEN' })
     expect(first.instance).toBe(second.instance)
     config.createRule(ruleInput(first.id, 'proj-1'))
     expectSyncError(() => config.createRule(ruleInput(second.id, 'proj-1')), 'InvalidConfig')
@@ -253,14 +287,19 @@ describe('SyncConfigStore rules', () => {
     expect(config.updateRule({ id: rule.id, revision: rule.revision, enabled: false }).enabled).toBe(false)
   })
 
-  it('rejects over-long rule metadata (filters and mappings)', () => {
+  it('rejects a rule query the platform would refuse and an incomplete status map', () => {
     const store = new TaskStore(fixture())
     closable.push(store)
     const config = new SyncConfigStore(store.db)
     const connection = config.createConnection(tapdInput)
     const base = ruleInput(connection.id)
-    expectSyncError(() => config.createRule({ ...base, filters: { ...base.filters, assignees: Array.from({ length: 101 }, (_, i) => `a${i}`) } }), 'InvalidConfig')
-    expectSyncError(() => config.createRule({ ...base, mappings: Array.from({ length: 101 }, () => base.mappings[0]!) }), 'InvalidConfig')
+    // An unverified field, an operator the field does not accept, and an empty
+    // value set are refused before a rule can be saved.
+    expectSyncError(() => config.createRule({ ...base, conditions: [[{ field: 'nope', value: ['x'] }]] }), 'InvalidConfig')
+    expectSyncError(() => config.createRule({ ...base, conditions: [[{ field: 'sprint', operator: 'EQUALS', value: ['s1'] }]] }), 'InvalidConfig')
+    expectSyncError(() => config.createRule({ ...base, conditions: [[{ field: 'status', operator: 'EQUALS', value: [] }]] }), 'InvalidConfig')
+    // A rule that cannot map all three statuses cannot write back.
+    expectSyncError(() => config.createRule({ ...base, statusWriteStates: { todo: 'open', in_progress: '', done: 'done' } }), 'InvalidConfig')
   })
 })
 
@@ -269,7 +308,9 @@ describe('SyncLinkStore import and intents', () => {
     const { store, links, rule, fence } = setup()
     const item = remote()
     const task = links.importItem(item, rule, fence)
-    expect(task).toMatchObject({ title: 'Remote task', status: 'in_progress', priority: 'high', storyPoints: 3 })
+    // The platform's own fields never fill local ones: only the title and status
+    // are carried over, plus the packed work-item description.
+    expect(task).toMatchObject({ title: 'Remote task', status: 'in_progress', priority: 'medium', storyPoints: null, tags: [] })
     expect(store.get(task.id)?.content).toEqual(task.content)
     const link = links.getLink(item.key)!
     expect(link).toMatchObject({ ruleId: rule.id, taskId: task.id, revision: 1 })
@@ -525,14 +566,16 @@ describe('SyncLinkStore projection and attachment preservation', () => {
     expectSyncError(() => links.importItem(remote({ fields: { ...remote().fields, status: { presence: 'absent', writable: false } } }), rule, fence), 'InvalidRemoteResponse')
   })
 
-  it('derives the stored baseline projection from the rule rather than a fixed six fields', () => {
+  it('derives the stored baseline projection from the rule: the status is the only reconciled field', () => {
     const { links, rule, fence } = setup()
     const item = remote()
     links.importItem(item, rule, fence)
     const link = links.getLink(item.key)!
-    expect(link.baseline?.projection.fields).toEqual(['title', 'description', 'status'])
+    expect(link.baseline?.projection.fields).toEqual(['status'])
     expect(link.baseline?.projection.mappingRevision).toBe(rule.revision)
-    expect(link.baseline?.local.description.blocks).toEqual(textContent('Remote body').blocks)
+    // The packed description is still part of the snapshot, so a later sync can
+    // tell a local description edit from the imported one.
+    expect(link.baseline?.local.description.blocks.length).toBeGreaterThan(0)
   })
 
   it('keeps local attachment nodes when finalize applies a pulled description', () => {

@@ -33,46 +33,10 @@ export const FILTER_FIELDS: readonly {
   { id: 'gmtCreate', label: 'filterCreated', source: 'date', operator: 'BETWEEN', className: 'dateTime', format: 'input' },
 ]
 
-export const DEFAULT_FILTER_FIELDS: readonly FilterFieldId[] = ['status', 'assignedTo']
-
 /** The user's own limit: one title search plus at most this many conditions. */
 export const MAX_CONDITIONS = 2
 
-const STORAGE_KEY = 'dsh-task-list.workitem-filters'
-const IDS = new Set<string>(FILTER_FIELDS.map(field => field.id))
 const BY_ID = new Map(FILTER_FIELDS.map(field => [field.id, field]))
-
-interface Readable { getItem(key: string): string | null }
-interface Writable { setItem(key: string, value: string): void }
-
-function safeStorage(): Storage | null {
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage
-  } catch {
-    return null
-  }
-}
-
-/** The enabled filter fields; a broken or empty value means the defaults. */
-export function readFilterFields(storage: Readable | null = safeStorage()): FilterFieldId[] {
-  const fallback = [...DEFAULT_FILTER_FIELDS]
-  if (storage === null) return fallback
-  const raw = storage.getItem(STORAGE_KEY)
-  if (raw === null) return fallback
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return fallback
-    const kept = parsed.filter((id): id is FilterFieldId => typeof id === 'string' && IDS.has(id))
-    return kept.length > 0 ? kept : fallback
-  } catch {
-    return fallback
-  }
-}
-
-export function writeFilterFields(fields: readonly FilterFieldId[], storage: Writable | null = safeStorage()): void {
-  if (storage === null) return
-  storage.setItem(STORAGE_KEY, JSON.stringify(fields.filter(field => IDS.has(field))))
-}
 
 export interface DraftCondition {
   field: FilterFieldId

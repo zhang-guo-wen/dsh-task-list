@@ -21,6 +21,7 @@ import { SyncSection } from './sync/SyncSection.tsx'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { TaskCapture } from './TaskCapture.tsx'
+import { captureTarget, type CaptureTarget } from './capture.ts'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentMarkdown, textContent } from '../content.ts'
 import { attachmentFile, fileUpload } from './rich-text.ts'
@@ -61,7 +62,13 @@ interface AgentPresetService {
 /** Projection of the Session Controller catalog the picker needs. */
 interface SessionListLike {
   ids: readonly string[]
-  byId: Record<string, { displayTitle?: string; origin?: string; blank?: boolean } | undefined>
+  byId: Record<string, {
+    displayTitle?: string
+    origin?: string
+    blank?: boolean
+    /** Host-projected values, including the agent preset a Session runs. */
+    projectionValues?: { agentPreset?: unknown }
+  } | undefined>
 }
 
 interface WorkspaceArchiveSnapshotLike {
@@ -184,6 +191,31 @@ export async function apply(ctx: Context): Promise<void> {
       throw error
     }
   }
+  // Ctrl+S links the live Session, its Workspace, and its agent. A blank Session
+  // is the reusable seat of the next New Session, so the task keeps no Session
+  // link while it lasts, while the Workspace it was opened in and the preset it
+  // would run still describe the captured work.
+  const resolveCaptureTarget = async (sessionId: string): Promise<CaptureTarget> => {
+    const sessions = ctx.sessions?.list?.getSnapshot?.() as unknown as SessionListLike | undefined
+    const session = sessions?.byId?.[sessionId]
+    const preset = session?.projectionValues?.agentPreset
+    return captureTarget({
+      sessionId,
+      session,
+      workspaces: ctx.workspaces?.list?.getSnapshot?.()?.items ?? [],
+      // The default is what a Session recording no preset actually runs, and the
+      // roster read is skipped whenever the Session already records one.
+      defaultAgent: typeof preset === 'string' && preset !== '' ? null : await defaultAgentPreset(),
+    })
+  }
+  /** Host-effective default agent preset, or null when the roster read fails. */
+  const defaultAgentPreset = async (): Promise<string | null> => {
+    try {
+      const result = await agentPresets().list()
+      if (!result.ok) return null
+      return result.value.presets.find(row => row.isDefault && !row.broken)?.id ?? null
+    } catch { return null }
+  }
   const face: TaskFace = {
     calculateStatistics: async (request, options = {}) => {
       const service = remote()
@@ -296,10 +328,11 @@ export async function apply(ctx: Context): Promise<void> {
   }
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'task-list', locale: NS, inject: () => face }, TaskPanel))
   // Sync settings are one page of the host's settings panel rather than a modal
-  // of the task list: the same face and workspace roster, rendered inline.
+  // of the task list: the same face, rendered inline. A rule no longer carries a
+  // workspace, so the section does not need the workspace roster.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section', id: 'task-list-sync', order: 26, label: () => t('syncSettings'), locale: NS,
-    inject: () => ({ sync: face.sync, workspaceSnapshot: face.workspaceSnapshot, subscribeWorkspaces: face.subscribeWorkspaces }),
+    inject: () => ({ sync: face.sync, listWorkitemFields: face.listWorkitemFields }),
   }, SyncSection))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'task-list', order: 25, label: () => t('nav'),
@@ -310,6 +343,7 @@ export async function apply(ctx: Context): Promise<void> {
     name: 'conversation.input.right', id: 'task-capture', order: 60, locale: NS,
     inject: sessionId => ({
       sessionId,
+      resolveTarget: () => resolveCaptureTarget(sessionId),
       create: (request: CreateTaskRequest) => face.create(request),
       captureAttachments: async (ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }> => {
         const drafts = conversation().resolveDraftAttachments(ids)

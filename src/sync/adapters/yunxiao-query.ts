@@ -1,9 +1,13 @@
 import type { HostCredentials, SyncTransport } from '../types.ts'
+import type { TaskContent } from '../../types.ts'
 import type { SafeConnection, SyncErrorDto } from '../dto.ts'
 import { resolveCredentials } from '../credentials.ts'
 import { syncError, syncRemoteError } from '../errors.ts'
+import { decodeDescription } from '../description-codec.ts'
+import { textContent } from '../../content.ts'
 import { LIST_FIELDS, projectWorkitem, resolveListFields, type WorkitemListField } from '../query/fields.ts'
-import { buildConditions, type WorkitemConditionGroups } from '../query/filters.ts'
+import { buildConditions } from '../query/filters.ts'
+import type { WorkitemConditionGroups } from '../dto.ts'
 import {
   DETAIL_SECTIONS, RELATION_TYPES, projectActivities, projectAttachments, projectComments, projectRelationRecords,
   unpackDescription, type ActivityView, type AttachmentView, type CommentView, type DescriptionView,
@@ -83,7 +87,8 @@ export interface WorkitemRelationGroup {
 
 export interface WorkitemDetailResult {
   item: Record<string, unknown>
-  description: DescriptionView | null
+  /** The body plus the plugin's own structured form of it (null when undecodable). */
+  description: (DescriptionView & { content: TaskContent | null }) | null
   comments?: CommentView[]
   relations?: WorkitemRelationGroup[]
   activities?: ActivityView[]
@@ -112,8 +117,12 @@ export interface WorkitemFieldDefinition {
 
 export interface WorkitemFieldsRequest {
   projectId: string
-  /** Category whose work-item types are merged; the platform refuses an empty one. */
-  category: string
+  /**
+   * One category or a comma-joined set (`Req,Bug,Task`) whose work-item types
+   * are merged into one catalog; the platform refuses an empty category and a
+   * space inside the value.
+   */
+  categories: string
 }
 
 const FIELD_NAME_LIMIT = 100
@@ -151,6 +160,29 @@ function detailSections(include: readonly DetailSection[] | undefined): DetailSe
   if (include === undefined || include.length === 0) return ['description']
   for (const section of include) if (!DETAIL_SECTIONS.includes(section)) invalid('include')
   return [...new Set(include)]
+}
+
+/**
+ * Decode one description into the plugin's own content vocabulary, so the
+ * browser renders validated blocks instead of injecting remote HTML. Rich text
+ * goes through the same lossless decoder the sync path uses; plain/markdown
+ * bodies become paragraphs. An undecodable body keeps the text but loses the
+ * structure rather than failing the whole detail read.
+ */
+function describeWorkitem(raw: Record<string, unknown>): (DescriptionView & { content: TaskContent | null }) | null {
+  const view = unpackDescription(raw.description, raw.formatType)
+  if (view === null) return null
+  let content: TaskContent | null
+  if (view.format === 'richtext' && view.html !== null) {
+    try {
+      content = decodeDescription({ presence: 'value', value: view.html, writable: false }, 'richtext').content
+    } catch {
+      content = null
+    }
+  } else {
+    content = textContent(view.plain)
+  }
+  return { ...view, content }
 }
 
 /**
@@ -250,7 +282,7 @@ export function createYunxiaoQuery(
     const spaceId = isPlainObject(space) && typeof space.id === 'string' ? space.id : null
     if (raw.value.id !== id || (spaceId !== null && spaceId !== projectId)) fail('item')
     const item = projectWorkitem(raw.value, fields)
-    const description = want('description') ? unpackDescription(raw.value.description, raw.value.formatType) : null
+    const description = want('description') ? describeWorkitem(raw.value) : null
 
     const sectionErrors: { section: DetailSection; error: SyncErrorDto }[] = []
     let comments: CommentView[] | undefined
@@ -311,44 +343,70 @@ export function createYunxiaoQuery(
   }
 
   /**
-   * Every selectable field of the chosen category, read from the platform's own
-   * config and merged across that category's work-item types (a project-wide
-   * field picker needs one list, and reading only the first type would hide
-   * fields another type adds). First occurrence wins for name/format.
+   * Every selectable field of the requested category set, read from the
+   * platform's own config and merged across their work-item types (a
+   * project-wide field picker needs one list, and reading only the first type
+   * would hide fields another type adds). The joined set is tried in one request
+   * first; when the platform refuses it, every category is read on its own, so a
+   * single-value-only deployment still yields a full catalog. First occurrence
+   * wins for name/format, and reading stops once `MAX_TYPES` types have been read
+   * in total.
    */
   async function listFields(request: WorkitemFieldsRequest, signal: AbortSignal): Promise<WorkitemFieldDefinition[]> {
     const projectId = identifier(request.projectId, 'projectId')
-    if (!CATEGORY.test(request.category) || request.category.includes(',')) invalid('category')
-    const types = await read(`/projects/${encodeURIComponent(projectId)}/workitemTypes?category=${request.category}`, { method: 'GET' }, signal)
-    if (!Array.isArray(types.value)) fail('workitemTypes')
+    const categories = request.categories.split(',')
+    if (!CATEGORY.test(request.categories) || categories.some(part => part.trim() === '')) invalid('categories')
     const merged = new Map<string, WorkitemFieldDefinition>()
-    for (const entry of types.value.slice(0, MAX_TYPES)) {
-      if (!isPlainObject(entry)) fail('workitemTypes')
-      const typeId = bounded(entry.id, ID_LIMIT)
-      if (typeId === null) fail('workitemTypes.id')
-      const response = await read(`/projects/${encodeURIComponent(projectId)}/workitemTypes/${encodeURIComponent(typeId)}/fields`, { method: 'GET' }, signal)
-      if (!Array.isArray(response.value)) fail('fields')
-      for (const raw of response.value) {
-        if (!isPlainObject(raw)) fail('fields')
-        const id = bounded(raw.id, ID_LIMIT)
-        if (id === null || id === '' || merged.has(id)) continue
-        const options: { id: string; label: string }[] = []
-        if (Array.isArray(raw.options)) {
-          for (const option of raw.options.slice(0, FIELD_OPTION_LIMIT)) {
-            if (!isPlainObject(option)) continue
-            const optionId = bounded(option.id, ID_LIMIT)
-            if (optionId === null) continue
-            options.push({ id: optionId, label: bounded(option.displayValue, FIELD_NAME_LIMIT) ?? bounded(option.value, FIELD_NAME_LIMIT) ?? optionId })
+    let typesRead = 0
+    const readCategory = async (category: string): Promise<void> => {
+      const types = await read(`/projects/${encodeURIComponent(projectId)}/workitemTypes?category=${category}`, { method: 'GET' }, signal)
+      if (!Array.isArray(types.value)) fail('workitemTypes')
+      for (const entry of types.value) {
+        if (typesRead >= MAX_TYPES) break
+        if (!isPlainObject(entry)) fail('workitemTypes')
+        const typeId = bounded(entry.id, ID_LIMIT)
+        if (typeId === null) fail('workitemTypes.id')
+        typesRead += 1
+        const response = await read(`/projects/${encodeURIComponent(projectId)}/workitemTypes/${encodeURIComponent(typeId)}/fields`, { method: 'GET' }, signal)
+        if (!Array.isArray(response.value)) fail('fields')
+        for (const raw of response.value) {
+          if (!isPlainObject(raw)) fail('fields')
+          const id = bounded(raw.id, ID_LIMIT)
+          if (id === null || id === '' || merged.has(id)) continue
+          const options: { id: string; label: string }[] = []
+          if (Array.isArray(raw.options)) {
+            for (const option of raw.options.slice(0, FIELD_OPTION_LIMIT)) {
+              if (!isPlainObject(option)) continue
+              const optionId = bounded(option.id, ID_LIMIT)
+              if (optionId === null) continue
+              options.push({ id: optionId, label: bounded(option.displayValue, FIELD_NAME_LIMIT) ?? bounded(option.value, FIELD_NAME_LIMIT) ?? optionId })
+            }
           }
+          merged.set(id, {
+            id,
+            name: bounded(raw.name, FIELD_NAME_LIMIT) ?? id,
+            format: bounded(raw.format, FIELD_FORMAT_LIMIT) ?? '',
+            required: raw.required === true,
+            kind: bounded(raw.type, FIELD_FORMAT_LIMIT) ?? '',
+            options,
+          })
         }
-        merged.set(id, {
-          id,
-          name: bounded(raw.name, FIELD_NAME_LIMIT) ?? id,
-          format: bounded(raw.format, FIELD_FORMAT_LIMIT) ?? '',
-          required: raw.required === true,
-          kind: bounded(raw.type, FIELD_FORMAT_LIMIT) ?? '',
-          options,
-        })
+      }
+    }
+    if (categories.length === 1) {
+      await readCategory(categories[0]!)
+      return [...merged.values()]
+    }
+    try {
+      await readCategory(request.categories)
+    } catch (error) {
+      // An abort is the caller's own cancellation; never turn it into a retry.
+      if (signal.aborted) throw error
+      merged.clear()
+      typesRead = 0
+      for (const category of categories) {
+        if (typesRead >= MAX_TYPES) break
+        await readCategory(category)
       }
     }
     return [...merged.values()]

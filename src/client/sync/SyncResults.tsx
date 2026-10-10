@@ -6,10 +6,20 @@ export type SyncTranslate = (key: TaskKey) => string
 const categories = { imported: 'syncImported', pulled: 'syncPulled', pushed: 'syncPushed', merged: 'syncMerged', unchanged: 'syncSkipped', failed: 'syncFailed' } as const
 export function SyncFailure({ error, t }: { error: unknown; t: SyncTranslate }) {
   const outer = typeof error === 'object' && error !== null ? error as { code?: unknown; details?: unknown } : {}
-  const detail = typeof outer.details === 'object' && outer.details !== null ? outer.details as { code?: unknown } : outer
+  const detail: { code?: unknown; cause?: unknown } = typeof outer.details === 'object' && outer.details !== null
+    ? outer.details as { code?: unknown; cause?: unknown }
+    : outer
   const code = typeof detail.code === 'string' ? detail.code : ''
-  const key = code === 'HostRestartRequired' ? 'syncHostRestart' : code === 'CredentialMissing' ? 'syncCredentialMissing' : code === 'WriteOutcomeUnknown' || code === 'VerificationFailed' ? 'syncPendingHint' : 'syncSafeError'
-  return <p role="alert" className={css.error}>{t(key)} {code && <code>{code}</code>}</p>
+  const codeKey = {
+    HostRestartRequired: 'syncHostRestart',
+    CredentialMissing: 'syncCredentialMissing',
+    WriteOutcomeUnknown: 'syncPendingHint',
+    VerificationFailed: 'syncPendingHint',
+  } as const
+  const key = codeKey[code as keyof typeof codeKey] ?? 'syncSafeError'
+  // A wrapper may keep the platform's own refusal code as the visible reason.
+  const cause = typeof detail.cause === 'string' ? detail.cause : ''
+  return <p role="alert" className={css.error}>{t(key)} {code && <code>{cause !== '' ? `${code}: ${cause}` : code}</code>}</p>
 }
 export function SyncResults({ run, items, t, changePage }: { run: SafeRun; items: Page<SafeItemResult>; t: SyncTranslate; changePage: (page: number) => void }) {
   const label = run.status === 'running' ? 'syncRunning' : run.status === 'completed' ? 'syncCompleted' : run.status === 'interrupted' ? 'syncInterrupted' : run.status === 'partial' ? 'syncPartial' : 'syncFailed'

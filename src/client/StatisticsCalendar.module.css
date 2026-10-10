@@ -4,7 +4,10 @@
    inflate every cell and push the grid past the panel's height. */
 .view { display: flex; flex-direction: column; flex: 1; min-height: 0; line-height: 1.45; }
 .header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
-.header h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
+/* The report replaces the list inside the same page, so its title keeps the
+   list header's type (`h1` alone would fall back to whatever a page-level rule
+   says, and the two headers live in different stylesheets). */
+.header h1, .header .title { margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
 .header h1:focus { outline: none; }
 .toolbar { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 /* The Host's segmented control draws its own track, indicator and radii; only the

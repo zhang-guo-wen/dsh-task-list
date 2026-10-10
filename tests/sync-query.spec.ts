@@ -5,7 +5,7 @@ import { createYunxiaoQuery } from '../src/sync/adapters/yunxiao-query.ts'
 import { SyncTransport } from '../src/sync/transport.ts'
 import { parseSyncRequest, parseSyncResponse } from '../src/sync/validation.ts'
 import { projectWorkitem, resolveListFields } from '../src/sync/query/fields.ts'
-import { buildConditions, ruleConditions } from '../src/sync/query/filters.ts'
+import { buildConditions } from '../src/sync/query/filters.ts'
 import { projectAttachments, projectComments, projectRelationRecords, unpackDescription } from '../src/sync/query/detail.ts'
 import type { Clock, SafeConnection, SyncTransport as TransportContract } from '../src/sync/types.ts'
 
@@ -150,11 +150,19 @@ describe('condition builder', () => {
     expect(JSON.parse(ok!).conditionGroups[0][0]).toMatchObject({ fieldIdentifier: 'gmtModified', className: 'dateTime', toValue: '2026-10-09 00:00:00' })
   })
 
-  it('maps the rule dimensions onto one AND group', () => {
-    const groups = ruleConditions({ assignees: ['user-1'], statusIds: ['100005'], iterationIds: ['sprint-1'], typeIds: ['req-type-1'] })
-    expect(groups).toHaveLength(1)
-    expect(groups![0].map(condition => condition.field)).toEqual(['assignedTo', 'status', 'sprint', 'workitemType'])
-    expect(ruleConditions({ assignees: [], statusIds: [], iterationIds: [], typeIds: [] })).toBeUndefined()
+  it('sends a rule query as one AND group', () => {
+    const conditions = [[
+      { field: 'assignedTo', operator: 'EQUALS' as const, value: ['user-1'] },
+      { field: 'status', operator: 'EQUALS' as const, value: ['100005'] },
+      { field: 'sprint', operator: 'CONTAINS' as const, value: ['sprint-1'] },
+      { field: 'workitemType', operator: 'EQUALS' as const, value: ['req-type-1'] },
+    ]]
+    const encoded = JSON.parse(buildConditions(conditions)!) as { conditionGroups: { fieldIdentifier: string }[][] }
+    expect(encoded.conditionGroups).toHaveLength(1)
+    expect(encoded.conditionGroups[0]!.map(condition => condition.fieldIdentifier)).toEqual(['assignedTo', 'status', 'sprint', 'workitemType'])
+    // An empty query matches everything, and the endpoint must not receive an
+    // empty `conditions` array: the caller omits the key instead.
+    expect(buildConditions([])).toBeUndefined()
   })
 })
 
@@ -258,6 +266,13 @@ describe('createYunxiaoQuery.getWorkitem', () => {
     expect(result.description?.html).toContain('功能需求')
     expect(result.description?.plain).toContain('功能需求')
     expect(result.description?.plain).not.toContain('<article')
+    // The body also arrives as the plugin's own structured vocabulary, so the
+    // browser can render it without ever touching the remote HTML.
+    const content = result.description?.content
+    expect(content?.version).toBe(1)
+    expect(content?.blocks.length).toBeGreaterThan(0)
+    expect(JSON.stringify(content)).toContain('功能需求')
+    expect(JSON.stringify(content)).not.toContain('<article')
     expect(result.comments).toHaveLength(2)
     expect(result.relations).toEqual([{ relationType: 'SUB', records: [
       { relationType: 'SUB', resourceType: 'Req', resourceId: '1000000000000000003', gmtCreate: 1_791_400_000_000, item: null },
@@ -347,7 +362,7 @@ describe('createYunxiaoQuery.listFields', () => {
       throw new Error(`unexpected ${call.url}`)
     })
     const { fields } = makeQuery(fetch)
-    const list = await fields({ projectId: 'space-1', category: 'Req' }, new AbortController().signal)
+    const list = await fields({ projectId: 'space-1', categories: 'Req' }, new AbortController().signal)
     // subject appears for both types but is offered once; the second type's own
     // custom fields (Story Points, 所属模块) are added.
     expect(list.map(field => field.id)).toEqual(['subject', 'assignedTo', 'priority', '79', 'story_points', '5b35c9e6485c4eae7d47367bb6'])
@@ -356,21 +371,87 @@ describe('createYunxiaoQuery.listFields', () => {
     expect(calls).toHaveLength(3)
   })
 
-  it('refuses a category the search endpoint would reject', async () => {
-    const { fetch, calls } = routed(() => jsonResponse(fixture('yunxiao-query-types.json')))
+  it('reads a joined category set in one request and merges their types', async () => {
+    const calls: { url: string }[] = []
+    const { fetch } = routed(call => {
+      calls.push({ url: call.url })
+      if (new URL(call.url).searchParams.get('category') === 'Req,Bug,Task') return jsonResponse([{ id: 'req-type' }, { id: 'bug-type' }, { id: 'task-type' }])
+      if (call.url.endsWith('/req-type/fields')) return jsonResponse([{ id: 'subject', name: '标题', format: 'string', required: true, type: 'NativeField' }])
+      if (call.url.endsWith('/bug-type/fields')) return jsonResponse([{ id: 'severity', name: '严重程度', format: 'list', required: false, type: 'CustomField', options: [{ id: 's1', displayValue: '致命' }] }])
+      if (call.url.endsWith('/task-type/fields')) return jsonResponse([{ id: 'subject', name: '标题', format: 'string', required: true, type: 'NativeField' }])
+      throw new Error(`unexpected ${call.url}`)
+    })
     const { fields } = makeQuery(fetch)
-    expect(detailCode(await rejection(fields({ projectId: 'space-1', category: 'Req,Bug' }, new AbortController().signal)))).toBe('InvalidConfig')
-    expect(calls).toHaveLength(0)
+    const list = await fields({ projectId: 'space-1', categories: 'Req,Bug,Task' }, new AbortController().signal)
+    expect(list.map(field => field.id)).toEqual(['subject', 'severity'])
+    expect(list[1]).toMatchObject({ name: '严重程度', options: [{ id: 's1', label: '致命' }] })
+    expect(calls.filter(call => call.url.includes('/workitemTypes?'))
+      .map(call => new URL(call.url).searchParams.get('category'))).toEqual(['Req,Bug,Task'])
+  })
+
+  it('falls back to one request per category when the joined read is refused', async () => {
+    const calls: { url: string }[] = []
+    const { fetch } = routed(call => {
+      calls.push({ url: call.url })
+      const category = new URL(call.url).searchParams.get('category')
+      if (call.url.includes('/workitemTypes?') && category === 'Req,Bug,Task') return jsonResponse({ message: 'invalid category' }, 400)
+      if (category === 'Req') return jsonResponse([{ id: 'req-type' }])
+      if (category === 'Bug') return jsonResponse([{ id: 'bug-type' }])
+      if (category === 'Task') return jsonResponse([])
+      if (call.url.endsWith('/req-type/fields')) return jsonResponse([{ id: 'subject', name: '标题', format: 'string', required: true, type: 'NativeField' }])
+      if (call.url.endsWith('/bug-type/fields')) return jsonResponse([{ id: 'severity', name: '严重程度', format: 'list', required: false, type: 'CustomField', options: [] }])
+      throw new Error(`unexpected ${call.url}`)
+    })
+    const { fields } = makeQuery(fetch)
+    const list = await fields({ projectId: 'space-1', categories: 'Req,Bug,Task' }, new AbortController().signal)
+    expect(list.map(field => field.id)).toEqual(['subject', 'severity'])
+    expect(calls.filter(call => call.url.includes('/workitemTypes?'))
+      .map(call => new URL(call.url).searchParams.get('category'))).toEqual(['Req,Bug,Task', 'Req', 'Bug', 'Task'])
+  })
+
+  it('refuses a category the search endpoint would reject', async () => {
+    for (const categories of ['', 'Req,', 'Req,Bug ']) {
+      const { fetch, calls } = routed(() => jsonResponse(fixture('yunxiao-query-types.json')))
+      const { fields } = makeQuery(fetch)
+      expect(detailCode(await rejection(fields({ projectId: 'space-1', categories }, new AbortController().signal)))).toBe('InvalidConfig')
+      expect(calls).toHaveLength(0)
+    }
   })
 })
 
 describe('listWorkitemFields RPC contract', () => {
   it('parses the closed request and the field rows', () => {
-    expect(parseSyncRequest('listWorkitemFields', { connectionId: 'conn-1', projectId: 'space-1', category: 'Req' }).request)
-      .toEqual({ connectionId: 'conn-1', projectId: 'space-1', category: 'Req' })
-    expect(() => parseSyncRequest('listWorkitemFields', { connectionId: 'conn-1', projectId: 'space-1', category: 'Req,Bug' })).toThrow()
+    expect(parseSyncRequest('listWorkitemFields', { connectionId: 'conn-1', projectId: 'space-1', categories: 'Req,Bug,Task' }).request)
+      .toEqual({ connectionId: 'conn-1', projectId: 'space-1', categories: 'Req,Bug,Task' })
+    expect(() => parseSyncRequest('listWorkitemFields', { connectionId: 'conn-1', projectId: 'space-1', categories: 'Req, Bug' })).toThrow()
+    // The singular key is refused: the catalog read takes a category set.
+    expect(() => parseSyncRequest('listWorkitemFields', { connectionId: 'conn-1', projectId: 'space-1', category: 'Req' })).toThrow()
     const row = { id: 'priority', name: '优先级', format: 'list', required: true, kind: 'SystemCustomField', options: [{ id: 'p1', label: '中' }] }
     expect(parseSyncResponse('listWorkitemFields', [row]).response).toEqual([row])
     expect(() => parseSyncResponse('listWorkitemFields', [{ ...row, secret: 'x' }])).toThrow()
+  })
+})
+
+describe('getWorkitemDescription RPC contract', () => {
+  const request = { connectionId: 'conn-1', projectId: 'space-1', id: 'w1' }
+
+  it('parses the closed request and the decoded body', () => {
+    expect(parseSyncRequest('getWorkitemDescription', request).request).toEqual(request)
+    expect(() => parseSyncRequest('getWorkitemDescription', { ...request, extra: 1 })).toThrow()
+
+    const content = { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'Body', marks: ['bold'] }] }] }
+    const description = { format: 'richtext', html: '<p>Body</p>', plain: 'Body', content }
+    expect(parseSyncResponse('getWorkitemDescription', { description }).response).toEqual({ description })
+    // A body the host could not decode crosses as null, not as a guess.
+    expect(parseSyncResponse('getWorkitemDescription', { description: { format: 'text', html: null, plain: 'Body', content: null } }).response)
+      .toEqual({ description: { format: 'text', html: null, plain: 'Body', content: null } })
+    expect(parseSyncResponse('getWorkitemDescription', { description: null }).response).toEqual({ description: null })
+  })
+
+  it('refuses a body outside the content vocabulary', () => {
+    const bad = { format: 'richtext', html: '<p>x</p>', plain: 'x', content: { version: 1, blocks: [{ type: 'script', children: [] }] } }
+    expect(() => parseSyncResponse('getWorkitemDescription', { description: bad })).toThrow()
+    const hidden = { format: 'richtext', html: null, plain: 'x', content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'x' }], extra: 1 }] } }
+    expect(parseSyncResponse('getWorkitemDescription', { description: hidden }).response.description?.content?.blocks[0]).toEqual({ type: 'paragraph', children: [{ text: 'x' }] })
   })
 })

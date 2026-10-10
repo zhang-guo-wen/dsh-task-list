@@ -25,18 +25,12 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+const tapdInput: CreateConnectionRequest = { platform: 'yunxiao', name: '云效', mode: 'center', organizationId: 'org-1', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false }
 
 function ruleInput(connectionId: string): CreateSyncRuleRequest {
   return {
     connectionId, projectId: '20000001', workspaceId: null, enabled: false,
-    filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-    mappings: [{
-      typeId: 'story', category: 'story',
-      readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-      writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-      optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {},
-    }],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
   }
 }
 

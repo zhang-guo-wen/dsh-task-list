@@ -284,6 +284,8 @@ try {
   await page.waitForFunction(() => window.fixture.input().attachmentIds.length === 0)
   const captured = await page.evaluate(() => window.fixture.captures()[0])
   assert.equal(captured.sessionId, 'session-current', 'Ctrl+S must keep the composer session')
+  assert.equal(captured.workspaceId, 'ws-test', 'Ctrl+S must carry the composer workspace')
+  assert.equal(captured.agent, 'preset-alpha', 'Ctrl+S must carry the composer agent')
   assert.equal(captured.content.blocks[0].children[0].text, '一起保存文件和图片')
   assert.deepEqual(captured.content.blocks.filter(block => block.type === 'attachment').map(block => block.name), ['需求.docx', '截图.png'])
   assert.equal(Buffer.from(captured.attachments[0].data, 'base64').toString(), 'document bytes')
@@ -326,6 +328,18 @@ try {
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await page.getByRole('dialog').waitFor({ state: 'hidden' })
   assert.equal(await page.evaluate(() => window.fixture.tasks()[0].sessionId), 'session-current')
+  // A blank session is the reusable seat of the next New Session, so the capture
+  // drops the link while keeping the workspace and the agent that would run.
+  await page.evaluate(() => window.fixture.setCaptureLink({ blank: true }))
+  await composer.fill('新会话草稿')
+  await composer.press('Control+s')
+  await page.waitForFunction(() => window.fixture.captures().length === 3)
+  const blankCapture = await page.evaluate(() => window.fixture.captures()[2])
+  assert.equal(blankCapture.sessionId, null, 'a blank session must not be linked')
+  assert.equal(blankCapture.workspaceId, 'ws-test', 'the workspace must still come along')
+  assert.equal(blankCapture.agent, 'preset-alpha', 'the agent must still come along')
+  await page.evaluate(() => window.fixture.setCaptureLink({ blank: false }))
+  await page.waitForFunction(() => window.fixture.input().draft === '')
   // Phone rows hide metadata and deletion, even under hover/focus and touch.
   const taskRow = page.locator('main li[data-priority]').filter({ has: page.getByRole('button', { name: /^编辑: 测试富文本/ }) })
   const rowStatus = taskRow.locator('[class*="statusChip"]')

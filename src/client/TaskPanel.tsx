@@ -17,8 +17,8 @@ import { contentText, textContent } from '../content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { TaskContentEditor } from './TaskContentEditor.tsx'
 import type { SyncFace } from './sync/face.ts'
-import type { ListWorkitemFieldsRequest, ListWorkitemsRequest, SafeWorkitemDescription, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage } from '../sync/dto.ts'
-import { buildWorkitemBody, readFillFields } from './workitem-fill.ts'
+import type { ListWorkitemFieldsRequest, ListWorkitemsRequest, SafeWorkitemDescription, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage, WorkitemFillField } from '../sync/dto.ts'
+import { buildWorkitemBody } from './workitem-fill.ts'
 import { SyncActions, SyncStatus } from './sync/SyncControls.tsx'
 import { useSyncPanel } from './sync/use-sync-panel.ts'
 
@@ -147,6 +147,7 @@ export function TaskPanel({
   const [agents, setAgents] = useState<readonly { id: string; name?: string; isDefault: boolean; broken?: string }[]>([])
   const mounted = useRef(false)
   const generation = useRef(0)
+  const listBody = useRef<HTMLDivElement>(null)
   const agentPrefilled = useRef(false)
   const sessionState = useSyncExternalStore(subscribeSessions, sessionSnapshot)
   const sessionNames = new Map(sessionState.items.map(row => [row.id, row.title]))
@@ -201,6 +202,12 @@ export function TaskPanel({
     void refresh()
     return () => { mounted.current = false; generation.current++ }
   }, [refresh])
+
+  // A new page or filter starts at its first row; ordinary refreshes keep the
+  // current position. Scroll the list body, never the panel or the window.
+  useEffect(() => {
+    if (listBody.current) listBody.current.scrollTop = 0
+  }, [page, pageSize, filter, query, workspaceFilter])
 
   // Load the preset roster when the composer opens: fetching it at mount races
   // the Remote namespace mount, which left the Agent select with one option.
@@ -272,12 +279,12 @@ export function TaskPanel({
 
   /**
    * Open the create composer prefilled from a remote work item. The body is
-   * built from the fields the settings page has checked, and `start` arms the
-   * "start immediately" switch so saving launches the session in one step.
+   * built from the fields the settings page has checked; saving stays the user's
+   * own action, so the composer opens with the ordinary defaults.
    */
-  const openDraft = (row: Record<string, unknown>, description: SafeWorkitemDescription | null, mode: 'sync' | 'start') => {
+  const openDraft = (row: Record<string, unknown>, description: SafeWorkitemDescription | null, fillFields: readonly WorkitemFillField[]) => {
     setEditing(null)
-    setContent(textContent(buildWorkitemBody(row, description, readFillFields(), t)))
+    setContent(textContent(buildWorkitemBody(row, description, fillFields, t)))
     setUploads([])
     setAttachmentBusy(false)
     setContentValid(true)
@@ -286,7 +293,7 @@ export function TaskPanel({
     setStoryPoints('')
     setTagsInput('')
     setWorkspaceId(defaultWorkspaceId ?? '')
-    setSendImmediately(mode === 'start')
+    setSendImmediately(false)
     setSessionId('')
     setAgent('')
     setUseWorktree(false)
@@ -487,14 +494,15 @@ export function TaskPanel({
 
   if (moreOpen) return <main className={css.page} data-more="true">
     <div className={css.inner}>
-      <MoreTasks sync={sync} query={{ listWorkitems, listWorkitemFields, getWorkitemDescription }} onDraft={openDraft} t={t} close={() => {
+      <MoreTasks sync={sync} listWorkitems={listWorkitems} listWorkitemFields={listWorkitemFields}
+        getWorkitemDescription={getWorkitemDescription} onDraft={openDraft} t={t} close={() => {
         setMoreOpen(false)
         requestAnimationFrame(() => moreButton.current?.focus())
       }} />
     </div>
   </main>
 
-  return <main className={css.page}>
+  return <main className={css.page} data-list="true">
     <div className={css.inner}>
       <header className={css.header}>
         <h1>{t('title')}</h1>
@@ -529,6 +537,7 @@ export function TaskPanel({
         </div>
       </div>
 
+      <div className={css.listBody} ref={listBody}>
       {/* Sync's own output only: a refused click's prompt, a failure, or a run's
           results. Idle, it renders nothing — the standing description of what
           sync does lives on its settings page. */}
@@ -571,6 +580,7 @@ export function TaskPanel({
           </li>
         })}
       </ul>}
+      </div>
 
       {total > 0 && <div className={css.pager}>
         <label className={css.pageSize}>{t('perPage')}

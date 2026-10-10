@@ -1,7 +1,7 @@
 import type { TaskRecord } from '../types.ts'
 import type { SafeItemResult, SyncErrorDto, SyncRule } from './dto.ts'
 import { SYNC_ERRORS, syncError, syncRemoteError } from './errors.ts'
-import { projectionFor } from './mapping.ts'
+import { projectionFor } from './snapshot.ts'
 import { planSync } from './planner.ts'
 import { reconcileIntent } from './reconcile.ts'
 import { buildBaseline, projectRemote, rebaseProjection } from './snapshot.ts'
@@ -196,7 +196,7 @@ async function executeItemInner(input: ItemExecution): Promise<SafeItemResult> {
 
   if (task === null) {
     const created = links.importItem(observed, rule, fence)
-    const result = resultFor(key, created.id, 'imported', projectionFor(rule, key.typeId).fields, false, outsideFilter, null)
+    const result = resultFor(key, created.id, 'imported', projectionFor(rule).fields, false, outsideFilter, null)
     runs.recordResult(fence, result)
     return result
   }

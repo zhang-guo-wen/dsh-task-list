@@ -1,25 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconSettingsOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   ListWorkitemFieldsRequest, ListWorkitemsRequest, Option, SafeConnection, SafeWorkitemDescription,
-  SafeWorkitemField, SafeWorkitemPage,
+  SafeWorkitemField, SafeWorkitemPage, WorkitemFillField,
 } from '../sync/dto.ts'
-import { readFillFields } from './workitem-fill.ts'
 import {
-  FILTER_FIELDS, MAX_CONDITIONS, buildFilterConditions, readFilterFields,
+  FILTER_FIELDS, MAX_CONDITIONS, buildFilterConditions,
   type DraftCondition, type FilterFieldId,
 } from './workitem-filter.ts'
+import { contentHtml } from './rich-text.ts'
 import type { SyncFace } from './sync/face.ts'
 import type { TaskKey } from './locales.ts'
 import css from './MoreTasks.module.css'
 
-/** Category values the search endpoint accepts; it refuses an empty category. */
-const CATEGORIES = [
-  { id: 'Req', label: 'moreTasksCategoryReq' },
-  { id: 'Bug', label: 'moreTasksCategoryBug' },
-  { id: 'Task', label: 'moreTasksCategoryTask' },
-] as const
+/**
+ * Category values the search endpoint accepts; it refuses an empty category.
+ * The page no longer asks for one: the table lists requirements, defects and
+ * tasks together, so the list request joins all three.
+ */
+const WORKITEM_CATEGORIES = ['Req', 'Bug', 'Task'] as const
+const CATEGORIES = WORKITEM_CATEGORIES.join(',')
 
 const PAGE_SIZES = [20, 50, 100, 200] as const
 
@@ -35,6 +36,18 @@ interface FilterOptionSet {
 
 const EMPTY_OPTIONS: FilterOptionSet = { status: [], stage: [], user: [], priority: [], sprint: [], type: [] }
 const FILTER_SPECS = new Map(FILTER_FIELDS.map(field => [field.id, field]))
+
+/** Content equality for the field catalog, so an identical reload keeps identity. */
+function sameCatalog(current: SafeWorkitemField[] | null, next: SafeWorkitemField[]): boolean {
+  if (current === null || current.length !== next.length) return false
+  return current.every((field, index) => {
+    const other = next[index]!
+    return field.id === other.id && field.name === other.name && field.format === other.format
+      && field.kind === other.kind && field.required === other.required
+      && field.options.length === other.options.length
+      && field.options.every((option, position) => option.id === other.options[position]?.id && option.label === other.options[position]?.label)
+  })
+}
 
 /** A text-typed condition commits on blur or Enter rather than per keystroke. */
 function CommittedText({ label, value, placeholder, onCommit }: {
@@ -156,6 +169,15 @@ function cellText(row: Record<string, unknown>, column: Column): string {
     : customFieldText(row.customFields, column.source.fieldId)
 }
 
+/** The title column is frozen to the left while the rest scrolls sideways. */
+function isSubject(column: Column): boolean {
+  return column.source.kind === 'native' && column.source.field === 'subject'
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
 /**
  * Build the column catalog: the native columns this page can always show, then
  * every field the platform configures for the category (custom fields included).
@@ -184,27 +206,27 @@ function buildCatalog(fields: SafeWorkitemField[]): Column[] {
 }
 
 /**
- * "More tasks": pick a connection, a project and a category, choose the columns
- * from the platform's own field catalog, then page through the work items. The
- * list asks the Host for exactly the shown fields, so no description body,
- * comment thread or relation list is fetched to render a row.
+ * "More tasks": pick a connection and a project in the title row, choose the
+ * columns from the platform's own field catalog (the settings icon in the table
+ * head), then page through the work items. Requirements, defects and tasks are
+ * listed together — there is no category filter. The list asks the Host for
+ * exactly the shown fields, so no description body, comment thread or relation
+ * list is fetched to render a row; a row's title opens the detail drawer.
  */
-export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskList'> & {
+export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitemDescription, close, onDraft, t }: PropsLocale<'taskList'> & {
   sync: SyncFace
-  query: {
-    listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage>
-    listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]>
-    getWorkitemDescription(request: { connectionId: string; projectId: string; id: string }): Promise<{ description: SafeWorkitemDescription | null }>
-  }
-  /** Hand a work item to the task composer: `start` also arms "start immediately". */
-  onDraft(row: Record<string, unknown>, description: SafeWorkitemDescription | null, mode: 'sync' | 'start'): void
+  /** Stable function references: an inline object here re-triggers every effect. */
+  listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage>
+  listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]>
+  getWorkitemDescription(request: { connectionId: string; projectId: string; id: string }): Promise<{ description: SafeWorkitemDescription | null }>
+  /** Hand a work item to the task composer, with that connection's prefill set. */
+  onDraft(row: Record<string, unknown>, description: SafeWorkitemDescription | null, fillFields: readonly WorkitemFillField[]): void
   close: () => void
 }) {
   const [connections, setConnections] = useState<SafeConnection[] | null>(null)
   const [connectionId, setConnectionId] = useState('')
   const [projects, setProjects] = useState<Option[] | null>(null)
   const [projectId, setProjectId] = useState('')
-  const [category, setCategory] = useState<string>('Req')
   const [pageSize, setPageSize] = useState<number>(50)
   const [page, setPage] = useState(1)
   const [fields, setFields] = useState<SafeWorkitemField[] | null>(null)
@@ -214,11 +236,17 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
   const [result, setResult] = useState<SafeWorkitemPage | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [enabledFilters] = useState<readonly FilterFieldId[]>(() => readFilterFields())
   const [titleInput, setTitleInput] = useState('')
   const [title, setTitle] = useState('')
   const [conditions, setConditions] = useState<readonly DraftCondition[]>([])
   const [options, setOptions] = useState<FilterOptionSet>(EMPTY_OPTIONS)
+  const [detail, setDetail] = useState<{
+    row: Record<string, unknown>
+    loading: boolean
+    error: string | null
+    description: SafeWorkitemDescription | null
+  } | null>(null)
+  const detailSequence = useRef(0)
   const heading = useRef<HTMLHeadingElement>(null)
   const sequence = useRef(0)
 
@@ -255,15 +283,26 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
 
   // The column catalog comes from the platform's own field config, so custom
   // fields (priority, story points, 所属模块…) are offered by their real names.
+  // It is cleared only when the project really changes, and replaced only when
+  // the payload differs: a fresh array of the same fields would cascade into a
+  // new projection and re-fetch the list on every parent render.
+  const catalogKey = `${connectionId}\u0000${projectId}`
+  const loadedCatalogKey = useRef<string | null>(null)
   useEffect(() => {
-    if (connectionId === '' || projectId === '') { setFields(null); return }
+    if (connectionId === '' || projectId === '') { setFields(null); loadedCatalogKey.current = null; return }
+    if (loadedCatalogKey.current !== catalogKey) {
+      loadedCatalogKey.current = catalogKey
+      setFields(null)
+    }
     let cancelled = false
-    setFields(null)
-    query.listWorkitemFields({ connectionId, projectId, category })
-      .then(list => { if (!cancelled) setFields(list) })
-      .catch(() => { if (!cancelled) setFields([]) })
+    listWorkitemFields({ connectionId, projectId, categories: CATEGORIES })
+      .then(list => {
+        if (cancelled) return
+        setFields(current => (sameCatalog(current, list) ? current : list))
+      })
+      .catch(() => { if (!cancelled) setFields(current => (current !== null && current.length === 0 ? current : [])) })
     return () => { cancelled = true }
-  }, [query, connectionId, projectId, category])
+  }, [listWorkitemFields, connectionId, projectId, catalogKey])
 
   const catalog = useMemo(() => buildCatalog(fields ?? []), [fields])
   const byKey = useMemo(() => new Map(catalog.map(column => [column.key, column])), [catalog])
@@ -312,7 +351,8 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
   const label = useCallback((column: Column): string => (column.localised === null ? column.name : t(column.localised)), [t])
 
   const load = useCallback(() => {
-    if (connectionId === '' || projectId === '' || selected === null) return
+    // Waiting for the catalog avoids a throwaway request that asks for `id` only.
+    if (connectionId === '' || projectId === '' || selected === null || fields === null) return
     const id = ++sequence.current
     setBusy(true)
     setError(null)
@@ -324,10 +364,10 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
     }
     if (customIds.length > 0) native.add('customFields')
     const filterConditions = buildFilterConditions(title, conditions)
-    query.listWorkitems({
+    listWorkitems({
       connectionId,
       projectId,
-      categories: category,
+      categories: CATEGORIES,
       page,
       perPage: pageSize,
       fields: [...native],
@@ -343,7 +383,7 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
         setError(failure instanceof Error ? failure.message : String(failure))
       })
       .finally(() => { if (id === sequence.current) setBusy(false) })
-  }, [query, connectionId, projectId, category, page, pageSize, columns, selected, title, conditions])
+  }, [listWorkitems, connectionId, projectId, page, pageSize, columns, selected, title, conditions])
 
   useEffect(load, [load])
 
@@ -357,18 +397,40 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
   }
 
   /**
+   * Read one work item's body for the detail drawer. The row already carries the
+   * metadata, so this is the only request the drawer makes.
+   */
+  const openDetail = async (row: Record<string, unknown>): Promise<void> => {
+    const id = typeof row.id === 'string' ? row.id : ''
+    if (id === '') return
+    const ticket = ++detailSequence.current
+    setPickerOpen(false)
+    setDetail({ row, loading: true, error: null, description: null })
+    try {
+      const result = await getWorkitemDescription({ connectionId, projectId, id })
+      if (ticket !== detailSequence.current) return
+      setDetail({ row, loading: false, error: null, description: result.description })
+    } catch (failure) {
+      if (ticket !== detailSequence.current) return
+      setDetail({ row, loading: false, error: failure instanceof Error ? failure.message : String(failure), description: null })
+    }
+  }
+
+  /**
    * Hand one work item to the task composer. The description costs one detail
    * request and is only read when the settings say the composer needs it.
    */
-  const draft = async (row: Record<string, unknown>, mode: 'sync' | 'start'): Promise<void> => {
+  const draft = async (row: Record<string, unknown>): Promise<void> => {
     const id = typeof row.id === 'string' ? row.id : ''
     if (id === '') return
+    const connection = (connections ?? []).find(entry => entry.id === connectionId)
+    const fillFields = connection?.fillFields ?? []
     setBusy(true)
     setError(null)
     let description: SafeWorkitemDescription | null = null
-    if (readFillFields().includes('description')) {
+    if (fillFields.includes('description')) {
       try {
-        description = (await query.getWorkitemDescription({ connectionId, projectId, id })).description
+        description = (await getWorkitemDescription({ connectionId, projectId, id })).description
       } catch (failure) {
         setError(`${t('moreTasksDraftFailed')}: ${failure instanceof Error ? failure.message : String(failure)}`)
         setBusy(false)
@@ -376,15 +438,14 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
       }
     }
     setBusy(false)
-    onDraft(row, description, mode)
+    onDraft(row, description, fillFields)
   }
 
   /**
-   * The condition cap is the smaller of the user's setting (2) and how many
-   * fields the settings page enabled, so the bar can never offer a control the
-   * platform would ignore.
+   * Every verified filter field is offered; the platform decides what each one
+   * means. The cap stays at two conditions plus the title search.
    */
-  const availableFilters = useMemo(() => enabledFilters.filter(id => FILTER_SPECS.has(id)), [enabledFilters])
+  const availableFilters = useMemo(() => FILTER_FIELDS.map(field => field.id), [])
   const conditionLimit = Math.min(MAX_CONDITIONS, availableFilters.length)
   const addCondition = (): void => {
     setConditions(current => {
@@ -435,46 +496,41 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
   return <section className={css.view} aria-labelledby="task-more-title" aria-busy={busy} data-more-tasks="true">
     <header className={css.header}>
       <h1 id="task-more-title" ref={heading} tabIndex={-1}>{t('moreTasksTitle')}</h1>
-      <Button variant="outline" onClick={close}>{t('moreTasksClose')}</Button>
+
+      {/* Connection and project live in the title row; the column-settings icon
+          sits in the table head, so the table keeps the full width for columns. */}
+      <div className={css.controls}>
+        <label className={css.field}>{t('moreTasksConnection')}
+          <select value={connectionId} disabled={connections === null || connections.length === 0}
+            onChange={event => { setConnectionId(event.target.value); setPage(1); setResult(null) }}>
+            {connections === null
+              ? <option value="">{t('loading')}</option>
+              : connections.length === 0
+                ? <option value="">{t('moreTasksNoConnection')}</option>
+                : <>
+                  {connectionId === '' && <option value="">{t('moreTasksSelectConnection')}</option>}
+                  {connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
+                </>}
+          </select>
+        </label>
+
+        <label className={css.field}>{t('moreTasksProject')}
+          <select value={projectId} disabled={projects === null || projects.length === 0}
+            onChange={event => { setProjectId(event.target.value); setPage(1); setResult(null) }}>
+            {projects === null
+              ? <option value="">{connectionId === '' ? t('moreTasksSelectConnection') : t('loading')}</option>
+              : projects.length === 0
+                ? <option value="">{t('moreTasksNoProject')}</option>
+                : <>
+                  {projectId === '' && <option value="">{t('moreTasksSelectProject')}</option>}
+                  {projects.map(project => <option key={project.id} value={project.id}>{project.label}</option>)}
+                </>}
+          </select>
+        </label>
+
+        <Button variant="outline" onClick={close}>{t('moreTasksClose')}</Button>
+      </div>
     </header>
-
-    <div className={css.controls}>
-      <label className={css.field}>{t('moreTasksConnection')}
-        <select value={connectionId} disabled={connections === null || connections.length === 0}
-          onChange={event => { setConnectionId(event.target.value); setPage(1); setResult(null) }}>
-          {connections === null
-            ? <option value="">{t('loading')}</option>
-            : connections.length === 0
-              ? <option value="">{t('moreTasksNoConnection')}</option>
-              : <>
-                {connectionId === '' && <option value="">{t('moreTasksSelectConnection')}</option>}
-                {connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
-              </>}
-        </select>
-      </label>
-
-      <label className={css.field}>{t('moreTasksProject')}
-        <select value={projectId} disabled={projects === null || projects.length === 0}
-          onChange={event => { setProjectId(event.target.value); setPage(1); setResult(null) }}>
-          {projects === null
-            ? <option value="">{connectionId === '' ? t('moreTasksSelectConnection') : t('loading')}</option>
-            : projects.length === 0
-              ? <option value="">{t('moreTasksNoProject')}</option>
-              : <>
-                {projectId === '' && <option value="">{t('moreTasksSelectProject')}</option>}
-                {projects.map(project => <option key={project.id} value={project.id}>{project.label}</option>)}
-              </>}
-        </select>
-      </label>
-
-      <label className={css.field}>{t('moreTasksCategory')}
-        <select value={category} onChange={event => { setCategory(event.target.value); setPage(1); setResult(null) }}>
-          {CATEGORIES.map(entry => <option key={entry.id} value={entry.id}>{t(entry.label)}</option>)}
-        </select>
-      </label>
-
-      <Button variant="outline" onClick={() => setPickerOpen(open => !open)} aria-expanded={pickerOpen}>{t('moreTasksColumnsTitle')}</Button>
-    </div>
 
     {/* One title search plus at most two conditions; the settings page decides
         which fields may appear here. */}
@@ -532,8 +588,21 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
               : <table className={css.table}>
                 <thead>
                   <tr>
-                    {columns.map(column => <th key={column.key} scope="col">{label(column)}</th>)}
-                    <th scope="col">{t('moreActions')}</th>
+                    {columns.map(column => <th key={column.key} scope="col"
+                      className={isSubject(column) ? `${css.subject} ${css.frozenLeft}` : undefined}>{label(column)}</th>)}
+                    <th scope="col" className={css.frozenRight}>
+                      <span className={css.actionsHeader}>
+                        <span>{t('moreTasksActions')}</span>
+                        {/* Column settings moved out of the toolbar into the table head. */}
+                        <Tooltip label={t('moreTasksColumnsTitle')} side="bottom" align="end">
+                          <Button variant="ghost" size="sm" className={css.iconButton} aria-label={t('moreTasksColumnsTitle')}
+                            aria-expanded={pickerOpen}
+                            onClick={() => setPickerOpen(open => { if (!open) setDetail(null); return !open })}>
+                            <IconSettingsOutlineRegular size={16} />
+                          </Button>
+                        </Tooltip>
+                      </span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -542,17 +611,55 @@ export function MoreTasks({ sync, query, close, onDraft, t }: PropsLocale<'taskL
                     return <tr key={key}>
                       {columns.map(column => {
                         const text = cellText(row, column)
-                        return <td key={column.key} className={column.source.kind === 'native' && column.source.field === 'subject' ? css.subject : undefined}>{text === '' ? '—' : text}</td>
+                        const shown = text === '' ? '—' : text
+                        return <td key={column.key}
+                          className={isSubject(column) ? `${css.subject} ${css.frozenLeft}` : undefined}>
+                          {isSubject(column) && text !== ''
+                            ? <button type="button" className={css.subjectButton} title={text}
+                              onClick={() => void openDetail(row)}>{shown}</button>
+                            : shown}
+                        </td>
                       })}
-                      <td className={css.rowActions}>
-                        <Button variant="outline" size="sm" disabled={busy} onClick={() => void draft(row, 'start')}>{t('moreTasksStart')}</Button>
-                        <Button variant="primary" size="sm" disabled={busy} onClick={() => void draft(row, 'sync')}>{t('moreTasksSync')}</Button>
+                      <td className={`${css.rowActions} ${css.frozenRight}`}>
+                        <Button variant="primary" size="sm" disabled={busy} onClick={() => void draft(row)}>{t('moreTasksSync')}</Button>
                       </td>
                     </tr>
                   })}
                 </tbody>
               </table>}
       </div>
+
+      {/* The detail drawer reads the body on demand and renders the plugin's own
+          structured form of it, never the remote HTML. */}
+      {detail !== null && <aside className={css.detail} role="dialog" aria-label={t('moreTasksDetail')}>
+        <header className={css.pickerHeader}>
+          <strong className={css.detailTitle} title={textOf(detail.row.subject)}>{textOf(detail.row.subject) || t('moreTasksDetail')}</strong>
+          <button type="button" className={css.pickerClose} aria-label={t('moreTasksClose')}
+            onClick={() => { detailSequence.current += 1; setDetail(null) }}>×</button>
+        </header>
+        <div className={css.detailScroll}>
+          <dl className={css.detailMeta}>
+            {columns.filter(column => !isSubject(column)).map(column => {
+              const text = cellText(detail.row, column)
+              return text === '' ? null : <div key={column.key} className={css.detailMetaRow}>
+                <dt>{label(column)}</dt><dd>{text}</dd>
+              </div>
+            })}
+          </dl>
+          <h2 className={css.pickerHeading}>{t('moreTasksDetailDescription')}</h2>
+          {detail.loading
+            ? <p className={css.pickerNote}>{t('loading')}</p>
+            : detail.error !== null
+              ? <p role="alert" className={css.error}>{t('error')} · {detail.error}</p>
+              : detail.description === null || detail.description.plain.trim() === ''
+                ? <p className={css.pickerNote}>{t('moreTasksDetailEmpty')}</p>
+                : detail.description.content !== null
+                  // The HTML is generated by the plugin's own encoder from validated
+                  // blocks (see contentHtml), never taken from the platform.
+                  ? <div className={css.detailBody} dangerouslySetInnerHTML={{ __html: contentHtml(detail.description.content) }} />
+                  : <p className={css.detailPlain}>{detail.description.plain}</p>}
+        </div>
+      </aside>}
 
       {pickerOpen && <aside className={css.picker} role="dialog" aria-label={t('moreTasksColumnsTitle')}>
         <header className={css.pickerHeader}>

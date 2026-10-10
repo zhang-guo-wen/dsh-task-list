@@ -1,20 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import {
-  DEFAULT_FILL_FIELDS, FILL_FIELDS, buildWorkitemBody, readFillFields, writeFillFields, type FillField,
-} from '../src/client/workitem-fill.ts'
+import { FILL_FIELDS, buildWorkitemBody, fillFieldsFor, normalizeFillFields, type FillField } from '../src/client/workitem-fill.ts'
+import { DEFAULT_WORKITEM_FILL_FIELDS, WORKITEM_FILL_FIELDS, WORKITEM_FILL_FIELDS_BY_PLATFORM } from '../src/sync/dto.ts'
 import { zh, type TaskKey } from '../src/client/locales.ts'
 import type { SafeWorkitemDescription } from '../src/sync/dto.ts'
 
 const t = (key: TaskKey) => zh[key]
-
-function memoryStorage(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial))
-  return {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value) },
-    raw: store,
-  }
-}
 
 const row: Record<string, unknown> = {
   id: 'w1',
@@ -29,31 +19,32 @@ const row: Record<string, unknown> = {
   ],
 }
 
-const description: SafeWorkitemDescription = { format: 'richtext', html: '<p>Body</p>', plain: 'Body' }
+const description: SafeWorkitemDescription = { format: 'richtext', html: '<p>Body</p>', plain: 'Body', content: null }
 
-describe('fill settings storage', () => {
-  it('falls back to the defaults when nothing is saved', () => {
-    expect(readFillFields(memoryStorage())).toEqual([...DEFAULT_FILL_FIELDS])
+describe('fill field catalog', () => {
+  it('offers each platform its own fields, every one labelled', () => {
+    // 云效 keeps the union's default list; TAPD swaps 自定义字段/来源 for 标签/创建人.
+    expect(FILL_FIELDS.map(field => field.id)).toEqual([...WORKITEM_FILL_FIELDS_BY_PLATFORM.yunxiao])
+    expect(fillFieldsFor('tapd').map(field => field.id)).toEqual(['title', 'description', 'number', 'status', 'assignee', 'sprint', 'priority', 'tags', 'creator'])
+    expect(fillFieldsFor('yunxiao').map(field => field.id)).not.toContain('tags')
+    expect(fillFieldsFor('tapd').map(field => field.id)).not.toContain('customFields')
+    for (const platform of ['yunxiao', 'tapd'] as const) {
+      for (const field of fillFieldsFor(platform)) expect(t(field.label)).toBeTruthy()
+      for (const field of WORKITEM_FILL_FIELDS_BY_PLATFORM[platform]) expect(WORKITEM_FILL_FIELDS).toContain(field)
+    }
+    for (const field of DEFAULT_WORKITEM_FILL_FIELDS) {
+      expect(WORKITEM_FILL_FIELDS_BY_PLATFORM.yunxiao).toContain(field)
+      expect(WORKITEM_FILL_FIELDS_BY_PLATFORM.tapd).toContain(field)
+    }
   })
 
-  it('round-trips a selection and drops unknown ids', () => {
-    const storage = memoryStorage()
-    writeFillFields(['title', 'number', 'customFields'], storage)
-    expect(readFillFields(storage)).toEqual(['title', 'number', 'customFields'])
-    storage.raw.set('dsh-task-list.workitem-fill', JSON.stringify(['title', 'bogus']))
-    expect(readFillFields(storage)).toEqual(['title'])
-  })
-
-  it('survives a broken value and an empty selection', () => {
-    expect(readFillFields(memoryStorage({ 'dsh-task-list.workitem-fill': '{oops' }))).toEqual([...DEFAULT_FILL_FIELDS])
-    expect(readFillFields(memoryStorage({ 'dsh-task-list.workitem-fill': '[]' }))).toEqual([...DEFAULT_FILL_FIELDS])
-    expect(readFillFields(null)).toEqual([...DEFAULT_FILL_FIELDS])
-  })
-
-  it('offers every documented field', () => {
-    const ids = FILL_FIELDS.map(field => field.id)
-    expect(ids).toEqual(['title', 'description', 'number', 'status', 'assignee', 'sprint', 'priority', 'customFields', 'source'])
-    for (const field of FILL_FIELDS) expect(t(field.label)).toBeTruthy()
+  it('normalizes a selection to the platform that will use it', () => {
+    // Switching 云效 → TAPD drops the 云效-only ids and keeps the platform's order.
+    expect(normalizeFillFields('tapd', ['customFields', 'source', 'title', 'priority'])).toEqual(['title', 'priority'])
+    expect(normalizeFillFields('yunxiao', ['tags', 'creator', 'title'])).toEqual(['title'])
+    // A selection with nothing usable left is reported as empty, so the caller
+    // can fall back to the platform's defaults.
+    expect(normalizeFillFields('tapd', ['customFields', 'source'])).toEqual([])
   })
 })
 
@@ -80,6 +71,16 @@ describe('work item draft body', () => {
     // The custom-field sweep must not repeat the priority line.
     expect(body.match(/中/gu)).toHaveLength(1)
     expect(body).toContain('进度: 0')
+  })
+
+  it('renders the TAPD-only fields when they are selected', () => {
+    const tapdRow = {
+      ...row,
+      labels: [{ id: 'l1', name: '紧急' }, { id: 'l2', name: '移动端' }],
+      creator: { id: 'user-9', name: 'Bob' },
+    }
+    const body = buildWorkitemBody(tapdRow, null, ['title', 'tags', 'creator'], t)
+    expect(body).toBe(`Alpha work item\n\n${zh.fillTags}: 紧急、移动端\n${zh.fillCreator}: Bob`)
   })
 
   it('omits the description when the platform carries none and appends the source line last', () => {

@@ -11,9 +11,8 @@ import { syncError, syncRemoteError } from './errors.ts'
 import { serializeRemoteKey } from './schema.ts'
 import { withSqliteTransaction } from '../sqlite-transaction.ts'
 import { assertRunFence, recordRunItemResult } from './run-store.ts'
-import { buildBaseline, projectLocal, projectRemote } from './snapshot.ts'
+import { buildBaseline, projectLocal, projectRemote, projectionFor } from './snapshot.ts'
 import { mergeLocalAttachments } from './description-codec.ts'
-import { projectionFor } from './mapping.ts'
 import { reconcileIntent } from './reconcile.ts'
 
 const realClock: Clock = { now: () => Date.now(), sleep: async () => {} }
@@ -81,16 +80,22 @@ function patchToUpdate(taskId: string, version: number, patch: SyncPatch, conten
   return request
 }
 
-/** Import a remote item into a task: no fake title, essential fields required, default workspace honoured. */
+/**
+ * Import a remote item into a task: no fake title, essential fields required,
+ * default workspace honoured. The description is the packed work-item body the
+ * adapter decoded (number, platform fields and the item's own text), and the
+ * only synced field afterwards is the status — priority, tags and story points
+ * stay local, so nothing fills them from the platform.
+ */
 function importedTaskRequest(item: RemoteItem, rule: SyncRule): CreateTaskRequest {
   const fields = projectRemote(item, rule)
   return {
     title: fields.title,
     content: fields.description,
     status: fields.status,
-    priority: fields.priority,
-    tags: fields.tags,
-    storyPoints: fields.storyPoints,
+    priority: 'medium',
+    tags: [],
+    storyPoints: null,
     workspaceId: rule.workspaceId ?? null,
   }
 }
@@ -209,7 +214,7 @@ export class SyncLinkStore {
     const id = randomUUID()
     const now = this.clock.now()
     const baseline = input.link.baseline ?? buildBaseline(input.task, input.observed, input.rule)
-    const projection = projectionFor(input.rule, input.observed.key.typeId)
+    const projection = projectionFor(input.rule)
     const localBefore = projectLocal(input.task, projection)
     const expected = { ...projectRemote(input.observed, input.rule), ...input.plan.remotePatch }
     withSqliteTransaction(this.db, () => {

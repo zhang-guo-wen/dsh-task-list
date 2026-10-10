@@ -501,6 +501,36 @@ describe('composer capture', () => {
     expect(capture.inject('session-two').sessionId).toBe('session-two')
   })
 
+  it('resolves the live session, workspace, and agent for one capture', async () => {
+    const register = vi.fn(() => vi.fn())
+    const list = vi.fn(async () => ({ ok: true as const, value: { presets: [{ id: 'preset-default', isDefault: true }] } }))
+    let byId: Record<string, { blank?: boolean; projectionValues?: { agentPreset?: unknown } }> = {
+      'session-started': { blank: false, projectionValues: { agentPreset: 'preset-alpha' } },
+      'session-blank': { blank: true },
+    }
+    const ctx = {
+      remote: { $mount: vi.fn(async () => vi.fn()), agentPresets: { list } },
+      locale: { register: () => vi.fn(), bind: () => (key: string) => key },
+      effect: (fn: () => (() => void)) => { fn() },
+      slots: { inject: (_name: string, fn: () => void) => fn(), register },
+      workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'ws-1', sessionIds: ['session-started', 'session-blank'] }] }) } },
+      sessions: { list: { getSnapshot: () => ({ ids: Object.keys(byId), byId }) } },
+    }
+    await apply(ctx as unknown as Context)
+    const capture = register.mock.calls.find(call => call[0].name === 'conversation.input.right')![0]
+    const started = capture.inject('session-started') as TaskCaptureFace
+    const blank = capture.inject('session-blank') as TaskCaptureFace
+
+    await expect(started.resolveTarget!()).resolves.toEqual({ sessionId: 'session-started', workspaceId: 'ws-1', agent: 'preset-alpha' })
+    // A blank session is the reusable seat of the next New Session: the task
+    // keeps the workspace and the host-effective default agent, but no link.
+    await expect(blank.resolveTarget!()).resolves.toEqual({ sessionId: null, workspaceId: 'ws-1', agent: 'preset-default' })
+    expect(list).toHaveBeenCalledOnce()
+    byId = { ...byId, 'session-blank': { blank: false, projectionValues: { agentPreset: 'preset-alpha' } } }
+    await expect(blank.resolveTarget!()).resolves.toEqual({ sessionId: 'session-blank', workspaceId: 'ws-1', agent: 'preset-alpha' })
+    expect(list).toHaveBeenCalledOnce()
+  })
+
   it('writes the captured draft through the taskList remote namespace', async () => {
     const createTask = vi.fn(async () => ({ ok: true as const, value: { id: 'task-9', title: '整理发布清单' } }))
     const register = vi.fn(() => vi.fn())

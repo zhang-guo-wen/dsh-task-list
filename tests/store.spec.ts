@@ -81,7 +81,7 @@ describe('independent task database', () => {
       storyPoints: null, tags: [], workspaceId: null, startedAt: null, completedAt: null,
       sendImmediately: false, sessionId: null, agent: null, useWorktree: false, subtasks: [],
     })])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     migrated.close()
   })
 
@@ -123,7 +123,7 @@ describe('independent task database', () => {
 
     const migrated = new TaskStore(file)
     expect(migrated.list().items.map(row => row.title)).toEqual(['Existing'])
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     const subtask = migrated.createSubtask({ taskId: task.id, notes: 'Added after migration' })
     expect(migrated.get(task.id)?.subtasks.map(row => row.id)).toEqual([subtask.id])
     migrated.close()
@@ -299,23 +299,23 @@ describe('schema6 migration and safety', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     expect(migrated.get(task.id)).toEqual(task)
     expect(migrated.readAttachments(task.id, task.version)).toEqual([{ id: attachment.id, data: 'YWJj' }])
     migrated.close()
   })
 
-  it('rejects a database newer than schema9 before any alteration', () => {
+  it('rejects a database newer than the current schema before any alteration', () => {
     const file = fixture()
     const store = new TaskStore(file)
     store.create({ title: 'Keep' })
     store.close()
     const future = new DatabaseSync(file)
-    future.exec('PRAGMA user_version = 11;')
+    future.exec('PRAGMA user_version = 14;')
     future.close()
-    expect(() => new TaskStore(file)).toThrow('unsupported task database version: 11')
+    expect(() => new TaskStore(file)).toThrow('unsupported task database version: 14')
     const check = new DatabaseSync(file)
-    expect((check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(11)
+    expect((check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(14)
     expect((check.prepare('SELECT COUNT(*) AS c FROM tasks').get() as { c: number }).c).toBe(1)
     check.close()
   })
@@ -344,12 +344,11 @@ describe('schema7 migration from schema6', () => {
     { type: 'paragraph' as const, children: [{ text: '正文' }] }, attachment,
   ] }
 
-  const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+  const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', tokenEnv: 'TAPD_TOKEN', enabled: false }
   function ruleInput(connectionId: string): CreateSyncRuleRequest {
     return {
       connectionId, projectId: '20000001', workspaceId: null, enabled: false,
-      filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-      mappings: [{ typeId: 'story', category: 'story', readStates: { open: 'todo', doing: 'in_progress', done: 'done' }, writeStates: { todo: 'open', in_progress: 'doing', done: 'done' }, optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {} }],
+      conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     }
   }
   function fakeClock(initial = 1_700_000_000_000): Clock {
@@ -409,7 +408,7 @@ describe('schema7 migration from schema6', () => {
     downgradeToOldV6(file, { secondRun: true })
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     // rich content and attachment bytes survive unchanged
     expect(migrated.get(built.taskId)?.content).toEqual(rich)
     expect(migrated.readAttachments(built.taskId, 1)).toEqual([{ id: attachment.id, data: 'YWJj' }])
@@ -438,12 +437,12 @@ describe('schema7 migration from schema6', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     expect(migrated.list().total).toBe(1)
     migrated.close()
 
     const again = new TaskStore(file)
-    expect((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     expect(again.list().total).toBe(1)
     again.close()
   })
@@ -484,12 +483,11 @@ describe('schema7 migration from schema6', () => {
 })
 
 describe('schema8 migration from schema7', () => {
-  const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+  const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', tokenEnv: 'TAPD_TOKEN', enabled: false }
   function ruleInput(connectionId: string): CreateSyncRuleRequest {
     return {
       connectionId, projectId: '20000001', workspaceId: null, enabled: false,
-      filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-      mappings: [{ typeId: 'story', category: 'story', readStates: { open: 'todo', doing: 'in_progress', done: 'done' }, writeStates: { todo: 'open', in_progress: 'doing', done: 'done' }, optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {} }],
+      conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     }
   }
   function fakeClock(initial = 1_700_000_000_000): Clock {
@@ -534,7 +532,7 @@ describe('schema8 migration from schema7', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     const migratedColumns = (migrated.db.prepare('PRAGMA table_info(sync_run_items)').all() as { name: string }[]).map(row => row.name)
     expect(migratedColumns).toContain('pending')
     const pendingByCanonical = new Map((migrated.db.prepare('SELECT canonical, pending FROM sync_run_items').all() as { canonical: string; pending: number }[]).map(row => [row.canonical, row.pending]))
@@ -582,7 +580,7 @@ describe('schema8 migration from schema7', () => {
     legacy.close()
 
     const migrated = new TaskStore(file)
-    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    expect((migrated.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(13)
     const canonical = serializeRemoteKey(shared)
     const pendingFor = (runId: string) => (migrated.db.prepare('SELECT pending FROM sync_run_items WHERE run_id = ? AND canonical = ?').get(runId, canonical) as { pending: number }).pending
     const errorFor = (runId: string) => {

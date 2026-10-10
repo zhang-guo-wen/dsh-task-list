@@ -1,9 +1,13 @@
 .view { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
-.header { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding-top: 24px; }
-.header h1 { flex: 1; min-width: 0; margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
+/* Title row: the heading on the left, the scope controls and the settings
+   entry on the right, so the table below keeps the full width. The top offset
+   belongs to the panel page (`.page`), which keeps it identical to the task
+   list and the report. */
+.header { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.header h1 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
 .header h1:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 4px; border-radius: 4px; }
 
-.controls { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.controls { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px 16px; }
 .field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .field select {
   height: 32px; min-width: 140px; max-width: 260px; padding: 0 10px; border-radius: 10px;
@@ -12,6 +16,8 @@
 }
 .field select:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2, #b8bbc0); }
 .field select:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
+/* An icon-only control keeps the square footprint of its glyph. */
+.iconButton { flex: none; width: 32px; min-width: 32px; padding: 0; justify-content: center; }
 
 .hint { flex: none; margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .error { flex: none; margin: 0; color: var(--dsw-alias-state-error-primary, #c10002); }
@@ -36,14 +42,21 @@
 }
 .filterRemove:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 
-/* The middle owns the leftover height: the table scrolls, paging stays put. */
+/* The middle owns the leftover height: the table scrolls, paging stays put.
+   `overflow-y: scroll` keeps the vertical gutter reserved at all times. With
+   `auto` on both axes a wide column adds a horizontal bar, which shrinks the
+   height, which can add a vertical bar, which shrinks the width again — the two
+   bars then oscillate and the table visibly flickers. */
 .body { display: flex; flex: 1 1 auto; min-height: 0; gap: 12px; }
 .tableBox {
-  flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable;
+  flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: scroll; overflow-x: auto; scrollbar-gutter: stable;
   border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px; background: var(--dsw-alias-bg-base, #fff);
 }
-.table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.table th, .table td { padding: 8px 12px; text-align: left; vertical-align: top; }
+/* `separate` + zero spacing: Chromium ignores position: sticky on table cells
+   while `border-collapse: collapse`, which would silently unfreeze every pinned
+   column. Row separators are drawn with borders instead of collapsed edges. */
+.table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.table th, .table td { padding: 8px 12px; text-align: left; vertical-align: top; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table thead th {
   position: sticky; top: 0; z-index: 1; white-space: nowrap; font-weight: 500;
   color: var(--dsw-alias-label-tertiary, #81858c); background: var(--dsw-alias-bg-base, #fff);
@@ -52,7 +65,36 @@
 .table tbody tr + tr td { border-top: 1px solid var(--dsw-alias-border-l4, #eee); }
 .table tbody tr:hover td { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 .table td { color: var(--dsw-alias-label-primary, #0f1115); }
-.subject { min-width: 240px; }
+
+/* Frozen columns: the title stays pinned on the left and the row action on the
+   right while the middle scrolls sideways. Both need an opaque background, or
+   the columns scrolling underneath would show through, and the header corners
+   sit above every scrolling header cell (z-index 3 vs 1). */
+.subject { min-width: 220px; }
+.frozenLeft {
+  position: sticky; left: 0; z-index: 2; background: var(--dsw-alias-bg-base, #fff);
+  box-shadow: 1px 0 0 var(--dsw-alias-border-l3, #ddd);
+}
+.frozenRight {
+  position: sticky; right: 0; z-index: 2; background: var(--dsw-alias-bg-base, #fff);
+  box-shadow: -1px 0 0 var(--dsw-alias-border-l3, #ddd);
+}
+.table thead .frozenLeft, .table thead .frozenRight { z-index: 3; }
+/* The action head carries the column-settings icon next to its label; the row
+   cell keeps only the Sync button. */
+.actionsHeader { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.rowActions { text-align: right; white-space: nowrap; }
+/* The title is the drawer's entry point; it reads as text until hovered. */
+.subjectButton {
+  display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit;
+  font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.subjectButton:hover { text-decoration: underline; }
+.subjectButton:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; border-radius: 4px; }
+/* Keep the frozen cells' hover tint over their own opaque background. */
+.table tbody tr:hover .frozenLeft, .table tbody tr:hover .frozenRight {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 5%, var(--dsw-alias-bg-base, #fff));
+}
 
 .empty { margin: 0; padding: 28px 12px; text-align: center; color: var(--dsw-alias-label-tertiary, #81858c); }
 
@@ -76,6 +118,29 @@
 .pickerGrip { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 11px; letter-spacing: -2px; user-select: none; }
 .pickerLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pickerNote { margin: 6px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
+
+/* Detail drawer: the row's own fields plus the work item body. */
+.detail {
+  flex: 0 0 360px; display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 2px 8px #0000000a;
+}
+.detailTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detailScroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; }
+.detailMeta { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; font-size: 13px; }
+.detailMetaRow { display: flex; gap: 8px; }
+.detailMetaRow dt { flex: 0 0 84px; margin: 0; color: var(--dsw-alias-label-tertiary, #81858c); }
+.detailMetaRow dd { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+/* The body comes from the plugin's own encoder, so only its own vocabulary shows up. */
+.detailBody { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.detailBody p { margin: 0 0 8px; }
+.detailBody h1, .detailBody h2, .detailBody h3, .detailBody h4, .detailBody h5, .detailBody h6 { margin: 12px 0 6px; font-size: 14px; }
+.detailBody ul, .detailBody ol { margin: 0 0 8px; padding-left: 20px; }
+.detailBody blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l3, #ddd); color: var(--dsw-alias-label-secondary, #4b4f56); }
+.detailBody pre { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); overflow: auto; }
+.detailBody table { width: 100%; margin: 0 0 8px; border-collapse: collapse; }
+.detailBody th, .detailBody td { padding: 4px 8px; border: 1px solid var(--dsw-alias-border-l3, #ddd); text-align: left; vertical-align: top; }
+.detailPlain { margin: 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .switchOn, .switchOff { flex: none; width: 34px; height: 20px; padding: 2px; border: 0; border-radius: 10px; cursor: pointer; transition: background .16s ease; }
 .switchOn { background: var(--dsw-alias-state-business-primary, #326dca); }

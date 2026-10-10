@@ -32,18 +32,12 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const tapdInput: CreateConnectionRequest = { platform: 'tapd', name: 'TAPD', companyId: '20000001', userEnv: 'TAPD_USER', passwordEnv: 'TAPD_PASS', enabled: false }
+const yunxiaoInput: CreateConnectionRequest = { platform: 'yunxiao', name: '云效', mode: 'center', organizationId: 'org-1', regionHost: null, tokenEnv: 'YUNXIAO_TOKEN', enabled: false }
 
 function ruleInput(connectionId: string, projectId = '20000001'): CreateSyncRuleRequest {
   return {
     connectionId, projectId, workspaceId: null, enabled: false,
-    filters: { assignees: [], typeIds: ['story'], iterationIds: [], statusIds: [] },
-    mappings: [{
-      typeId: 'story', category: 'story',
-      readStates: { open: 'todo', doing: 'in_progress', done: 'done' },
-      writeStates: { todo: 'open', in_progress: 'doing', done: 'done' },
-      optionalFields: [], fieldIds: { title: 'name', status: 'status' }, valueMaps: {},
-    }],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['story'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
   }
 }
 
@@ -114,7 +108,7 @@ function setup(): Setup {
   const db = store.db
   const clock = controllableClock()
   const config = new SyncConfigStore(db, () => ({}))
-  const connection = config.createConnection(tapdInput)!
+  const connection = config.createConnection(yunxiaoInput)!
   const rule = config.createRule(ruleInput(connection.id))!
   const links = new SyncLinkStore(db, store, clock)
   const runs = new SyncRunStore(db, clock)
@@ -211,7 +205,12 @@ function changedTitle(item: RemoteItem, title: string): RemoteItem {
   return { ...item, fields: { ...item.fields, title: { presence: 'value', value: title, writable: true } } }
 }
 
-describe('executeItem — five branches', () => {
+/** A remote item whose platform status (and raw status) moved to another value. */
+function changedStatus(item: RemoteItem, status: TaskStatus): RemoteItem {
+  return { ...item, rawStatus: status, fields: { ...item.fields, status: { presence: 'value', value: status, writable: true } } }
+}
+
+describe('executeItem — import, unchanged and push', () => {
   it('imports a discovered remote item into a new task, link and baseline', async () => {
     const s = setup()
     const item = remote()
@@ -226,6 +225,11 @@ describe('executeItem — five branches', () => {
     expect(link.taskId).toBe(result.taskId)
     expect(link.baseline).not.toBeNull()
     expect(s.store.get(result.taskId!)?.title).toBe('Remote task')
+    // The packed body is imported as-is; priority, tags and story points stay local.
+    expect(s.store.get(result.taskId!)?.notes).toBe('Remote body')
+    expect(s.store.get(result.taskId!)?.priority).toBe('medium')
+    expect(s.store.get(result.taskId!)?.tags).toEqual([])
+    expect(s.store.get(result.taskId!)?.storyPoints).toBeNull()
     expect(adapter.writeCalls).toHaveLength(0)
   })
 
@@ -242,51 +246,56 @@ describe('executeItem — five branches', () => {
     expect(adapter.writeCalls).toHaveLength(0)
   })
 
-  it('pulls a remote-only change into the local task without writing back', async () => {
+  it('ignores a remote-only status change and leaves the local task alone', async () => {
     const s = setup()
     const fence = fenceFor(s)
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    adapter.setCurrent([changedTitle(item, 'Remote edited')])
+    adapter.setCurrent([changedStatus(item, 'done')])
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
-    expect(result.category).toBe('pulled')
+    expect(result.category).toBe('unchanged')
     expect(result.writtenBack).toBe(false)
-    expect(s.store.get(task.id)?.title).toBe('Remote edited')
+    expect(s.store.get(task.id)?.status).toBe('in_progress')
+    expect(s.store.get(task.id)?.title).toBe('Remote task')
     expect(adapter.writeCalls).toHaveLength(0)
   })
 
-  it('pushes a local-only change to the remote and marks writtenBack', async () => {
+  it('pushes when the local status changed', async () => {
     const s = setup()
     const fence = fenceFor(s)
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    const edited = s.store.update({ id: task.id, version: task.version, title: 'Local edited' })
+    const edited = s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
     expect(result.category).toBe('pushed')
     expect(result.writtenBack).toBe(true)
+    expect(result.changedFields).toEqual(['status'])
     expect(adapter.writeCalls).toHaveLength(1)
-    expect(adapter.writeCalls[0]?.patch).toEqual({ title: 'Local edited' })
+    expect(adapter.writeCalls[0]?.patch).toEqual({ status: 'done' })
+    // a remote write never patches the local task
     expect(s.store.get(edited.id)?.version).toBe(edited.version)
   })
 
-  it('merges both-side changes: remote description wins locally, local status is written back', async () => {
+  it('keeps the local status when both sides moved', async () => {
     const s = setup()
     const fence = fenceFor(s)
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
     const locallyEdited = s.store.update({ id: task.id, version: task.version, status: 'done' })
-    adapter.setCurrent([changedTitle(item, 'Remote title edit')])
+    adapter.setCurrent([changedStatus(item, 'todo')])
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
-    expect(result.category).toBe('merged')
+    expect(result.category).toBe('pushed')
     expect(result.writtenBack).toBe(true)
-    expect(s.store.get(locallyEdited.id)?.title).toBe('Remote title edit')
     expect(s.store.get(locallyEdited.id)?.status).toBe('done')
     expect(adapter.writeCalls).toHaveLength(1)
     expect(adapter.writeCalls[0]?.patch).toEqual({ status: 'done' })
+    // no local patch at all: the local task keeps its own version, title and status
+    expect(s.store.get(locallyEdited.id)?.version).toBe(locallyEdited.version)
+    expect(s.store.get(locallyEdited.id)?.title).toBe('Remote task')
   })
 })
 
@@ -297,14 +306,15 @@ describe('executeItem — durable intent and write verification', () => {
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
     expect(result.category).toBe('pushed')
     const link = s.links.getLink(item.key)!
     const intent = s.db.prepare('SELECT phase FROM sync_write_intents WHERE link_id = ?').get(link.id) as { phase: string }
     expect(intent.phase).toBe('confirmed')
-    expect(link.baseline?.remote.title).toBe('Local edit')
+    expect(link.baseline?.remote.status).toBe('done')
+    expect(link.baseline?.local.status).toBe('done')
     expect(s.runs.listItemResults(fence.runId).total).toBe(1)
   })
 
@@ -314,7 +324,7 @@ describe('executeItem — durable intent and write verification', () => {
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     adapter.setWriteError(syncError('WriteOutcomeUnknown') as unknown as Error)
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
@@ -332,7 +342,7 @@ describe('executeItem — durable intent and write verification', () => {
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     let reads = 0
     adapter.onRead = () => {
@@ -371,7 +381,7 @@ describe('executeItem — enabled gating and storage safety', () => {
     const item = remote()
     const adapter = fakeAdapter()
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     s.db.exec(`CREATE TRIGGER fail_intent BEFORE INSERT ON sync_write_intents BEGIN SELECT RAISE(ABORT, 'injected'); END;`)
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
@@ -416,7 +426,8 @@ describe('SyncExecutor — orchestration', () => {
     const adapter = fakeAdapter()
     const item = remote()
     const fence = fenceFor(s)
-    s.links.importItem(item, s.rule, fence)
+    const task = s.links.importItem(item, s.rule, fence)
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setDiscover([[]])
     adapter.setCurrent([changedTitle(item, 'Remote edited')])
     await s.clock.advance(SYNC_LEASE_MS + 1)
@@ -425,8 +436,10 @@ describe('SyncExecutor — orchestration', () => {
     await executor.done()
     const results = s.runs.listItemResults(runId).items
     expect(results).toHaveLength(1)
-    expect(results[0]?.category).toBe('pulled')
+    expect(results[0]?.category).toBe('pushed')
     expect(results[0]?.outsideFilter).toBe(true)
+    // the independent remote title change is never pulled over the local task
+    expect(s.store.get(task.id)?.title).toBe('Remote task')
   })
 
   it('does not request a standalone (unlinked) local task during a sync', async () => {
@@ -445,7 +458,8 @@ describe('SyncExecutor — orchestration', () => {
     const s = setup()
     const item = remote()
     const fence = fenceFor(s)
-    s.links.importItem(item, s.rule, fence)
+    const task = s.links.importItem(item, s.rule, fence)
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     const broken = fakeAdapter()
     broken.setDiscoverError(syncError('IncompleteDiscovery') as unknown as Error)
     broken.setCurrent([changedTitle(item, 'Remote edited')])
@@ -459,12 +473,13 @@ describe('SyncExecutor — orchestration', () => {
     expect(run.unprocessedKnown).toBeNull()
     expect(run.errors.some(e => e.code === 'IncompleteDiscovery')).toBe(true)
     // the existing link is still synced despite the discovery failure
-    expect(s.runs.listItemResults(runId).items[0]?.category).toBe('pulled')
+    expect(s.runs.listItemResults(runId).items[0]?.category).toBe('pushed')
+    expect(s.store.get(task.id)?.title).toBe('Remote task')
   })
 
   it('stops a connection on AuthDenied and continues other connections', async () => {
     const s = setup()
-    const secondConn = s.config.createConnection({ ...tapdInput, name: 'TAPD 2', companyId: '20000002', userEnv: 'OTHER_USER', passwordEnv: 'OTHER_PASS' })
+    const secondConn = s.config.createConnection({ ...yunxiaoInput, name: '云效 2', organizationId: 'org-2', tokenEnv: 'OTHER_TOKEN' })
     s.config.updateConnection({ id: secondConn.id, revision: secondConn.revision, enabled: true })
     const secondRule = s.config.createRule(ruleInput(secondConn.id, '20000002'))
     s.config.updateRule({ id: secondRule.id, revision: secondRule.revision, enabled: true })
@@ -480,7 +495,9 @@ describe('SyncExecutor — orchestration', () => {
     healthy.setDiscover([[itemB]])
     healthy.setCurrent([itemB])
 
-    const adapters = new Map([['20000001', authDenied], ['20000002', healthy]])
+    // The adapter factory keys off the connection's instance, which for a 云效
+    // center connection is its organization id.
+    const adapters = new Map([['org-1', authDenied], ['org-2', healthy]])
     const executor = new SyncExecutor({
       tasks: s.store, config: s.config, links: s.links, runs: s.runs,
       adapterFactory: (conn) => adapters.get(conn.instance)!,
@@ -530,11 +547,11 @@ describe('SyncExecutor — pending write reconciliation', () => {
     const fence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, fence)
     const link = s.links.getLink(item.key)!
-    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { title: 'Pushed' } as SyncPatch, selectedFields: ['title'] as const }
+    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { status: 'done' } as SyncPatch, selectedFields: ['status'] as const }
     const intent = s.links.prepareIntent({ fence, link, task, observed: item, rule: s.rule, plan })
     s.links.markDispatched(intent.id, fence)
     s.links.recordUnknown(intent.id, fence, syncError('WriteOutcomeUnknown'))
-    adapter.setCurrent([changedTitle(item, 'Pushed')])
+    adapter.setCurrent([changedStatus(item, 'done')])
     await s.clock.advance(SYNC_LEASE_MS + 1)
     const executor = executorFor(s, adapter)
     const { runId } = executor.start()
@@ -554,7 +571,7 @@ describe('executeItem — pending blocks ordinary writeback', () => {
     const fence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, fence)
     const link = s.links.getLink(item.key)!
-    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { title: 'Pushed' } as SyncPatch, selectedFields: ['title'] as const }
+    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { status: 'done' } as SyncPatch, selectedFields: ['status'] as const }
     const intent = s.links.prepareIntent({ fence, link, task, observed: item, rule: s.rule, plan })
     s.links.markDispatched(intent.id, fence)
     s.links.recordUnknown(intent.id, fence, syncError('WriteOutcomeUnknown'))
@@ -567,51 +584,53 @@ describe('executeItem — pending blocks ordinary writeback', () => {
 })
 
 describe('executeItem — recovery semantics', () => {
-  it('recovery acknowledges only the old write-set and retains independent remote changes for both-change merging', async () => {
+  it('recovery acknowledges only the recorded status write and never pulls an independent remote change', async () => {
     const s = setup()
     const item = remote()
     const adapter = fakeAdapter()
     const oldFence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, oldFence)
+    const before = s.store.get(task.id)!
     const link = s.links.getLink(item.key)!
-    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { title: 'Old push' } as SyncPatch, selectedFields: ['title'] as const }
+    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { status: 'done' } as SyncPatch, selectedFields: ['status'] as const }
     const intent = s.links.prepareIntent({ fence: oldFence, link, task, observed: item, rule: s.rule, plan })
     s.links.markDispatched(intent.id, oldFence)
     s.links.recordUnknown(intent.id, oldFence, syncError('WriteOutcomeUnknown'))
-    s.store.update({ id: task.id, version: task.version, title: 'New local edit' })
-    const changed = changedTitle(item, 'Old push')
+    const changed = changedStatus(changedTitle(item, 'Remote edited'), 'done')
     adapter.setCurrent([{ ...changed, fields: { ...changed.fields, description: { presence: 'value', value: textContent('New remote description'), writable: true } }, description: { format: 'text', raw: { presence: 'value', value: 'New remote description', writable: true }, roundTrip: true } }])
     await s.clock.advance(SYNC_LEASE_MS + 1)
     const next = s.runs.claimRun('owner-2', s.clock.now()).fence
     const result = await executeItem(itemInput(s, next, item.key, adapter))
-    expect(result.category).toBe('merged')
-    expect(s.store.get(task.id)?.title).toBe('Old push')
-    expect(s.store.get(task.id)?.notes).toBe('New remote description')
+    expect(result.category).toBe('pushed')
+    // Only the recorded status write-set is acknowledged; the independent remote
+    // title/description edit is field-level and the status-only model ignores it.
+    expect(s.store.get(task.id)?.title).toBe(before.title)
+    expect(s.store.get(task.id)?.notes).toBe(before.notes)
+    expect(s.store.get(task.id)?.status).toBe(before.status)
     expect(adapter.writeCalls).toHaveLength(0)
   })
-  it('keeps the new local edit and full remote observation when an old write was applied before a new edit', async () => {
+  it('replays a new local status edit after an applied old write, never the acknowledged status', async () => {
     const s = setup()
     const item = remote()
     const adapter = fakeAdapter()
     const oldFence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, oldFence)
     const link = s.links.getLink(item.key)!
-    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { title: 'Old push' } as SyncPatch, selectedFields: ['title'] as const }
+    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { status: 'todo' } as SyncPatch, selectedFields: ['status'] as const }
     const intent = s.links.prepareIntent({ fence: oldFence, link, task, observed: item, rule: s.rule, plan })
     s.links.markDispatched(intent.id, oldFence)
     s.links.recordUnknown(intent.id, oldFence, syncError('WriteOutcomeUnknown'))
-    const newLocal = s.store.update({ id: task.id, version: task.version, title: 'New local edit' })
-    adapter.setCurrent([changedTitle(item, 'Old push')])
+    const newLocal = s.store.update({ id: task.id, version: task.version, status: 'done' })
+    adapter.setCurrent([changedStatus(item, 'todo')])
     await s.clock.advance(SYNC_LEASE_MS + 1)
     const newFence = s.runs.claimRun('owner-2', s.clock.now()).fence
     const result = await executeItem(itemInput(s, newFence, item.key, adapter))
     expect(result.taskId).toBe(newLocal.id)
-    expect(s.store.get(newLocal.id)?.title).toBe('New local edit')
+    expect(s.store.get(newLocal.id)?.status).toBe('done')
     expect(s.links.getPending(item.key)).toBeNull()
-    // exactly one write, and it is the NEW edit only — the old push is never replayed
+    // exactly one write, and it is the NEW status only — the old push is never replayed
     expect(adapter.writeCalls).toHaveLength(1)
-    expect(adapter.writeCalls[0]?.patch.title).toBe('New local edit')
-    expect(adapter.writeCalls.some(c => c.patch.title === 'Old push')).toBe(false)
+    expect(adapter.writeCalls[0]?.patch).toEqual({ status: 'done' })
   })
 })
 
@@ -623,11 +642,11 @@ describe('executeItem — same-run ack and per-request gate', () => {
     const fence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, fence)
     const link = s.links.getLink(item.key)!
-    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { title: 'Pushed' } as SyncPatch, selectedFields: ['title'] as const }
+    const plan = { kind: 'push' as const, localPatch: {} as SyncPatch, remotePatch: { status: 'done' } as SyncPatch, selectedFields: ['status'] as const }
     const intent = s.links.prepareIntent({ fence, link, task, observed: item, rule: s.rule, plan })
     s.links.markDispatched(intent.id, fence)
     s.links.recordUnknown(intent.id, fence, syncError('WriteOutcomeUnknown'))
-    adapter.setCurrent([changedTitle(item, 'Pushed')])
+    adapter.setCurrent([changedStatus(item, 'done')])
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
     expect(result.category).toBe('pushed')
     expect(s.links.getPending(item.key)).toBeNull()
@@ -635,7 +654,7 @@ describe('executeItem — same-run ack and per-request gate', () => {
     await s.clock.advance(SYNC_LEASE_MS + 1)
     const newFence = s.runs.claimRun('owner-2', s.clock.now()).fence
     const adapter2 = fakeAdapter()
-    adapter2.setCurrent([changedTitle(item, 'Pushed')])
+    adapter2.setCurrent([changedStatus(item, 'done')])
     const result2 = await executeItem(itemInput(s, newFence, item.key, adapter2))
     expect(result2.category).toBe('unchanged')
     expect(adapter2.writeCalls).toHaveLength(0)
@@ -647,7 +666,7 @@ describe('executeItem — same-run ack and per-request gate', () => {
     const adapter = fakeAdapter()
     const fence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     adapter.setWriteError(syncError('WorkflowRejected') as unknown as Error)
     const result = await executeItem(itemInput(s, fence, item.key, adapter))
@@ -760,7 +779,7 @@ describe('executeItem — abort classification', () => {
     const adapter = fakeAdapter()
     const fence = fenceFor(s)
     const task = s.links.importItem(item, s.rule, fence)
-    s.store.update({ id: task.id, version: task.version, title: 'Local edit' })
+    s.store.update({ id: task.id, version: task.version, status: 'done' })
     adapter.setCurrent([item])
     adapter.setWriteError(new DOMException('aborted', 'AbortError'))
     const err = await executeItem(itemInput(s, fence, item.key, adapter)).then(
@@ -790,9 +809,9 @@ describe('SyncExecutor — completion releases the lock', () => {
     expect((s.db.prepare('SELECT COUNT(*) AS c FROM sync_run_lock').get() as { c: number }).c).toBe(0)
     expect(s.runs.getRun(first.runId)?.status).toBe('completed')
 
-    // a new local edit made after the first run must be pushed by the next run, with no 90s wait
+    // a new local status edit made after the first run must be pushed by the next run, with no 90s wait
     const taskId = s.links.getLink(item.key)!.taskId!
-    s.store.update({ id: taskId, version: s.store.get(taskId)!.version, title: 'Second edit' })
+    s.store.update({ id: taskId, version: s.store.get(taskId)!.version, status: 'done' })
     adapter.writeCalls.length = 0
 
     const second = executor.start()
@@ -800,7 +819,7 @@ describe('SyncExecutor — completion releases the lock', () => {
     expect(second.runId).not.toBe(first.runId)
     await executor.done()
     expect(adapter.writeCalls).toHaveLength(1)
-    expect(adapter.writeCalls[0]?.patch).toEqual({ title: 'Second edit' })
+    expect(adapter.writeCalls[0]?.patch).toEqual({ status: 'done' })
     expect(s.runs.getRun(second.runId)?.status).toBe('completed')
     expect((s.db.prepare('SELECT COUNT(*) AS c FROM sync_run_lock').get() as { c: number }).c).toBe(0)
   })

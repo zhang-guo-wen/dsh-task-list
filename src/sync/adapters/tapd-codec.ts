@@ -1,7 +1,10 @@
-import type { TaskContent, TaskPriority, TaskStatus } from '../../types.ts'
+import type { TaskStatus } from '../../types.ts'
 import type { FieldValue, RemoteItem } from '../types.ts'
-import type { Option, TypeMapping } from '../dto.ts'
+import type { Option, StatusWriteStates } from '../dto.ts'
 import { decodeDescription } from '../description-codec.ts'
+import { packWorkitemDescription } from '../workitem-packer.ts'
+import { contentText } from '../../content.ts'
+import { statusForRaw } from './yunxiao-codec.ts'
 import { syncError, syncRemoteError } from '../errors.ts'
 
 const ID_LIMIT = 200
@@ -136,74 +139,21 @@ export const TAPD_WORKFLOW_SYSTEM: Record<TapdCategory, string | undefined> = {
 export interface TapdItemContext {
   instance: string
   projectId: string
+  /** The rule's own type: a TAPD category, which is also which collection it came from. */
   typeId: string
   category: TapdCategory
   /** Expected id for a detail read; omitted for discovery where the id comes from the payload. */
   id?: string
-  mapping: TypeMapping
+  /** The rule's local→remote status map; the read direction inverts it. */
+  statusWriteStates: StatusWriteStates
 }
 
-/** Classify a story entity's `workitem_type_id` against an enabled subtype. */
-export function storySubtypeRelation(raw: unknown, typeId: string): 'match' | 'skip' | 'malformed' {
-  if (typeof raw !== 'string' || !raw.trim() || raw.length > ID_LIMIT || CONTROL.test(raw)) return 'malformed'
-  return raw === typeId ? 'match' : 'skip'
-}
-
-const PRIORITY_VALUES = new Set<string>(['low', 'medium', 'high', 'urgent'])
-
-/** Invert a local→remote value map; an ambiguous inverse (two locals → one remote) fails closed. */
-function inverseValueMap(valueMap: Record<string, string> | undefined, field: 'priority' | 'tags'): Map<string, string> {
-  const inverse = new Map<string, string>()
-  if (!valueMap) return inverse
-  for (const [local, remote] of Object.entries(valueMap)) {
-    if (typeof remote !== 'string' || remote === '') continue
-    const existing = inverse.get(remote)
-    if (existing !== undefined && existing !== local) {
-      throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field }))
-    }
-    inverse.set(remote, local)
-  }
-  return inverse
-}
-
-/** Decode a remote `priority_label` back to a canonical priority via the mapping's inverse. */
-function decodePriorityField(raw: unknown, valueMap: Record<string, string> | undefined, enabled: boolean): FieldValue<TaskPriority> {
-  if (!enabled) return { presence: 'absent', writable: false }
-  if (raw === undefined) return { presence: 'absent', writable: false }
-  if (raw === null) return { presence: 'null', writable: true }
-  if (typeof raw !== 'string' || !raw.trim() || CONTROL.test(raw)) fail('item.priority_label')
-  const local = inverseValueMap(valueMap, 'priority').get(raw)
-  if (local === undefined || !PRIORITY_VALUES.has(local)) {
-    throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'priority' }))
-  }
-  return { presence: 'value', value: local as TaskPriority, writable: true }
-}
-
-/** Decode a remote `label` (pipe-joined) back to canonical tags via the mapping's inverse. */
-function decodeTagsField(raw: unknown, valueMap: Record<string, string> | undefined, enabled: boolean): FieldValue<string[]> {
-  if (!enabled) return { presence: 'absent', writable: false }
-  if (raw === undefined) return { presence: 'absent', writable: false }
-  if (raw === null) return { presence: 'null', writable: true }
-  if (typeof raw !== 'string' || CONTROL.test(raw)) fail('item.label')
-  const inverse = inverseValueMap(valueMap, 'tags')
-  const out: string[] = []
-  for (const token of raw.split('|')) {
-    const trimmed = token.trim()
-    if (trimmed === '') continue
-    const local = inverse.get(trimmed)
-    if (local === undefined || local === '') {
-      throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'tags' }))
-    }
-    out.push(local)
-  }
-  return { presence: 'value', value: out, writable: true }
-}
 
 /**
  * Decode one Story/Bug/Task object into the shared vocabulary. Identity fields
  * (id, workspace_id when present) are verified against the requested key, ids
  * stay strings, `modified` is kept as an opaque token, and the raw status is
- * normalized through the rule's readStates (unmapped → MappingIncompatible).
+ * inverted through the rule's own status map (unmapped → MappingIncompatible).
  */
 export function decodeTapdItem(raw: unknown, ctx: TapdItemContext): RemoteItem {
   if (!isPlainObject(raw)) fail('item')
@@ -215,44 +165,34 @@ export function decodeTapdItem(raw: unknown, ctx: TapdItemContext): RemoteItem {
   const workspaceId = raw.workspace_id
   if (workspaceId !== undefined && (typeof workspaceId !== 'string' || workspaceId !== ctx.projectId)) fail('item.workspace_id')
 
-  // For a story enabled with a concrete workitem_type id, the entity's
-  // workitem_type_id is mandatory and must match; absent/malformed/mismatched
-  // fails closed rather than silently widening the scope to all stories.
-  if (ctx.category === 'story' && ctx.typeId !== 'story') {
-    if (storySubtypeRelation(raw.workitem_type_id, ctx.typeId) !== 'match') fail('item.workitem_type_id')
-  }
-
   const { title: titleField } = TAPD_CATEGORY_FIELDS[ctx.category]
   const title = textValue(raw[titleField], `item.${titleField}`, TITLE_LIMIT)
 
   if (typeof raw.status !== 'string' || !raw.status.trim() || raw.status.length > ID_LIMIT || CONTROL.test(raw.status)) fail('item.status')
   const statusId = raw.status
-  const mappedStatus = ctx.mapping.readStates[statusId]
-  if (mappedStatus === undefined) {
-    throw syncRemoteError(syncError('MappingIncompatible', { scope: 'item', field: 'status' }))
-  }
+  const mappedStatus: TaskStatus = statusForRaw(statusId, ctx.statusWriteStates)
 
   const updatedToken = typeof raw.modified === 'string' ? raw.modified : ''
 
-  let descriptionField: FieldValue<TaskContent>
   let descriptionRaw: FieldValue<string>
   let roundTrip: boolean
+  let body = ''
   if (raw.description === undefined) {
-    descriptionField = { presence: 'absent', writable: false }
     descriptionRaw = { presence: 'absent', writable: false }
     roundTrip = false
   } else if (raw.description === null) {
-    descriptionField = { presence: 'null', writable: true }
     descriptionRaw = { presence: 'null', writable: true }
     roundTrip = true
   } else if (typeof raw.description === 'string') {
     descriptionRaw = { presence: 'value', value: raw.description, writable: true }
-    const decoded = decodeDescription(descriptionRaw, 'richtext')
-    descriptionField = { presence: 'value', value: decoded.content, writable: true }
+    const decoded = decodeDescription(descriptionRaw, 'text')
     roundTrip = decoded.roundTrip
+    body = contentText(decoded.content)
   } else {
     fail('item.description')
   }
+  // The task carries the whole item: its own body plus the row's labelled values.
+  const packed = packWorkitemDescription(raw, body)
 
   return {
     key: { instance: ctx.instance, projectId: ctx.projectId, typeId: ctx.typeId, id },
@@ -261,14 +201,15 @@ export function decodeTapdItem(raw: unknown, ctx: TapdItemContext): RemoteItem {
     updatedToken,
     fields: {
       title: { presence: 'value', value: title, writable: true },
-      description: descriptionField,
+      description: { presence: 'value', value: packed, writable: true },
       status: { presence: 'value', value: mappedStatus, writable: true },
-      priority: decodePriorityField(raw.priority_label, ctx.mapping.valueMaps?.priority, ctx.mapping.optionalFields.includes('priority')),
-      tags: decodeTagsField(raw.label, ctx.mapping.valueMaps?.tags, ctx.mapping.optionalFields.includes('tags')),
+      // Only the status is ever compared or written back, exactly as for 云效.
+      priority: { presence: 'absent', writable: false },
+      tags: { presence: 'absent', writable: false },
       storyPoints: { presence: 'absent', writable: false },
     },
     rawStatus: statusId,
-    description: { format: 'richtext', raw: descriptionRaw, roundTrip },
+    description: { format: 'text', raw: descriptionRaw, roundTrip },
     revisionToken: null,
   }
 }
@@ -314,12 +255,15 @@ export function decodeTapdFilterIdentity(raw: unknown, ownerField: string): Tapd
 // --- metadata helpers ------------------------------------------------------
 
 /** Decode a bare option collection (`Workspace`/`UserWorkspace`/`Iteration`). */
-export function decodeOptionCollection(raw: unknown, type: string, idKey: string, labelKey: string): Option[] {
-  return decodeCollection(raw, type).map(item => {
+export function decodeOptionCollection(raw: unknown, type: string, idKey: string, labelKey: string, keep?: (item: Record<string, unknown>) => boolean): Option[] {
+  const out: Option[] = []
+  for (const item of decodeCollection(raw, type)) {
     if (!isPlainObject(item)) fail('option')
+    if (keep !== undefined && !keep(item)) continue
     const id = idString(item[idKey], 'option.id')
-    return { id, label: label(item[labelKey], id) }
-  })
+    out.push({ id, label: label(item[labelKey], id) })
+  }
+  return out
 }
 
 /** Read the status options from a fields-info map's `status.options` object. */

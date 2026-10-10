@@ -214,7 +214,7 @@ export function StatisticsCalendar({ calculate, close, t }: PropsLocale<'taskLis
   }
   return <section className={css.view} aria-labelledby="task-statistics-title" aria-busy={busy}>
     <header className={css.header}>
-      <h1 id="task-statistics-title" ref={heading} tabIndex={-1}>{t('statisticsTitle')}</h1>
+      <h1 id="task-statistics-title" className={css.title} ref={heading} tabIndex={-1}>{t('statisticsTitle')}</h1>
       <Button variant="outline" onClick={close}>{t('statisticsClose')}</Button>
     </header>
     <div className={css.toolbar}>

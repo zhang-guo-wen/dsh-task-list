@@ -130,15 +130,14 @@ export type FinalizeItem = {
 }
 
 /**
- * Host-side credentials; never exported to the browser. `yunxiao`/`tapd` are
- * the plain Basic/token pairs (typed in the settings page or read from the
- * referenced environment variable); `tapd-project` is the application-project
- * Bearer token the OAuth flow mints for one workspace.
+ * Host-side credentials; never exported to the browser. Both platforms carry a
+ * personal access token: 云效's own, or TAPD's `个人访问令牌`. Each is typed in
+ * the settings page or read from the referenced environment variable, and each
+ * travels as the platform's own bearer-style header.
  */
 export type HostCredentials =
   | { kind: 'yunxiao'; token: string }
-  | { kind: 'tapd'; user: string; password: string }
-  | { kind: 'tapd-project'; token: string; projectIds: readonly string[] }
+  | { kind: 'tapd'; token: string }
 
 /** An outbound request an adapter builds; no raw URL or auth ever enters through the RPC. */
 export type HostRequest = {

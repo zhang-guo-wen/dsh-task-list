@@ -4,11 +4,17 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { CreateTaskRequest, TaskContent, TaskAttachmentUpload } from '../types.ts'
 import type { DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { captureDraft, installCaptureShortcut, type CaptureOutcome } from './capture.ts'
+import { captureDraft, installCaptureShortcut, type CaptureOutcome, type CaptureTarget } from './capture.ts'
 
 /** Business face the composer control needs: the task writer. */
 export interface TaskCaptureFace {
   sessionId: string
+  /**
+   * Resolve this composer's live link. The host reads the Session catalog row,
+   * the Workspace registry, and — only when the Session records no preset — the
+   * default agent; absent leaves the legacy behavior of linking `sessionId`.
+   */
+  resolveTarget?(): Promise<CaptureTarget> | CaptureTarget
   create(request: CreateTaskRequest): Promise<unknown>
   captureAttachments(ids: readonly DraftAttachmentId[]): Promise<{ blocks: TaskContent['blocks']; uploads: TaskAttachmentUpload[] }>
   releaseAttachment(id: DraftAttachmentId): void
@@ -35,15 +41,15 @@ function asDraft(value: unknown): string {
  * the button in this component if requested; keep the Ctrl+S listener mounted.
  * Reads the draft through the session input projection and reports captures.
  */
-export function TaskCapture({ useInput, inputActions, sessionId, create, captureAttachments, releaseAttachment, t }: TaskCaptureProps) {
+export function TaskCapture({ useInput, inputActions, sessionId, resolveTarget, create, captureAttachments, releaseAttachment, t }: TaskCaptureProps) {
   const input = useInput(selectInput)
   const draft = asDraft(input?.draft)
   const [notice, setNotice] = useState<{ outcome: CaptureOutcome; seq: number } | null>(null)
   const sequence = useRef(0)
   // The keydown listener is installed once; this ref keeps it reading the
   // latest draft, actions, and face without reinstalling per keystroke.
-  const latest = useRef({ draft, input, inputActions, sessionId, create, captureAttachments, releaseAttachment, t })
-  latest.current = { draft, input, inputActions, sessionId, create, captureAttachments, releaseAttachment, t }
+  const latest = useRef({ draft, input, inputActions, sessionId, resolveTarget, create, captureAttachments, releaseAttachment, t })
+  latest.current = { draft, input, inputActions, sessionId, resolveTarget, create, captureAttachments, releaseAttachment, t }
   const capturing = useRef(false)
 
   const report = useCallback((outcome: CaptureOutcome) => {
@@ -60,9 +66,16 @@ export function TaskCapture({ useInput, inputActions, sessionId, create, capture
       capturing.current = true
       const ids = [...snapshot.input?.attachmentIds ?? []]
       try {
+        // Resolve the link before the asynchronous attachment reads, so a
+        // Session switch or a first message landing mid-save cannot retarget it.
+        const target = snapshot.resolveTarget === undefined
+          ? { sessionId: snapshot.sessionId, workspaceId: null, agent: null }
+          : await snapshot.resolveTarget()
         return await captureDraft(text, {
           create: snapshot.create,
-          sessionId: snapshot.sessionId,
+          sessionId: target.sessionId,
+          workspaceId: target.workspaceId,
+          agent: target.agent,
           hasAttachments: ids.length > 0,
           ...(ids.length ? { captureAttachments: () => snapshot.captureAttachments(ids) } : {}),
           clearDraft: () => {
@@ -78,6 +91,9 @@ export function TaskCapture({ useInput, inputActions, sessionId, create, capture
             }
           },
         })
+      } catch (error) {
+        // Only the link resolution can fail here; captureDraft reports its own.
+        return { kind: 'failed', message: error instanceof Error ? error.message : String(error) }
       } finally { capturing.current = false }
     },
     report,

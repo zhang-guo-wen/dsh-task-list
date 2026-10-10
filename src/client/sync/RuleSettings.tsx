@@ -1,24 +1,54 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Checkbox, Input } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { SafeConnection, SyncMetadata, SyncRule, TypeMapping } from '../../sync/dto.ts'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import type {
+  ListWorkitemFieldsRequest, SafeConnection, SafeWorkitemField, StatusWriteStates, SyncMetadata, SyncRule,
+  WorkitemConditionGroups, WorkitemFilterCondition,
+} from '../../sync/dto.ts'
 import type { SyncFace } from './face.ts'
-import type { WorkspaceChoice } from './SyncSection.tsx'
-import { projectIdFrom } from './ConnectionSettings.tsx'
-import { MultiChoice, Choice, mappingReady, RuleFields } from './RuleFields.tsx'
+import { Choice, projectStatuses, StatusWriteMap } from './RuleFields.tsx'
+import { ConditionBuilder, EMPTY_CONDITION_OPTIONS, RULE_CONDITION_FIELDS, type ConditionOptions } from './RuleConditions.tsx'
 import { SyncFailure, type SyncTranslate } from './SyncResults.tsx'
 import css from './Sync.module.css'
-const emptyFilters = () => ({ assignees: [], typeIds: [], iterationIds: [], statusIds: [] } as SyncRule['filters'])
 
-export function RuleSettings({ rule, connections, face, workspaces, t, onBack, onSaved, onDeleted }: { rule: SyncRule | null; connections: SafeConnection[]; face: SyncFace; workspaces: readonly WorkspaceChoice[]; t: SyncTranslate; onBack: () => void; onSaved: () => Promise<void>; onDeleted?: () => Promise<void> }) {
+/**
+ * The editor shows the query as one flat, ANDed list: that is what the task
+ * list's filter bar does. A stored rule that carries several OR groups (written
+ * by an older editor) is flattened into that same list rather than hidden.
+ */
+const flattenConditions = (rule: SyncRule | null): WorkitemFilterCondition[] =>
+  rule === null ? [] : rule.conditions.flat()
+
+/** One group means the conditions are ANDed, which is the editor's own wording. */
+const toGroups = (conditions: readonly WorkitemFilterCondition[]): WorkitemConditionGroups =>
+  conditions.length === 0 ? [] : [[...conditions]]
+
+/** A new rule starts unmapped, so saving without choosing a target is refused. */
+const emptyStatuses = (): StatusWriteStates => ({ todo: '', in_progress: '', done: '' })
+
+/**
+ * One rule's editor: pick the connection, pick a project from the list the
+ * connection loads by itself, write the query, map the three statuses. The rule
+ * is enabled from the roster row's switch, so this editor never carries one.
+ */
+export function RuleSettings({ rule, connections, face, listWorkitemFields, t, onBack, onSaved, onDeleted }: {
+  rule: SyncRule | null
+  connections: readonly SafeConnection[]
+  face: SyncFace
+  /** The project's own field catalog, used for the priority condition's values. */
+  listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]>
+  t: SyncTranslate
+  onBack: () => void
+  onSaved: () => Promise<void>
+  onDeleted?: () => Promise<void>
+}) {
   const [step, setStep] = useState(1)
   const [connectionId, setConnectionId] = useState(rule?.connectionId ?? connections[0]?.id ?? '')
   const [projectId, setProjectId] = useState(rule?.projectId ?? '')
-  const [workspaceId, setWorkspaceId] = useState(rule?.workspaceId ?? '')
-  const [filters, setFilters] = useState<SyncRule['filters']>(rule?.filters ?? emptyFilters())
-  const [mappings, setMappings] = useState<TypeMapping[]>(rule?.mappings ?? [])
+  const [conditions, setConditions] = useState<WorkitemFilterCondition[]>(flattenConditions(rule))
+  const [statusWriteStates, setStatusWriteStates] = useState<StatusWriteStates>(rule?.statusWriteStates ?? emptyStatuses())
   const [metadata, setMetadata] = useState<SyncMetadata | null>(null)
+  const [priorities, setPriorities] = useState<ConditionOptions['priority']>([])
   const [loading, setLoading] = useState(false)
-  const [enabled, setEnabled] = useState(rule?.enabled ?? false)
   const [busy, setBusy] = useState(false)
   const [armed, setArmed] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -26,48 +56,73 @@ export function RuleSettings({ rule, connections, face, workspaces, t, onBack, o
   const mounted = useRef(true)
   const saving = useRef(false)
   const connection = connections.find(item => item.id === connectionId)
-  const scopeReady = Boolean(connection && projectId && mappings.length && !loading)
-  const ready = Boolean(scopeReady && (connection?.credentialPresent || metadata?.credentialPresent) && mappings.every(mapping => {
-    const capability = metadata?.typeCapabilities.find(cap => cap.typeId === mapping.typeId)
-    return capability && mappingReady(mapping, capability)
-  }))
+  const scopeReady = Boolean(connection && projectId && !loading)
+  const mappingComplete = Object.values(statusWriteStates).every(target => target.trim() !== '')
+  const ready = Boolean(scopeReady && mappingComplete)
+  /**
+   * Load one connection's project list — and, once a project is chosen, the
+   * members, iterations, types and statuses its query editor offers. The list is
+   * read again for the chosen project so its own statuses are available; a
+   * failure of the optional field catalog never blocks the editor.
+   */
   const load = async (id: string, project = '') => {
     if (!id) return
     const revision = ++generation.current
-    setLoading(true); setError(null); setMetadata(null)
+    setLoading(true); setError(null); setMetadata(null); setPriorities([])
     try {
       const next = await face.getSyncMetadata({ connectionId: id, ...(project ? { projectId: project } : {}) })
       if (!mounted.current || revision !== generation.current) return
       setMetadata(next)
-      setMappings(previous => previous.filter(mapping => next.typeCapabilities.some(cap => cap.typeId === mapping.typeId)))
+      // The connection-level read preselects the first project, so the editor
+      // continues without a second click.
+      if (project === '' && next.projects.length > 0) setProjectId(current => current === '' ? next.projects[0]!.id : current)
+      if (project === '') return
+      // Priority is a project custom field; its candidate values come from the
+      // field catalog the "more tasks" page already reads. A refused catalog only
+      // costs that picker its options.
+      try {
+        const fields = await listWorkitemFields({ connectionId: id, projectId: project, categories: 'Req,Bug,Task' })
+        if (mounted.current && revision === generation.current) {
+          setPriorities(fields.find(field => field.id === 'priority')?.options ?? [])
+        }
+      } catch { /* the priority picker simply stays empty */ }
     } catch (failure) { if (mounted.current && revision === generation.current) setError(failure) }
     finally { if (mounted.current && revision === generation.current) setLoading(false) }
   }
   useEffect(() => {
     mounted.current = true
-    if (rule) void load(rule.connectionId, rule.projectId)
+    void load(rule?.connectionId ?? connections[0]?.id ?? '', rule?.projectId ?? '')
     return () => { mounted.current = false; generation.current++ }
   }, [rule?.id])
   const changeConnection = (id: string) => {
-    generation.current++; setConnectionId(id); setProjectId(''); setFilters(emptyFilters()); setMappings([]); setEnabled(false); setMetadata(null); setLoading(false); setError(null)
+    generation.current++; setConnectionId(id); setProjectId(''); setConditions([]); setStatusWriteStates(emptyStatuses()); setMetadata(null); setPriorities([]); setLoading(false); setError(null)
+    void load(id)
   }
-  const chooseTypes = (ids: string[]) => {
-    setFilters(previous => ({ ...previous, typeIds: ids })); setEnabled(false)
-    setMappings(previous => ids.map(typeId => previous.find(item => item.typeId === typeId) ?? {
-      typeId, category: connection?.platform === 'tapd' ? typeId === 'bug' || typeId === 'task' ? typeId : 'story' : typeId,
-      readStates: {}, writeStates: { todo: '', in_progress: '', done: '' }, optionalFields: [], fieldIds: {}, valueMaps: {},
-    }))
+  const changeProject = (id: string) => {
+    if (id === projectId) return
+    setProjectId(id); setConditions([]); void load(connectionId, id)
   }
+  /** Values the query editor offers; each one comes from the platform's own list. */
+  const options: ConditionOptions = {
+    ...EMPTY_CONDITION_OPTIONS,
+    status: projectStatuses(metadata),
+    user: metadata?.members ?? [],
+    sprint: metadata?.iterations ?? [],
+    type: metadata?.types ?? [],
+    priority: priorities,
+  }
+  const statuses = projectStatuses(metadata)
   const save = async () => {
-    if (saving.current || !scopeReady || enabled && !ready) return
+    if (saving.current || !scopeReady || (rule?.enabled === true && !ready)) return
     saving.current = true; setBusy(true); setError(null)
     try {
       // The project's display name travels with the rule, so the roster can name
-      // it later without asking the platform again.
+      // it later without asking the platform again. A rule no longer carries a
+      // workspace: an imported task is global, and enabling happens in the roster.
       const projectName = metadata?.projects.find(item => item.id === projectId)?.label.trim() || null
-      const values = { projectId, projectName, workspaceId: workspaceId || null, enabled, filters, mappings }
+      const values = { projectId, projectName, workspaceId: null, conditions: toGroups(conditions), statusWriteStates }
       if (rule) await face.updateSyncRule({ id: rule.id, revision: rule.revision, ...values })
-      else await face.createSyncRule({ connectionId, ...values })
+      else await face.createSyncRule({ connectionId, ...values, enabled: false })
       await onSaved(); if (mounted.current) onBack()
     } catch (failure) { if (mounted.current) setError(failure) }
     finally { saving.current = false; if (mounted.current) setBusy(false) }
@@ -83,50 +138,61 @@ export function RuleSettings({ rule, connections, face, workspaces, t, onBack, o
     } catch (failure) { setError(failure) }
     finally { if (mounted.current) setBusy(false) }
   }
+  // The summary names each condition's field in the reader's own language, using
+  // the same label table the query editor shows.
+  const conditionSummary = conditions.length === 0
+    ? t('syncConditionAll')
+    : conditions.map(condition => {
+      const label = RULE_CONDITION_FIELDS.find(entry => entry.spec.field === condition.field)?.label
+      return label === undefined ? condition.field : t(label)
+    }).join('、')
   return <section className={css.editor}>
     <h3 className={css.editorTitle}>{t(rule ? 'edit' : 'syncNewRule')}</h3>
     <ol className={css.steps} aria-label={t('syncRule')}>
-      {(['syncStepScope', 'syncStepMapping', 'syncStepConfirm'] as const).map((key, index) => <li key={key} aria-current={step === index + 1 ? 'step' : undefined} data-active={step === index + 1}>{t(key)}</li>)}
+      {(['syncStepScope', 'syncStepQuery', 'syncStepStatus'] as const).map((key, index) => <li key={key} aria-current={step === index + 1 ? 'step' : undefined} data-active={step === index + 1}>{t(key)}</li>)}
     </ol>
     {error !== null && <SyncFailure error={error} t={t} />}
     <div className={css.editorBox}>
     {step === 1 && <>
       <div className={css.formGrid}>
-        <Choice label={t('syncConnection')} value={connectionId} options={connections.map(item => ({ id: item.id, label: item.name }))} disabled={Boolean(rule)} onChange={changeConnection} />
-        {metadata === null
-          ? <label>{t('syncProjectId')}<Input aria-label={t('syncProjectId')} placeholder={t('syncProjectHint')} value={projectId} disabled={loading}
-            onChange={event => { generation.current++; setProjectId(projectIdFrom(event.target.value, connection?.platform)); setFilters(emptyFilters()); setMappings([]); setEnabled(false) }} /></label>
-          : <Choice label={t('syncProject')} value={projectId} options={metadata.projects} disabled={loading} onChange={id => { setProjectId(id); setFilters(emptyFilters()); setMappings([]); setEnabled(false); void load(connectionId, id) }} />}
+        {/* Opening the connection menu loads its projects, so the project picker
+            below is ready as soon as a connection is chosen. */}
+        <Choice label={t('syncConnection')} value={connectionId} options={connections.map(item => ({ id: item.id, label: item.name }))}
+          onChange={changeConnection} onOpen={() => { if (metadata === null && connectionId !== '') void load(connectionId) }} />
+        <Choice label={t('syncProject')} value={projectId} options={metadata?.projects ?? []} disabled={loading || connectionId === ''}
+          onChange={changeProject} onOpen={() => { if (metadata === null && connectionId !== '') void load(connectionId) }} />
       </div>
-      <Button disabled={!connection || loading} onClick={() => void load(connectionId, projectId)}>{loading ? t('loading') : t('syncLoadMetadata')}</Button>
-      {metadata && projectId && <div className={css.formGrid}>
-        <MultiChoice label={t('syncTypes')} options={metadata.types} selected={filters.typeIds} onChange={chooseTypes} empty={t('syncChoose')} />
-        <MultiChoice label={t('syncAssignees')} options={metadata.members} selected={filters.assignees} onChange={assignees => setFilters({ ...filters, assignees })} empty={t('syncChoose')} />
-        <MultiChoice label={t('syncIterations')} options={metadata.iterations} selected={filters.iterationIds} onChange={iterationIds => setFilters({ ...filters, iterationIds })} empty={t('syncChoose')} />
-        <MultiChoice label={t('syncStatuses')} options={[...new Map(metadata.typeCapabilities.flatMap(cap => cap.readStates).map(state => [state.id, state])).values()]} selected={filters.statusIds} onChange={statusIds => setFilters({ ...filters, statusIds })} empty={t('syncChoose')} />
-      </div>}
-      {!scopeReady && <p>{t('syncScopeRequired')}</p>}
+      {loading && <p>{t('loading')}</p>}
+      {!loading && metadata !== null && metadata.projects.length === 0 && <p>{t('moreTasksNoProject')}</p>}
+      {!loading && (connection === undefined || connectionId === '') && <p>{t('syncScopeRequired')}</p>}
     </>}
     {step === 2 && <>
-      {mappings.map(mapping => { const capability = metadata?.typeCapabilities.find(cap => cap.typeId === mapping.typeId); return capability && <RuleFields key={mapping.typeId} name={metadata?.types.find(item => item.id === mapping.typeId)?.label} t={t} mapping={mapping} capability={capability} tapd={connection?.platform === 'tapd'} onChange={next => { setMappings(previous => previous.map(item => item.typeId === next.typeId ? next : item)); setEnabled(false) }} /> })}
-      {!ready && <p>{t('syncMappingRequired')}</p>}
+      <h4 className={css.editorTitle}>{t('syncConditions')}</h4>
+      <ConditionBuilder conditions={conditions} options={options} t={t} onChange={setConditions} />
+      {loading && <p>{t('loading')}</p>}
     </>}
     {step === 3 && <>
       <h3>{t('syncRuleSummary')}</h3>
       <dl className={css.summary}>
         <dt>{t('syncConnection')}</dt><dd>{connection?.name}</dd>
         <dt>{t('syncProject')}</dt><dd>{metadata?.projects.find(item => item.id === projectId)?.label ?? projectId}</dd>
-        <dt>{t('workspace')}</dt><dd>{workspaces.find(item => item.workspaceId === workspaceId)?.title ?? t('noWorkspace')}</dd>
-        <dt>{t('syncTypes')}</dt><dd>{filters.typeIds.map(id => metadata?.types.find(item => item.id === id)?.label ?? id).join(', ')}</dd>
+        <dt>{t('syncConditions')}</dt><dd>{conditionSummary}</dd>
       </dl>
-      <Checkbox label={t('syncEnableRule')} checked={enabled} disabled={!ready || busy} onChange={setEnabled} />
+      <h4 className={css.editorTitle}>{t('syncStatusMap')}</h4>
+      <StatusWriteMap value={statusWriteStates} options={statuses} t={t} onChange={setStatusWriteStates} />
+      <p className={css.conditionHint}>{t('syncStatusMapHint')}</p>
+      {/* Enabling belongs to the roster row's switch, so a new rule is saved
+          disabled and turned on from the list. */}
+      {rule === null && <p className={css.conditionHint}>{t('syncEnableFromList')}</p>}
     </>}
     <div className={css.editorActions}>
       {/* Removal lives inside the rule's own editor, armed by a first click. */}
       {rule && onDeleted && <Button disabled={busy} onClick={() => void remove()}>{armed ? t('syncDeleteConfirm') : t('syncDeleteRule')}</Button>}
       <div className={css.editorButtons}>
-        <Button disabled={busy} onClick={() => step === 1 ? onBack() : setStep(step - 1)}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
-        {step < 3 ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !ready} onClick={() => setStep(step + 1)}>{t('syncNext')}</Button> : <Button variant="primary" disabled={busy || enabled && !ready} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
+        <Button disabled={busy} onClick={() => (step === 1 ? onBack() : setStep(step - 1))}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
+        {step < 3
+          ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !scopeReady} onClick={() => { setError(null); setStep(step + 1) }}>{t('syncNext')}</Button>
+          : <Button variant="primary" disabled={busy || (rule?.enabled === true && !ready)} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
       </div>
     </div>
     </div>

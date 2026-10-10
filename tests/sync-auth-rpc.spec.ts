@@ -10,7 +10,7 @@ describe('authorization RPC codecs', () => {
   })
   it('refuses invented error codes in safe authorization state', () => {
     const parse = method('getSyncAuthState').result!.schema!.parse
-    expect(() => parse({ connectionId: 'c1', status: 'failed', attemptId: null, expiresAt: null, accountLabel: null, resourceIds: [], projectAccess: 'unverified', error: { code: 'secret-provider-body', docKey: 'unknown' } })).toThrow()
+    expect(() => parse({ connectionId: 'c1', status: 'failed', attemptId: null, expiresAt: null, accountLabel: null, resourceIds: [], error: { code: 'secret-provider-body', docKey: 'unknown' } })).toThrow()
   })
   it('refuses authorization URLs containing tokens or untrusted origins', () => {
     const parse = method('beginSyncAuthorization').result!.schema!.parse

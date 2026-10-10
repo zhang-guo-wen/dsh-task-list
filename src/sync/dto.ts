@@ -1,4 +1,4 @@
-import type { TaskStatus } from '../types.ts'
+import type { TaskContent, TaskStatus } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 
 /** The 18 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4/orgs1/query3). */
@@ -16,6 +16,33 @@ export type SyncMethod = (typeof SYNC_METHODS)[number]
 
 // --- Connections ---
 
+/**
+ * Which work-item data a new local task starts with. Chosen per connection (the
+ * connection editor owns the checkboxes) and stored beside it, so the choice
+ * travels with the configuration rather than with one browser.
+ *
+ * The union covers both platforms; each connection may only use its own set
+ * (see {@link WORKITEM_FILL_FIELDS_BY_PLATFORM}), because the two platforms do
+ * not expose the same fields.
+ */
+export const WORKITEM_FILL_FIELDS = [
+  'title', 'description', 'number', 'status', 'assignee', 'sprint', 'priority',
+  // 云效-only
+  'customFields', 'source',
+  // TAPD-only: 标签 and 创建人 have no 云效 equivalent in the list projection.
+  'tags', 'creator',
+] as const
+export type WorkitemFillField = (typeof WORKITEM_FILL_FIELDS)[number]
+
+/** Fields each platform can actually carry, in the order its editor shows them. */
+export const WORKITEM_FILL_FIELDS_BY_PLATFORM: Readonly<Record<'yunxiao' | 'tapd', readonly WorkitemFillField[]>> = {
+  yunxiao: ['title', 'description', 'number', 'status', 'assignee', 'sprint', 'priority', 'customFields', 'source'],
+  tapd: ['title', 'description', 'number', 'status', 'assignee', 'sprint', 'priority', 'tags', 'creator'],
+}
+
+/** What a connection pre-fills before the user has chosen anything. */
+export const DEFAULT_WORKITEM_FILL_FIELDS: readonly WorkitemFillField[] = ['title', 'description', 'number', 'status', 'assignee', 'priority']
+
 export type ConnectionAuth = { mode: 'manual' } | { mode: 'oauth'; appId?: string; appSecretRef?: string; callbackUrl?: string }
 
 /**
@@ -25,11 +52,13 @@ export type ConnectionAuth = { mode: 'manual' } | { mode: 'oauth'; appId?: strin
  */
 export type ConnectionSecret =
   | { platform: 'yunxiao'; token: string }
-  | { platform: 'tapd'; user: string; password: string }
+  | { platform: 'tapd'; token: string }
 
 export interface SafeConnectionBase {
   /** Non-secret authentication configuration; omitted legacy values mean manual. */
   authentication?: ConnectionAuth
+  /** Work-item data a new task starts with, edited in the connection form. */
+  fillFields: WorkitemFillField[]
   id: string
   name: string
   enabled: boolean
@@ -49,31 +78,43 @@ export interface YunxiaoConnection extends SafeConnectionBase {
 export interface TapdConnection extends SafeConnectionBase {
   platform: 'tapd'
   companyId: string
-  userEnv: string
-  passwordEnv: string
+  /** Environment variable the Host falls back to when no credential is typed. */
+  tokenEnv: string
 }
 
 export type SafeConnection = YunxiaoConnection | TapdConnection
 
 // --- Rules ---
 
-export interface SyncRuleFilters {
-  assignees: string[]
-  typeIds: string[]
-  iterationIds: string[]
-  statusIds: string[]
+/** Operators the platform accepts; each field's own spec narrows this further. */
+export type WorkitemFilterOperator = 'EQUALS' | 'CONTAINS' | 'BETWEEN'
+
+/**
+ * One platform filter object. Groups are ORed and conditions inside one group
+ * are ANDed; the `value` array is an OR set. The rule editor builds these from
+ * the same field list the task list's filter bar offers, and the adapter sends
+ * them to the platform so discovery never fetches the whole project.
+ */
+export interface WorkitemFilterCondition {
+  field: string
+  operator?: WorkitemFilterOperator
+  value: string[]
+  /** Inclusive upper bound for BETWEEN; ignored by every other operator. */
+  toValue?: string
 }
 
-export interface TypeMapping {
-  typeId: string
-  category: string
-  readStates: Record<string, TaskStatus>
-  writeStates: Record<TaskStatus, string>
-  optionalFields: ('priority' | 'tags' | 'storyPoints')[]
-  fieldIds: Partial<Record<SyncField, string>>
-  valueMaps: Partial<Record<'priority' | 'tags', Record<string, string>>>
-}
+/** Groups are ORed; conditions inside one group are ANDed. */
+export type WorkitemConditionGroups = WorkitemFilterCondition[][]
 
+/** The three local statuses a rule maps back to the platform. */
+export type StatusWriteStates = Record<TaskStatus, string>
+
+/**
+ * A sync rule is one 云效 project plus the query that selects its work items.
+ * Discovery applies the query on the platform; everything a matching work item
+ * carries is packed into a new local task's description, and the only field the
+ * rule writes back is the task's status (mapped by {@link statusWriteStates}).
+ */
 export interface SyncRule {
   id: string
   revision: number
@@ -83,8 +124,10 @@ export interface SyncRule {
   projectName: string | null
   enabled: boolean
   workspaceId: string | null
-  filters: SyncRuleFilters
-  mappings: TypeMapping[]
+  /** Server-side query; an empty set matches every work item in the project. */
+  conditions: WorkitemFilterCondition[][]
+  /** Local status -> platform status id; every local status must be mapped. */
+  statusWriteStates: StatusWriteStates
 }
 
 // --- Errors ---
@@ -217,18 +260,6 @@ export interface Page<T> {
 
 // --- Read-only work-item queries ---
 
-export type WorkitemFilterOperator = 'EQUALS' | 'CONTAINS' | 'BETWEEN'
-
-/** One platform filter object; groups are ORed, conditions inside one group are ANDed. */
-export interface WorkitemFilterCondition {
-  field: string
-  operator?: WorkitemFilterOperator
-  value: string[]
-  toValue?: string | null
-}
-
-export type WorkitemConditionGroups = WorkitemFilterCondition[][]
-
 export interface ListWorkitemsRequest {
   connectionId: string
   projectId: string
@@ -261,7 +292,8 @@ export interface SafeWorkitemField {
 export interface ListWorkitemFieldsRequest {
   connectionId: string
   projectId: string
-  category: string
+  /** One category or a comma-joined set, e.g. `Req` or `Req,Bug,Task`; spaces are refused. */
+  categories: string
 }
 
 /** One work item's body, unwrapped from the platform's JSON description carrier. */
@@ -269,6 +301,8 @@ export interface SafeWorkitemDescription {
   format: 'richtext' | 'markdown' | 'text'
   html: string | null
   plain: string
+  /** The plugin's own structured form of the body; null when it cannot be decoded. */
+  content: TaskContent | null
 }
 
 export interface GetWorkitemDescriptionRequest {
@@ -294,15 +328,16 @@ export interface SafeWorkitemPage {
 
 export type EmptyRequest = Record<string, never>
 
-export type CreateConnectionRequest = ({ authentication?: ConnectionAuth; secret?: ConnectionSecret } & (
+export type CreateConnectionRequest = ({ authentication?: ConnectionAuth; secret?: ConnectionSecret; fillFields?: WorkitemFillField[] } & (
   | { platform: 'yunxiao'; name: string; mode: 'center' | 'region'; organizationId: string; regionHost: string | null; tokenEnv: string; enabled: boolean }
-  | { platform: 'tapd'; name: string; companyId: string; userEnv: string; passwordEnv: string; enabled: boolean }
+  | { platform: 'tapd'; name: string; companyId: string; tokenEnv: string; enabled: boolean }
 
 ))
 
 export interface UpdateConnectionRequest {
   authentication?: ConnectionAuth
   secret?: ConnectionSecret
+  fillFields?: WorkitemFillField[]
   id: string
   revision: number
   name?: string
@@ -312,8 +347,6 @@ export interface UpdateConnectionRequest {
   regionHost?: string | null
   tokenEnv?: string
   companyId?: string
-  userEnv?: string
-  passwordEnv?: string
 }
 
 /** One organization the authorized account belongs to (id + display name only). */
@@ -327,6 +360,11 @@ export interface ListOrganizationsRequest {
   token?: string
   /** Saved connection whose stored credential lists the organizations. */
   connectionId?: string
+  /**
+   * Which platform's account the token belongs to. A new connection has no
+   * saved id yet, so the editor names it explicitly.
+   */
+  platform?: 'yunxiao' | 'tapd'
 }
 
 
@@ -341,8 +379,8 @@ export interface CreateSyncRuleRequest {
   projectName?: string | null
   workspaceId: string | null
   enabled: boolean
-  filters: SyncRuleFilters
-  mappings: TypeMapping[]
+  conditions: WorkitemConditionGroups
+  statusWriteStates: StatusWriteStates
 }
 
 export interface UpdateSyncRuleRequest {
@@ -352,8 +390,8 @@ export interface UpdateSyncRuleRequest {
   projectName?: string | null
   workspaceId?: string | null
   enabled?: boolean
-  filters?: SyncRuleFilters
-  mappings?: TypeMapping[]
+  conditions?: WorkitemConditionGroups
+  statusWriteStates?: StatusWriteStates
 }
 
 export interface DeleteSyncRuleRequest {

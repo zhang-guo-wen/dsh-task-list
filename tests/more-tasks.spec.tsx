@@ -9,9 +9,10 @@ import type { ListWorkitemFieldsRequest, ListWorkitemsRequest, SafeWorkitemDescr
 afterEach(() => { cleanup(); localStorage.clear() })
 const t = (key: TaskKey) => zh[key]
 
+/** Each connection carries its own prefill selection; conn-2 deliberately omits the description. */
 const connections = [
-  { id: 'conn-1', name: '云效 · Alpha', platform: 'yunxiao', enabled: true },
-  { id: 'conn-2', name: '云效 · Beta', platform: 'yunxiao', enabled: false },
+  { id: 'conn-1', name: '云效 · Alpha', platform: 'yunxiao', enabled: true, fillFields: ['title', 'description', 'number'] },
+  { id: 'conn-2', name: '云效 · Beta', platform: 'yunxiao', enabled: false, fillFields: ['title', 'number'] },
 ]
 const projects = [{ id: 'space-1', label: 'Project One' }, { id: 'space-2', label: 'Project Two' }]
 
@@ -73,18 +74,27 @@ async function open(options: {
   const { list, calls } = recorder(options.list ?? (async () => page([row()])))
   const fieldCalls: ListWorkitemFieldsRequest[] = []
   const descriptionCalls: { connectionId: string; projectId: string; id: string }[] = []
-  const drafts: { row: Record<string, unknown>; description: SafeWorkitemDescription | null; mode: 'sync' | 'start' }[] = []
-  const query = {
-    listWorkitems: list,
-    listWorkitemFields: async (request: ListWorkitemFieldsRequest) => { fieldCalls.push(request); return options.fields ?? catalog },
-    getWorkitemDescription: async (request: { connectionId: string; projectId: string; id: string }) => {
-      descriptionCalls.push(request)
-      return { description: options.description === undefined ? { format: 'richtext' as const, html: '<p>Body</p>', plain: 'Body' } : options.description }
-    },
+  const drafts: { row: Record<string, unknown>; description: SafeWorkitemDescription | null; fillFields: readonly string[] }[] = []
+  const listWorkitemFields = async (request: ListWorkitemFieldsRequest) => { fieldCalls.push(request); return options.fields ?? catalog }
+  const body: SafeWorkitemDescription = {
+    format: 'richtext',
+    html: '<p>Body</p>',
+    plain: 'Body',
+    content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'Body' }] }] },
   }
-  const view = render(<MoreTasks sync={face() as never} query={query} close={() => {}}
-    onDraft={(item, description, mode) => { drafts.push({ row: item, description, mode }) }} t={t} />)
-  await waitFor(() => expect(calls.length).toBeGreaterThan(0))
+  const getWorkitemDescription = async (request: { connectionId: string; projectId: string; id: string }) => {
+    descriptionCalls.push(request)
+    return { description: options.description === undefined ? body : options.description }
+  }
+  const view = render(<MoreTasks sync={face() as never} listWorkitems={list} listWorkitemFields={listWorkitemFields}
+    getWorkitemDescription={getWorkitemDescription} close={() => {}}
+    onDraft={(item, description, fillFields) => { drafts.push({ row: item, description, fillFields }) }} t={t} />)
+  await waitFor(() => {
+    expect(calls.length).toBeGreaterThan(0)
+    // The list renders only after the catalog arrives; wait for the outcome so a
+    // click is never fired at a page that is still empty.
+    expect(screen.queryByRole('table') ?? screen.getByText(zh.moreTasksEmpty)).toBeTruthy()
+  })
   return { ...view, calls, fieldCalls, descriptionCalls, drafts, list }
 }
 
@@ -95,20 +105,27 @@ describe('more tasks page', () => {
     expect(Array.from(select.options).map(option => option.textContent)).toEqual(['云效 · Alpha', '云效 · Beta'])
     expect(select.value).toBe('conn-1')
     expect((screen.getByLabelText(zh.moreTasksProject) as HTMLSelectElement).value).toBe('space-1')
-    expect(fieldCalls[0]).toEqual({ connectionId: 'conn-1', projectId: 'space-1', category: 'Req' })
+    expect(fieldCalls[0]).toEqual({ connectionId: 'conn-1', projectId: 'space-1', categories: 'Req,Bug,Task' })
 
-    expect(calls[0]).toMatchObject({ connectionId: 'conn-1', projectId: 'space-1', categories: 'Req', page: 1, perPage: 50, orderBy: 'gmtCreate', sort: 'desc' })
+    // No category filter: the table lists requirements, defects and tasks together.
+    // The label is gone from the dictionary, so it is asserted as a literal.
+    expect(screen.queryByText('类别')).toBeNull()
+    expect(screen.getAllByRole('combobox').map(select => (select as HTMLSelectElement).value))
+      .toEqual(['conn-1', 'space-1', '50'])
+    expect(calls[0]).toMatchObject({ connectionId: 'conn-1', projectId: 'space-1', categories: 'Req,Bug,Task', page: 1, perPage: 50, orderBy: 'gmtCreate', sort: 'desc' })
     // Only the shown columns are requested; the description never is.
     expect(calls[0]!.fields).toContain('subject')
     expect(calls[0]!.fields).toContain('customFields')
     expect(calls[0]!.customFieldIds).toEqual(['priority'])
     expect(calls[0]!.fields).not.toContain('description')
 
-    const headers = within(screen.getByRole('table')).getAllByRole('columnheader').map(cell => cell.textContent)
+    const headers = within(await screen.findByRole('table')).getAllByRole('columnheader').map(cell => cell.textContent)
+    // The action head reads 操作 now; the header's settings icon lives inside it.
     expect(headers).toEqual([
       zh.moreTasksColSerial, zh.moreTasksColSubject, zh.moreTasksColStatus, zh.moreTasksColAssignee,
-      zh.moreTasksColCreator, zh.moreTasksColCreated, zh.moreTasksColPriority, zh.moreActions,
+      zh.moreTasksColCreator, zh.moreTasksColCreated, zh.moreTasksColPriority, zh.moreTasksActions,
     ])
+    expect(zh.moreTasksActions).toBe('操作')
     const first = within(screen.getByRole('table')).getAllByRole('row')[1]!
     expect(within(first).getByText('PROJ-11')).toBeTruthy()
     expect(within(first).getByText('Alpha work item')).toBeTruthy()
@@ -146,11 +163,8 @@ describe('more tasks page', () => {
     expect(within(screen.getByRole('table')).queryByText(zh.moreTasksColAssignee)).toBeNull()
   })
 
-  it('changes connection, project, category, page size and page with new requests', async () => {
+  it('changes connection, project, page size and page with new requests', async () => {
     const { calls } = await open({ list: async request => page([row()], { page: request.page, perPage: request.perPage, totalPages: 3, total: 120 }) })
-    fireEvent.change(screen.getByLabelText(zh.moreTasksCategory), { target: { value: 'Bug' } })
-    await waitFor(() => expect(calls.at(-1)?.categories).toBe('Bug'))
-
     fireEvent.change(screen.getByLabelText(zh.moreTasksProject), { target: { value: 'space-2' } })
     await waitFor(() => expect(calls.at(-1)?.projectId).toBe('space-2'))
 
@@ -164,47 +178,81 @@ describe('more tasks page', () => {
     expect((screen.getByRole('button', { name: zh.prevPage }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('hands a row to the composer with the description only when the settings ask for it', async () => {
-    localStorage.setItem('dsh-task-list.workitem-fill', JSON.stringify(['title', 'description', 'number']))
-    const withDescription = await open()
+  it('takes the prefill set from the selected connection', async () => {
+    const { drafts, descriptionCalls, calls } = await open()
     fireEvent.click(within(screen.getByRole('table')).getAllByRole('button', { name: zh.moreTasksSync })[0]!)
-    await waitFor(() => expect(withDescription.drafts).toHaveLength(1))
-    expect(withDescription.descriptionCalls).toEqual([{ connectionId: 'conn-1', projectId: 'space-1', id: '1000000000000000001' }])
-    expect(withDescription.drafts[0]).toMatchObject({ mode: 'sync' })
-    expect(withDescription.drafts[0]!.description?.plain).toBe('Body')
+    await waitFor(() => expect(drafts).toHaveLength(1))
+    // conn-1 asks for the description, so exactly one detail request goes out.
+    expect(descriptionCalls).toEqual([{ connectionId: 'conn-1', projectId: 'space-1', id: '1000000000000000001' }])
+    expect(drafts[0]!.description?.plain).toBe('Body')
+    expect(drafts[0]!.fillFields).toEqual(['title', 'description', 'number'])
 
-    cleanup()
-    // Without the description box the detail request is skipped entirely.
-    localStorage.setItem('dsh-task-list.workitem-fill', JSON.stringify(['title', 'number']))
-    const withoutDescription = await open()
+    // conn-2 does not, so switching connection skips the detail request entirely.
+    fireEvent.change(screen.getByLabelText(zh.moreTasksConnection), { target: { value: 'conn-2' } })
+    await waitFor(() => expect(calls.at(-1)?.connectionId).toBe('conn-2'))
     fireEvent.click(within(screen.getByRole('table')).getAllByRole('button', { name: zh.moreTasksSync })[0]!)
-    await waitFor(() => expect(withoutDescription.drafts).toHaveLength(1))
-    expect(withoutDescription.descriptionCalls).toEqual([])
-    expect(withoutDescription.drafts[0]!.description).toBeNull()
+    await waitFor(() => expect(drafts).toHaveLength(2))
+    expect(descriptionCalls).toHaveLength(1)
+    expect(drafts[1]!.description).toBeNull()
+    expect(drafts[1]!.fillFields).toEqual(['title', 'number'])
   })
 
-  it('marks the row Start action as start-immediately', async () => {
-    localStorage.setItem('dsh-task-list.workitem-fill', JSON.stringify(['title']))
+  it('opens the detail drawer with the decoded body from the frozen title', async () => {
+    const { descriptionCalls } = await open()
+    // The row has no Detail button any more; the title is the only entry point.
+    expect(within(screen.getByRole('table')).queryAllByRole('button', { name: zh.moreTasksDetail })).toHaveLength(0)
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: 'Alpha work item' }))
+    const drawer = await screen.findByRole('dialog', { name: zh.moreTasksDetail })
+    // The metadata comes from the row itself; only the body costs a request.
+    expect(descriptionCalls).toEqual([{ connectionId: 'conn-1', projectId: 'space-1', id: '1000000000000000001' }])
+    expect(within(drawer).getByRole('heading', { name: zh.moreTasksDetailDescription })).toBeTruthy()
+    expect(within(drawer).getByText('Body')).toBeTruthy()
+    expect(within(drawer).getByText('PROJ-11')).toBeTruthy()
+
+    fireEvent.click(within(drawer).getByRole('button', { name: zh.moreTasksClose }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: zh.moreTasksDetail })).toBeNull())
+
+    // Clicking the title again reopens it, one more detail request.
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: 'Alpha work item' }))
+    expect(await screen.findByRole('dialog', { name: zh.moreTasksDetail })).toBeTruthy()
+    expect(descriptionCalls).toHaveLength(2)
+  })
+
+  it('says so when the work item has no description', async () => {
+    await open({ description: null })
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: 'Alpha work item' }))
+    const drawer = await screen.findByRole('dialog', { name: zh.moreTasksDetail })
+    expect(within(drawer).getByText(zh.moreTasksDetailEmpty)).toBeTruthy()
+  })
+
+  it('offers only the Sync action on a row', async () => {
     const { drafts } = await open()
-    fireEvent.click(within(screen.getByRole('table')).getAllByRole('button', { name: zh.moreTasksStart })[0]!)
+    expect(within(screen.getByRole('table')).queryAllByRole('button', { name: '启动' })).toHaveLength(0)
+    expect(within(screen.getByRole('table')).getAllByRole('button', { name: zh.moreTasksSync })).toHaveLength(1)
+    fireEvent.click(within(screen.getByRole('table')).getAllByRole('button', { name: zh.moreTasksSync })[0]!)
     await waitFor(() => expect(drafts).toHaveLength(1))
-    expect(drafts[0]!.mode).toBe('start')
     expect(drafts[0]!.row.subject).toBe('Alpha work item')
   })
 
-  it('filters by title plus at most two configured conditions', async () => {
-    localStorage.setItem('dsh-task-list.workitem-filters', JSON.stringify(['status', 'assignedTo', 'priority']))
+  it('filters by title plus at most two conditions from the full field list', async () => {
     const { calls } = await open()
+
+    // Every verified field is offered, with no settings gate.
+    fireEvent.click(screen.getByRole('button', { name: zh.filterAdd }))
+    await screen.findByLabelText(`${zh.filterAny} 1`)
+    const fieldSelect = screen.getByLabelText(`${zh.filterAny} 1`) as HTMLSelectElement
+    expect(Array.from(fieldSelect.options).map(option => option.textContent)).toEqual([
+      zh.filterStatus, zh.filterStatusStage, zh.filterAssignee, zh.filterCreator,
+      zh.filterPriority, zh.filterSprint, zh.filterType, zh.filterCreated,
+    ])
 
     // Title search is a form submit, not a request per keystroke.
     const titleBox = screen.getByRole('searchbox', { name: zh.filterTitlePlaceholder })
     fireEvent.change(titleBox, { target: { value: 'OCR' } })
-    expect(calls).toHaveLength(1)
     fireEvent.submit(titleBox.closest('form')!)
     await waitFor(() => expect(calls.at(-1)?.conditions).toEqual([[{ field: 'subject', operator: 'CONTAINS', value: ['OCR'] }]]))
 
-    // A condition offers the configured field's own values (statuses from metadata).
-    fireEvent.click(screen.getByRole('button', { name: zh.filterAdd }))
+    // A condition offers the field's own values (statuses from metadata).
     const statusValue = await screen.findByLabelText(zh.filterStatus)
     expect(Array.from((statusValue as HTMLSelectElement).options).map(option => option.textContent)).toContain('待处理')
     fireEvent.change(statusValue, { target: { value: '100005' } })
@@ -214,10 +262,10 @@ describe('more tasks page', () => {
     fireEvent.click(screen.getByRole('button', { name: zh.filterAdd }))
     await waitFor(() => expect((screen.getByRole('button', { name: zh.filterAdd }) as HTMLButtonElement).disabled).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: `${zh.filterRemove} 1` }))
-    // The replacement row is the next configured field and has no value yet, so
-    // only the title search reaches the request.
+    // The replacement row is the next field and has no value yet, so only the
+    // title search reaches the request.
     await waitFor(() => expect(calls.at(-1)?.conditions![0].map(condition => condition.field)).toEqual(['subject']))
-    expect((within(screen.getByRole('group', { name: zh.filterSettingsTitle })).getByLabelText(`${zh.filterAny} 1`) as HTMLSelectElement).value).toBe('assignedTo')
+    expect((screen.getByLabelText(`${zh.filterAny} 1`) as HTMLSelectElement).value).toBe('statusStage')
 
     fireEvent.click(screen.getByRole('button', { name: zh.filterClear }))
     await waitFor(() => expect(calls.at(-1)?.conditions).toBeUndefined())
@@ -229,7 +277,8 @@ describe('more tasks page', () => {
 
     cleanup()
     const view = render(<MoreTasks sync={face() as never}
-      query={{ listWorkitems: async () => { throw new Error('boom') }, listWorkitemFields: async () => catalog, getWorkitemDescription: async () => ({ description: null }) }}
+      listWorkitems={async () => { throw new Error('boom') }} listWorkitemFields={async () => catalog}
+      getWorkitemDescription={async () => ({ description: null })}
       onDraft={() => {}} close={() => {}} t={t} />)
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('boom'))
     expect(within(view.container).getByLabelText(zh.moreTasksConnection)).toBeTruthy()

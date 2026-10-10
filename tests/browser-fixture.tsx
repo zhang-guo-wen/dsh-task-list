@@ -69,6 +69,14 @@ const face = {
   },
 }
 let input = { draft: '', phase: 'plain', attachmentIds: [] as DraftAttachmentId[], draftRev: 1 }
+// Live link the composer slot resolves per capture; the regression toggles the
+// blank state the way a New Session screen starts one.
+let captureLink: { blank: boolean; workspaceId: string | null; agent: string | null } = { blank: false, workspaceId: 'ws-test', agent: 'preset-alpha' }
+const resolveCaptureTarget = () => ({
+  sessionId: captureLink.blank ? null : 'session-current',
+  workspaceId: captureLink.workspaceId,
+  agent: captureLink.agent,
+})
 const listeners = new Set<() => void>()
 const draftFiles = new Map<DraftAttachmentId, File>()
 const captureRequests: unknown[] = []
@@ -100,7 +108,7 @@ createRoot(document.getElementById('root')!).render(<>
   <div contentEditable suppressContentEditableWarning role="textbox" aria-label="测试对话输入框"
     onInput={event => inputActions.setDraft(event.currentTarget.textContent ?? '')} />
   <div data-testid="capture-slot" style={{ transform: 'translateZ(0)' }}>
-    <TaskCapture {...{ useInput, inputActions, sessionId: 'session-current', create: captureCreate, captureAttachments,
+    <TaskCapture {...{ useInput, inputActions, sessionId: 'session-current', resolveTarget: resolveCaptureTarget, create: captureCreate, captureAttachments,
       releaseAttachment: (id: DraftAttachmentId) => draftFiles.delete(id), t } as any} />
   </div>
 </>)
@@ -128,6 +136,7 @@ Object.assign(window, { fixture: {
   },
   addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },
   captures: () => captureRequests,
+  setCaptureLink: (patch: Partial<typeof captureLink>) => { captureLink = { ...captureLink, ...patch } },
   input: () => input,
   failCapture: (fail: boolean) => { failCapture = fail },
   stageFiles: (files: File[]) => {

@@ -4,6 +4,8 @@
 
 连接编辑页按反馈重做：① 去掉「返回列表」按钮，表单改为一张带边框的卡片，底部是「取消 / 保存连接」（左侧保留只读测试）；② 去掉连接名称字段（按「平台 · 组织/公司」自动生成），组织/公司 ID 不再需要手记——云效新增 `listSyncOrganizations` RPC，用官方 `GET https://openapi-rdc.aliyuncs.com/users/joinedOrgs` 列出当前令牌加入的组织并做下拉，调用失败时同一格保留手填/粘贴；TAPD 支持粘贴工作台地址自动取出公司 ID；③ 凭据改为在页面直接手写，由 `HostManualSecretStore` 存入宿主凭据存储（记录键 `task-list/connection-<id>-secret`），不写任务数据库、不回显、不再要求配环境变量，环境变量仍作为兼容回退。
 
+> 后续变更（2026-10-10）：TAPD 的凭据收窄为**个人访问令牌**（连接字段 `companyId` + `tokenEnv`，请求头 `Authorization: Bearer`），API 账号/密码（Basic）与开放应用项目态已移除，schema 升到 12；云效部分（含官方授权）不变。
+
 验证：`npm test` 548/548、`npm run typecheck`、`npm run build` 通过；真实浏览器 fixture（Edge headless）覆盖无「返回列表」、粘贴地址解析、保存回列表与浅深色/390px。
 
 ## 旧状态更新（2026-10-08 同步入口与设置位置调整）

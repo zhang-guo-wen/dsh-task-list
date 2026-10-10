@@ -26,13 +26,7 @@ function yunxiaoConnection(overrides: Partial<SafeConnection> = {}): SafeConnect
 function yunxiaoRule(overrides: Partial<SyncRule> = {}): SyncRule {
   return {
     id: 'rule-1', revision: 1, connectionId: 'conn-1', projectId: 'space-1', enabled: true, workspaceId: null,
-    filters: { assignees: [], typeIds: ['req-type-1'], iterationIds: [], statusIds: [] },
-    mappings: [{
-      typeId: 'req-type-1', category: 'Req',
-      readStates: { todo: 'todo', doing: 'in_progress', done: 'done' },
-      writeStates: { todo: 'todo', in_progress: 'doing', done: 'done' },
-      optionalFields: [], fieldIds: { title: 'subject', status: 'status' }, valueMaps: {},
-    }],
+    conditions: [[{ field: 'workitemType', operator: 'EQUALS', value: ['req-type-1'] }]], statusWriteStates: { todo: 'open', in_progress: 'doing', done: 'done' },
     ...overrides,
   }
 }
@@ -94,6 +88,56 @@ async function collectDiscover(adapter: SyncAdapter, rule: SyncRule): Promise<Re
   return out
 }
 
+/** The decoded description's blocks flattened to text, in order: heading, labelled lines, body. */
+function packedBlocks(item: RemoteItem): { type: string; text: string }[] {
+  const field = item.fields.description
+  if (field.presence !== 'value') return []
+  return field.value.blocks.map(block => {
+    if (block.type === 'attachment') return { type: block.type, text: block.name }
+    if (block.type === 'table') return { type: block.type, text: '' }
+    return { type: block.type, text: block.children.map(child => child.text).join('') }
+  })
+}
+
+/** A fetch mock that answers every search with an empty page and records the posted bodies. */
+function captureSearchBodies(): { fetch: ReturnType<typeof vi.fn>; bodies: Record<string, unknown>[] } {
+  const bodies: Record<string, unknown>[] = []
+  const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/workitems:search') && init?.method === 'POST') {
+      bodies.push(JSON.parse((init.body as string) ?? '{}') as Record<string, unknown>)
+    }
+    return jsonResponse([], 200, { 'x-page': '1', 'x-total-pages': '1' })
+  })
+  return { fetch, bodies }
+}
+
+/** Discover a search whose rows and detail bodies are both caller-supplied. */
+async function collectRawDetails(details: Record<string, unknown>, rule: SyncRule): Promise<{ items: RemoteItem[]; bodies: Record<string, unknown>[] }> {
+  const bodies: Record<string, unknown>[] = []
+  const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    if (url.includes('/workitems:search') && method === 'POST') {
+      bodies.push(JSON.parse((init.body as string) ?? '{}') as Record<string, unknown>)
+      return jsonResponse(
+        Object.keys(details).map(id => ({ id, space: { id: 'space-1' }, workitemType: { id: 'req-type-1' } })),
+        200, { 'x-page': '1', 'x-total-pages': '1' },
+      )
+    }
+    const match = url.match(/\/workitems\/([^/?]+)$/)
+    const id = match?.[1]
+    if (id !== undefined && method === 'GET') {
+      const detail = details[id]
+      if (detail === undefined) throw new Error('no detail for ' + id)
+      return jsonResponse(detail)
+    }
+    throw new Error('unexpected ' + method + ' ' + url)
+  })
+  const items = await collectDiscover(makeAdapter(fetch), rule)
+  return { items, bodies }
+}
+
 const KEY = { instance: 'org-1', projectId: 'space-1', typeId: 'req-type-1', id: '1000000000000000001' }
 
 /** A fetch mock routed by URL/method; routes are tried in order. */
@@ -149,28 +193,26 @@ describe('yunxiao discover', () => {
   })
 
   it('encodes category, spaceId, paging and sort in the search body', async () => {
-    let body: Record<string, unknown> = {}
-    const fetch = route([
-      {
-        match: (u, m) => u.includes('/workitems:search') && m === 'POST',
-        respond: () => jsonResponse([], 200, { 'x-page': '1', 'x-total-pages': '1' }),
-      },
-    ])
-    // capture the body by wrapping fetch
-    const wrapped = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      if (url.includes('/workitems:search') && init?.method === 'POST') body = JSON.parse((init.body as string) ?? '{}') as Record<string, unknown>
-      return jsonResponse([], 200, { 'x-page': '1', 'x-total-pages': '1' })
-    })
-    const adapter = makeAdapter(wrapped)
-    await collectDiscover(adapter, yunxiaoRule())
+    const { fetch, bodies } = captureSearchBodies()
+    await collectDiscover(makeAdapter(fetch), yunxiaoRule())
+    const body = bodies[0]!
     expect(body.spaceId).toBe('space-1')
-    expect(body.category).toBe('Req')
+    expect(body.category).toBe('Req,Bug,Task')
     expect(body.page).toBe(1)
     expect(body.perPage).toBe(200)
     expect(body.orderBy).toBe('gmtCreate')
     expect(body.sort).toBe('asc')
-    expect('conditions' in body).toBe(false)
+  })
+
+  it('sends the rule query as a conditions JSON string whose group carries the rule fields', async () => {
+    const { fetch, bodies } = captureSearchBodies()
+    await collectDiscover(makeAdapter(fetch), yunxiaoRule())
+    expect(JSON.parse(bodies[0]!.conditions as string)).toEqual({
+      conditionGroups: [[{
+        fieldIdentifier: 'workitemType', operator: 'EQUALS', value: ['req-type-1'],
+        toValue: null, className: 'workitemType', format: 'list',
+      }]],
+    })
   })
 
   it('follows an increasing next-page header and stops at the terminal page', async () => {
@@ -208,19 +250,31 @@ describe('yunxiao discover', () => {
     expect(detailCode(await captureRejection(collectDiscover(adapter, yunxiaoRule())))).toBe('IncompleteDiscovery')
   })
 
-  it('filters a discovered item whose type is not mapped by the rule without reading detail', async () => {
-    const crossType = [{ id: '2', space: { id: 'space-1' }, workitemType: { id: 'bug-type-1' } }]
+  it('reads every search row detail because type filtering happens on the platform', async () => {
+    const rows = [
+      { id: '2000000000000000001', typeId: 'req-type-1' },
+      { id: '2000000000000000002', typeId: 'bug-type-1' },
+    ]
     let detailReads = 0
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
-      if (url.includes('/workitems:search')) return jsonResponse(crossType, 200, { 'x-page': '1', 'x-total-pages': '1' })
-      if (url.includes('/workitems/')) detailReads += 1
-      throw new Error('unexpected ' + url)
+      const method = init?.method ?? 'GET'
+      if (url.includes('/workitems:search') && method === 'POST') {
+        return jsonResponse(rows.map(row => ({ id: row.id, space: { id: 'space-1' }, workitemType: { id: row.typeId } })), 200, { 'x-page': '1', 'x-total-pages': '1' })
+      }
+      const match = url.match(/\/workitems\/([^/?]+)$/)
+      const id = match?.[1]
+      const row = rows.find(entry => entry.id === id)
+      if (row !== undefined && method === 'GET') {
+        detailReads += 1
+        return jsonResponse(filterDetail(row.id, row.typeId, { id: 'user-1', name: 'Alice' }, { id: 'sprint-1', name: 'Sprint 1' }, 'doing'))
+      }
+      throw new Error('unexpected ' + method + ' ' + url)
     })
     const adapter = makeAdapter(fetch)
     const items = await collectDiscover(adapter, yunxiaoRule())
-    expect(items).toHaveLength(0)
-    expect(detailReads).toBe(0)
+    expect(items.map(item => item.key.id)).toEqual(['2000000000000000001', '2000000000000000002'])
+    expect(detailReads).toBe(2)
   })
 
   const ABSENT = Symbol('absent')
@@ -239,99 +293,78 @@ describe('yunxiao discover', () => {
     return raw
   }
 
-  const FILTER_OWNERS: Record<string, { typeId: string; assignedTo: unknown; sprint: unknown; status: string }> = {
-    i1: { typeId: 'req-type-1', assignedTo: { id: 'user-1', name: 'Alice' }, sprint: { id: 'sprint-1', name: 'Sprint 1' }, status: 'doing' },
-    i2: { typeId: 'req-type-1', assignedTo: { id: 'user-1', name: 'Alice' }, sprint: { id: 'sprint-2', name: 'Sprint 2' }, status: 'todo' },
-    i3: { typeId: 'req-type-1', assignedTo: { id: 'user-2', name: 'Bob' }, sprint: { id: 'sprint-1', name: 'Sprint 1' }, status: 'doing' },
-    i4: { typeId: 'req-type-1', assignedTo: { id: 'user-1', name: 'Alice' }, sprint: null, status: 'done' },
-    i5: { typeId: 'req-type-1', assignedTo: null, sprint: { id: 'sprint-2', name: 'Sprint 2' }, status: 'doing' },
-    i6: { typeId: 'bug-type-1', assignedTo: { id: 'user-1', name: 'Alice' }, sprint: { id: 'sprint-1', name: 'Sprint 1' }, status: 'doing' },
-  }
+  const assigneeRule = () => yunxiaoRule({ conditions: [[{ field: 'assignedTo', operator: 'EQUALS', value: ['user-1'] }]] })
+  const sprintRule = () => yunxiaoRule({ conditions: [[{ field: 'sprint', operator: 'CONTAINS', value: ['sprint-1'] }]] })
 
-  async function collectFiltered(rule: SyncRule): Promise<string[]> {
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      const method = init?.method ?? 'GET'
-      if (url.includes('/workitems:search') && method === 'POST') {
-        return jsonResponse(
-          Object.keys(FILTER_OWNERS).map(id => ({ id, space: { id: 'space-1' }, workitemType: { id: FILTER_OWNERS[id]!.typeId } })),
-          200, { 'x-page': '1', 'x-total-pages': '1' },
-        )
-      }
-      const match = url.match(/\/workitems\/([^/?]+)$/)
-      if (match && method === 'GET') {
-        const id = match[1]!
-        const entry = FILTER_OWNERS[id]
-        if (!entry) throw new Error('no detail for ' + id)
-        return jsonResponse(filterDetail(id, entry.typeId, entry.assignedTo, entry.sprint, entry.status))
-      }
-      throw new Error('unexpected ' + method + ' ' + url)
+  it('sends the combined assignee and sprint conditions as one AND group', async () => {
+    const { fetch, bodies } = captureSearchBodies()
+    const rule = yunxiaoRule({ conditions: [[
+      { field: 'assignedTo', operator: 'EQUALS', value: ['user-1'] },
+      { field: 'sprint', operator: 'CONTAINS', value: ['sprint-2'] },
+    ]] })
+    await collectDiscover(makeAdapter(fetch), rule)
+    const parsed = JSON.parse(bodies[0]!.conditions as string) as { conditionGroups: Record<string, unknown>[][] }
+    expect(parsed.conditionGroups).toHaveLength(1)
+    expect(parsed.conditionGroups[0]).toHaveLength(2)
+    expect(parsed.conditionGroups[0]![0]).toMatchObject({ fieldIdentifier: 'assignedTo', operator: 'EQUALS', value: ['user-1'] })
+    expect(parsed.conditionGroups[0]![1]).toMatchObject({ fieldIdentifier: 'sprint', operator: 'CONTAINS', value: ['sprint-2'] })
+  })
+
+  it('sends a multi-value condition as one OR set of values', async () => {
+    const { fetch, bodies } = captureSearchBodies()
+    await collectDiscover(makeAdapter(fetch), yunxiaoRule({ conditions: [[{ field: 'assignedTo', operator: 'EQUALS', value: ['user-1', 'user-2'] }]] }))
+    const parsed = JSON.parse(bodies[0]!.conditions as string) as { conditionGroups: Record<string, unknown>[][] }
+    expect(parsed.conditionGroups).toHaveLength(1)
+    expect(parsed.conditionGroups[0]).toHaveLength(1)
+    expect(parsed.conditionGroups[0]![0]).toMatchObject({ fieldIdentifier: 'assignedTo', operator: 'EQUALS', value: ['user-1', 'user-2'] })
+  })
+
+  it('omits conditions entirely for an empty rule query', async () => {
+    const { fetch, bodies } = captureSearchBodies()
+    await collectDiscover(makeAdapter(fetch), yunxiaoRule({ conditions: [] }))
+    expect(bodies).toHaveLength(1)
+    expect('conditions' in bodies[0]!).toBe(false)
+  })
+
+  it('sends the assignee condition to the platform instead of excluding a detail without one', async () => {
+    const { items, bodies } = await collectRawDetails({
+      a1: filterDetail('a1', 'req-type-1', ABSENT, { id: 'sprint-1' }, 'doing'),
+      a2: filterDetail('a2', 'req-type-1', { name: 'Alice' }, { id: 'sprint-1' }, 'doing'),
+      a3: filterDetail('a3', 'req-type-1', null, { id: 'sprint-1' }, 'doing'),
+    }, assigneeRule())
+    expect(JSON.parse(bodies[0]!.conditions as string)).toMatchObject({
+      conditionGroups: [[{ fieldIdentifier: 'assignedTo', operator: 'EQUALS', value: ['user-1'] }]],
     })
-    const adapter = makeAdapter(fetch)
-    const items = await collectDiscover(adapter, rule)
-    return items.map(item => item.key.id)
-  }
-
-  it('returns only items matching the combined assignee and sprint filters', async () => {
-    const rule = yunxiaoRule({ filters: { assignees: ['user-1'], typeIds: [], iterationIds: ['sprint-2'], statusIds: [] } })
-    expect(await collectFiltered(rule)).toEqual(['i2'])
+    expect(items.map(item => item.key.id)).toEqual(['a1', 'a2', 'a3'])
   })
 
-  it('applies OR within an assignee filter and excludes items whose assignee is explicitly null', async () => {
-    const rule = yunxiaoRule({ filters: { assignees: ['user-1', 'user-2'], typeIds: [], iterationIds: [], statusIds: [] } })
-    expect(await collectFiltered(rule)).toEqual(['i1', 'i2', 'i3', 'i4'])
-  })
-
-  it('excludes a mapped item whose sprint is explicitly null when a sprint filter is set', async () => {
-    const rule = yunxiaoRule({ filters: { assignees: [], typeIds: [], iterationIds: ['sprint-2'], statusIds: [] } })
-    expect(await collectFiltered(rule)).toEqual(['i2', 'i5'])
-  })
-
-  it('returns all mapped types when every filter is empty', async () => {
-    expect(await collectFiltered(yunxiaoRule({ filters: { assignees: [], typeIds: [], iterationIds: [], statusIds: [] } }))).toEqual(['i1', 'i2', 'i3', 'i4', 'i5'])
-  })
-
-  async function discoverErrorCode(rule: SyncRule, detail: unknown): Promise<string | undefined> {
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      const method = init?.method ?? 'GET'
-      if (url.includes('/workitems:search') && method === 'POST') {
-        return jsonResponse([{ id: 'a1', space: { id: 'space-1' }, workitemType: { id: 'req-type-1' } }], 200, { 'x-page': '1', 'x-total-pages': '1' })
-      }
-      if (method === 'GET') return jsonResponse(detail)
-      throw new Error('unexpected ' + method + ' ' + url)
+  it('sends the sprint condition to the platform instead of excluding a detail without one', async () => {
+    const { items, bodies } = await collectRawDetails({
+      s1: filterDetail('s1', 'req-type-1', { id: 'user-1' }, ABSENT, 'doing'),
+      s2: filterDetail('s2', 'req-type-1', { id: 'user-1' }, { name: 'Sprint 1' }, 'doing'),
+      s3: filterDetail('s3', 'req-type-1', { id: 'user-1' }, null, 'doing'),
+    }, sprintRule())
+    expect(JSON.parse(bodies[0]!.conditions as string)).toMatchObject({
+      conditionGroups: [[{ fieldIdentifier: 'sprint', operator: 'CONTAINS', value: ['sprint-1'] }]],
     })
-    const adapter = makeAdapter(fetch)
-    return detailCode(await captureRejection(collectDiscover(adapter, rule)))
-  }
-
-  const assigneeRule = () => yunxiaoRule({ filters: { assignees: ['user-1'], typeIds: [], iterationIds: [], statusIds: [] } })
-  const sprintRule = () => yunxiaoRule({ filters: { assignees: [], typeIds: [], iterationIds: ['sprint-1'], statusIds: [] } })
-
-  it('errors instead of silently excluding when an assignee filter is set and assignedTo is absent', async () => {
-    expect(await discoverErrorCode(assigneeRule(), filterDetail('a1', 'req-type-1', ABSENT, { id: 'sprint-1' }, 'doing'))).toBe('InvalidRemoteResponse')
+    expect(items.map(item => item.key.id)).toEqual(['s1', 's2', 's3'])
   })
 
-  it('errors when an assignee filter is set and assignedTo is malformed (missing id)', async () => {
-    expect(await discoverErrorCode(assigneeRule(), filterDetail('a1', 'req-type-1', { name: 'Alice' }, { id: 'sprint-1' }, 'doing'))).toBe('InvalidRemoteResponse')
-  })
-
-  it('errors instead of silently excluding when a sprint filter is set and sprint is absent', async () => {
-    expect(await discoverErrorCode(sprintRule(), filterDetail('a1', 'req-type-1', { id: 'user-1' }, ABSENT, 'doing'))).toBe('InvalidRemoteResponse')
-  })
-
-  it('errors when a sprint filter is set and sprint is malformed (missing id)', async () => {
-    expect(await discoverErrorCode(sprintRule(), filterDetail('a1', 'req-type-1', { id: 'user-1' }, { name: 'Sprint 1' }, 'doing'))).toBe('InvalidRemoteResponse')
-  })
-
-  it('matches a canonical detail fixture carrying an official assignedTo {id,name}', async () => {
+  it('packs a canonical detail fixture, including its official assignedTo, into the description', async () => {
     const fetch = route([
       { match: (u, m) => u.includes('/workitems:search') && m === 'POST', respond: () => jsonResponse(fixture('yunxiao-center-search.json'), 200, { 'x-page': '1', 'x-total-pages': '1' }) },
       { match: (u, m) => u.endsWith('/workitems/1000000000000000001') && m === 'GET', respond: () => jsonResponse(fixture('yunxiao-center-detail.json')) },
     ])
     const adapter = makeAdapter(fetch)
-    const rule = yunxiaoRule({ filters: { assignees: ['user-1'], typeIds: [], iterationIds: [], statusIds: [] } })
-    expect((await collectDiscover(adapter, rule)).map(i => i.key.id)).toEqual(['1000000000000000001'])
+    const items = await collectDiscover(adapter, yunxiaoRule({ conditions: [[{ field: 'assignedTo', operator: 'EQUALS', value: ['user-1'] }]] }))
+    expect(items.map(item => item.key.id)).toEqual(['1000000000000000001'])
+    const blocks = packedBlocks(items[0]!)
+    expect(blocks[0]).toEqual({ type: 'heading', text: 'PROJ-1 Implement sync adapter' })
+    const meta = blocks.find(block => block.text.includes('Status: '))
+    expect(meta?.text).toContain('Status: In Progress')
+    expect(meta?.text).toContain('Assignee: Alice')
+    expect(meta?.text).toContain('Type: Requirement')
+    expect(blocks.at(-1)?.text).toBe('Body bold')
   })
 })
 
@@ -397,6 +430,10 @@ describe('yunxiao read', () => {
     expect(item.fields.title).toMatchObject({ presence: 'value', value: 'Implement sync adapter' })
     expect(item.fields.status).toMatchObject({ presence: 'value', value: 'in_progress' })
     expect(item.rawStatus).toBe('doing')
+    const blocks = packedBlocks(item)
+    expect(blocks[0]?.type).toBe('heading')
+    expect(blocks[0]?.text.startsWith('PROJ-1')).toBe(true)
+    expect(blocks.some(block => block.text.includes('Status: '))).toBe(true)
     expect(seen).toEqual(['https://openapi-rdc.aliyuncs.com/oapi/v1/projex/organizations/org-1/workitems/1000000000000000001'])
   })
 
@@ -412,9 +449,7 @@ describe('yunxiao read', () => {
   it('throws MappingIncompatible when the raw status is not mapped by the given rule', async () => {
     const fetch = vi.fn(async () => jsonResponse(fixture('yunxiao-center-detail.json')))
     const adapter = makeAdapter(fetch)
-    const unmapped = yunxiaoRule({
-      mappings: [{ ...yunxiaoRule().mappings[0]!, readStates: { done: 'done' }, writeStates: { done: 'done' } }],
-    })
+    const unmapped = yunxiaoRule({ statusWriteStates: { todo: 'open', in_progress: 'progressing', done: 'done' } })
     expect(detailCode(await captureRejection(adapter.read(KEY, unmapped, new AbortController().signal)))).toBe('MappingIncompatible')
   })
 
@@ -425,8 +460,12 @@ describe('yunxiao read', () => {
       throw new Error('unexpected ' + url)
     })
     const adapter = makeAdapter(fetch)
-    const item = await adapter.read({ ...KEY, id: '9223372036854775807123456789' }, yunxiaoRule(), new AbortController().signal)
+    // The giant fixture reports the platform's own `todo` status id, so the rule maps it directly.
+    const rule = yunxiaoRule({ statusWriteStates: { todo: 'todo', in_progress: 'doing', done: 'done' } })
+    const item = await adapter.read({ ...KEY, id: '9223372036854775807123456789' }, rule, new AbortController().signal)
     expect(item.key.id).toBe('9223372036854775807123456789')
+    expect(item.fields.status).toMatchObject({ presence: 'value', value: 'todo' })
+    expect(packedBlocks(item)[0]?.text).toBe('GIANT-1 Giant id item')
   })
 
   it('rejects a counterfeit response whose space does not match the key', async () => {
@@ -447,7 +486,7 @@ describe('yunxiao read', () => {
 // --- write -----------------------------------------------------------------
 
 describe('yunxiao write', () => {
-  it('PUTs only the patched fields with a minimal body and does not read back an entity', async () => {
+  it('PUTs the mapped status id and no other field, without reading back an entity', async () => {
     const puts: { url: string; method: string; body: string }[] = []
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
@@ -460,15 +499,15 @@ describe('yunxiao write', () => {
     })
     const adapter = makeAdapter(fetch)
     const observed = await adapter.read(KEY, yunxiaoRule(), new AbortController().signal)
-    await adapter.write(KEY, { title: 'New title' }, observed, yunxiaoRule(), new AbortController().signal)
+    await adapter.write(KEY, { status: 'done' }, observed, yunxiaoRule(), new AbortController().signal)
     expect(puts).toHaveLength(1)
     expect(puts[0]!.method).toBe('PUT')
-    const body = JSON.parse(puts[0]!.body) as Record<string, unknown>
-    expect(body).toEqual({ subject: 'New title' })
+    // The observed `doing` does not map to `done`, so the rule's target is what the platform receives.
+    expect(JSON.parse(puts[0]!.body)).toEqual({ status: 'done' })
     expect(fetch).toHaveBeenCalledTimes(2) // read + write, no read-back
   })
 
-  it('sends description together with formatType and encodes status as a scalar statusId', async () => {
+  it('preserves the observed raw status when it already equals the target', async () => {
     const puts: string[] = []
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
@@ -481,15 +520,32 @@ describe('yunxiao write', () => {
     })
     const adapter = makeAdapter(fetch)
     const observed = await adapter.read(KEY, yunxiaoRule(), new AbortController().signal)
-    await adapter.write(KEY, { description: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'new' }] }] }, status: 'done' }, observed, yunxiaoRule(), new AbortController().signal)
-    const body = JSON.parse(puts[0]!) as Record<string, unknown>
-    expect(body.formatType).toBe('RICHTEXT')
-    expect(typeof body.description).toBe('string')
-    expect(body.status).toBe('done')
-    expect(body.subject).toBeUndefined()
+    expect(observed.rawStatus).toBe('doing')
+    await adapter.write(KEY, { status: 'in_progress' }, observed, yunxiaoRule(), new AbortController().signal)
+    // `in_progress` maps to the observed `doing`; no description, subject or formatType is sent.
+    expect(JSON.parse(puts[0]!)).toEqual({ status: 'doing' })
   })
 
-  it('refuses to write a description whose observed representation is not lossless', async () => {
+  it('refuses to write any field other than status', async () => {
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/workitems/1000000000000000001') && (init?.method ?? 'GET') === 'GET') return jsonResponse(fixture('yunxiao-center-detail.json'))
+      throw new Error('unexpected ' + (init?.method ?? 'GET') + ' ' + url)
+    })
+    const adapter = makeAdapter(fetch)
+    const observed = await adapter.read(KEY, yunxiaoRule(), new AbortController().signal)
+    const refuse = async (patch: Parameters<SyncAdapter['write']>[1]): Promise<void> => {
+      const err = await captureRejection(adapter.write(KEY, patch, observed, yunxiaoRule(), new AbortController().signal))
+      expect(detailCode(err)).toBe('MappingIncompatible')
+    }
+    await refuse({ title: 'New title' })
+    await refuse({ priority: 'high' })
+    await refuse({ description: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'new' }] }] } })
+    await refuse({ tags: ['a'], status: 'done' }) // a mixed patch is refused whole, never partially written
+    expect(fetch).toHaveBeenCalledTimes(1) // only the read; no field other than status is ever written
+  })
+
+  it('never writes a description, even when the observed representation is not lossless', async () => {
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/workitems/1000000000000000001')) return jsonResponse(fixture('yunxiao-center-detail.json'))
@@ -499,22 +555,28 @@ describe('yunxiao write', () => {
     const observed = await adapter.read(KEY, yunxiaoRule(), new AbortController().signal)
     const lossy = { ...observed, description: { ...observed.description, roundTrip: false } }
     const err = await captureRejection(adapter.write(KEY, { description: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: 'x' }] }] } }, lossy, yunxiaoRule(), new AbortController().signal))
-    expect(detailCode(err)).toBe('UnsupportedRepresentation')
+    expect(detailCode(err)).toBe('MappingIncompatible')
     expect(fetch).toHaveBeenCalledTimes(1) // only the read, no PUT
   })
 
   it('treats a 204 empty-body write as success without a read entity', async () => {
     let putCount = 0
+    const bodies: string[] = []
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
-      if (url.endsWith('/workitems/1000000000000000001') && init?.method === 'PUT') { putCount += 1; return new Response(null, { status: 204 }) }
+      if (url.endsWith('/workitems/1000000000000000001') && init?.method === 'PUT') {
+        putCount += 1
+        bodies.push((init.body as string) ?? '')
+        return new Response(null, { status: 204 })
+      }
       if (url.endsWith('/workitems/1000000000000000001')) return jsonResponse(fixture('yunxiao-center-detail.json'))
       throw new Error('unexpected ' + url)
     })
     const adapter = makeAdapter(fetch)
     const observed = await adapter.read(KEY, yunxiaoRule(), new AbortController().signal)
-    await adapter.write(KEY, { title: 'Renamed' }, observed, yunxiaoRule(), new AbortController().signal)
+    await adapter.write(KEY, { status: 'done' }, observed, yunxiaoRule(), new AbortController().signal)
     expect(putCount).toBe(1)
+    expect(JSON.parse(bodies[0]!)).toEqual({ status: 'done' })
   })
 
   it('interprets non-2xx write statuses and never reads back after a rejected write', async () => {

@@ -31,8 +31,8 @@ function decode(record: unknown): OAuthGrant | null {
   if (value.revoked === true && Object.keys(value).length === 1) return null
   const allowed = ['platform', 'instance', 'connectionRevision', 'accessToken', 'refreshToken', 'expiresAt', 'clientId', 'tokenEndpoint', 'purpose', 'accountLabel', 'resourceIds', 'scopes']
   if (Object.keys(value).some(field => !allowed.includes(field))) invalid()
-  if (value.platform !== 'yunxiao' && value.platform !== 'tapd') invalid()
-  if (value.purpose !== 'yunxiao-api' && value.purpose !== 'tapd-user' && value.purpose !== 'tapd-project') invalid()
+  if (value.platform !== 'yunxiao') invalid()
+  if (value.purpose !== 'yunxiao-api') invalid()
   for (const field of ['accessToken', 'clientId', 'tokenEndpoint']) if (typeof value[field] !== 'string' || !String(value[field]).trim() || String(value[field]).length > 16384) invalid()
   // `instance` is identity metadata, and a 云效 authorization is account-scoped:
   // it may legitimately be recorded before its organization is chosen.
@@ -80,12 +80,14 @@ function decodeSecret(record: unknown): ConnectionSecret | null {
     return { platform: 'yunxiao', token: value.token }
   }
   if (value.platform === 'tapd') {
-    if (Object.keys(value).some(field => field !== 'platform' && field !== 'user' && field !== 'password')) invalid()
-    for (const field of ['user', 'password']) {
-      const text = value[field]
-      if (typeof text !== 'string' || !text.trim() || text.length > SECRET_LIMIT) invalid()
-    }
-    return { platform: 'tapd', user: value.user as string, password: value.password as string }
+    // The API-account credential (user + password) was removed with TAPD's
+    // Basic-auth path. A payload written by that version is treated as absent
+    // rather than a storage failure, so the connection simply reports "no
+    // credential" until a personal access token is typed.
+    if (value.user !== undefined || value.password !== undefined) return null
+    if (Object.keys(value).some(field => field !== 'platform' && field !== 'token')) invalid()
+    if (typeof value.token !== 'string' || !value.token.trim() || value.token.length > SECRET_LIMIT) invalid()
+    return { platform: 'tapd', token: value.token }
   }
   invalid()
 }

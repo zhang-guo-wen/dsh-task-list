@@ -6,13 +6,18 @@ import type {
   OrganizationChoice, Page, SafeConnection, SafeItemCategory, SafeItemResult, SafeRun, SafeRunCounts, SafeRunPhase,
   SafeRunStatus, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage, SafeWorkitemRow, StartSyncResult,
   SyncErrorCode, SyncErrorDto, SyncErrorScope, SyncMetadata, SyncMethod, SyncRequest, SyncResponse, SyncRule,
-  SyncRuleFilters, TestConnectionResult, TypeCapabilities, TypeMapping, UpdateConnectionRequest, UpdateSyncRuleRequest,
+  StatusWriteStates, TestConnectionResult, TypeCapabilities, UpdateConnectionRequest, UpdateSyncRuleRequest,
   WorkitemConditionGroups, WorkitemFilterCondition, WorkitemFilterOperator, GetWorkitemDescriptionRequest,
+  WorkitemFillField,
 } from './dto.ts'
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../types.ts'
 import type { TaskStatus } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 import { LIST_FIELDS } from './query/fields.ts'
+import { CONDITION_FIELDS } from './query/filters.ts'
+import { DEFAULT_WORKITEM_FILL_FIELDS, WORKITEM_FILL_FIELDS } from './dto.ts'
+import { validateContent } from '../content.ts'
+import type { TaskContent } from '../types.ts'
 
 const CONTROL = /[\u0000-\u001f]/u
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u
@@ -20,14 +25,10 @@ const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype'])
 const ID_LIMIT = 200
 const NAME_LIMIT = 100
 const ENV_LIMIT = 128
-const FILTER_LIMIT = 100
-const TYPES_LIMIT = 100
-const STATE_LIMIT = 500
 const SUMMARY_LIMIT = 200
 
 const TASK_STATUSES = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
 const SYNC_FIELD_NAMES = new Set<SyncField>(['title', 'description', 'status', 'priority', 'tags', 'storyPoints'])
-const OPTIONAL_FIELDS = new Set(['priority', 'tags', 'storyPoints'] as const)
 const SCOPES = new Set<SyncErrorScope>(['config', 'connection', 'rule', 'item', 'run', 'query'])
 const DOC_KEY_SET = new Set<string>(DOC_KEYS)
 
@@ -151,8 +152,8 @@ export function parseConnectionAuth(value: unknown): import('./dto.ts').Connecti
 }
 
 const YUNXIAO_CREATE_KEYS = new Set(['platform', 'name', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'enabled', 'authentication', 'secret'])
-const TAPD_CREATE_KEYS = new Set(['platform', 'name', 'companyId', 'userEnv', 'passwordEnv', 'enabled', 'authentication', 'secret'])
-const UPDATE_CONNECTION_KEYS = new Set(['id', 'revision', 'name', 'enabled', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'companyId', 'userEnv', 'passwordEnv', 'authentication', 'secret'])
+const TAPD_CREATE_KEYS = new Set(['platform', 'name', 'companyId', 'tokenEnv', 'enabled', 'authentication', 'secret'])
+const UPDATE_CONNECTION_KEYS = new Set(['id', 'revision', 'name', 'enabled', 'mode', 'organizationId', 'regionHost', 'tokenEnv', 'companyId', 'authentication', 'secret'])
 /** Upper bounds for one typed credential; a platform token never approaches these. */
 const SECRET_LIMIT = 4096
 
@@ -170,12 +171,8 @@ function parseConnectionSecret(scope: SyncErrorScope, value: unknown): Connectio
     return { platform: 'yunxiao', token: text(scope, object.token, 'secret.token', SECRET_LIMIT, false) }
   }
   if (platform === 'tapd') {
-    closedKeys(scope, object, new Set(['platform', 'user', 'password']), 'secret')
-    return {
-      platform: 'tapd',
-      user: text(scope, object.user, 'secret.user', SECRET_LIMIT, false),
-      password: text(scope, object.password, 'secret.password', SECRET_LIMIT, false),
-    }
+    closedKeys(scope, object, new Set(['platform', 'token']), 'secret')
+    return { platform: 'tapd', token: text(scope, object.token, 'secret.token', SECRET_LIMIT, false) }
   }
   fail(scope, 'secret.platform')
 }
@@ -201,17 +198,20 @@ function parseCreateConnection(value: unknown): CreateConnectionRequest {
   }
   closedKeys(scope, object, TAPD_CREATE_KEYS, 'createSyncConnection')
   const companyId = text(scope, object.companyId, 'companyId', ID_LIMIT, true)
-  const userEnv = envName(scope, object.userEnv, 'userEnv')
-  const passwordEnv = envName(scope, object.passwordEnv, 'passwordEnv')
-  return { platform: 'tapd', name, companyId, userEnv, passwordEnv, enabled, ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}), ...(object.secret !== undefined ? { secret: parseConnectionSecret(scope, object.secret) } : {}) }
+  const tokenEnv = envName(scope, object.tokenEnv, 'tokenEnv')
+  const authentication = object.authentication === undefined ? undefined : parseConnectionAuth(object.authentication)
+  // TAPD has exactly one credential: a personal access token typed in the
+  // editor. There is no official-authorization path left to configure.
+  if (authentication?.mode === 'oauth') fail(scope, 'authentication')
+  return { platform: 'tapd', name, companyId, tokenEnv, enabled, ...(authentication !== undefined ? { authentication } : {}), ...(object.secret !== undefined ? { secret: parseConnectionSecret(scope, object.secret) } : {}) }
 }
 
 function parseUpdateConnection(value: unknown): UpdateConnectionRequest {
   const scope: SyncErrorScope = 'connection'
   const object = parseObject(scope, value, 'updateSyncConnection')
   closedKeys(scope, object, UPDATE_CONNECTION_KEYS, 'updateSyncConnection')
-  const hasYunxiao = object.mode !== undefined || object.organizationId !== undefined || object.regionHost !== undefined || object.tokenEnv !== undefined
-  const hasTapd = object.companyId !== undefined || object.userEnv !== undefined || object.passwordEnv !== undefined
+  const hasYunxiao = object.mode !== undefined || object.organizationId !== undefined || object.regionHost !== undefined
+  const hasTapd = object.companyId !== undefined
   if (hasYunxiao && hasTapd) fail(scope, 'updateSyncConnection')
   const out: UpdateConnectionRequest = {
     id: text(scope, object.id, 'id', ID_LIMIT, false),
@@ -228,8 +228,6 @@ function parseUpdateConnection(value: unknown): UpdateConnectionRequest {
   if (object.regionHost !== undefined) out.regionHost = object.regionHost === null ? null : text(scope, object.regionHost, 'regionHost', ID_LIMIT, true)
   if (object.tokenEnv !== undefined) out.tokenEnv = envName(scope, object.tokenEnv, 'tokenEnv')
   if (object.companyId !== undefined) out.companyId = text(scope, object.companyId, 'companyId', ID_LIMIT, true)
-  if (object.userEnv !== undefined) out.userEnv = envName(scope, object.userEnv, 'userEnv')
-  if (object.passwordEnv !== undefined) out.passwordEnv = envName(scope, object.passwordEnv, 'passwordEnv')
   if (object.secret !== undefined) out.secret = parseConnectionSecret(scope, object.secret)
   return out
 }
@@ -246,99 +244,19 @@ function parseDeleteConnection(value: unknown): DeleteConnectionRequest {
 
 // --- rules ---
 
-const FILTER_KEYS = new Set(['assignees', 'typeIds', 'iterationIds', 'statusIds'])
-const TYPE_MAPPING_KEYS = new Set(['typeId', 'category', 'readStates', 'writeStates', 'optionalFields', 'fieldIds', 'valueMaps'])
-const CREATE_RULE_KEYS = new Set(['connectionId', 'projectId', 'projectName', 'workspaceId', 'enabled', 'filters', 'mappings'])
-const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'projectName', 'workspaceId', 'enabled', 'filters', 'mappings'])
+const CREATE_RULE_KEYS = new Set(['connectionId', 'projectId', 'projectName', 'workspaceId', 'enabled', 'conditions', 'statusWriteStates'])
+const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'projectName', 'workspaceId', 'enabled', 'conditions', 'statusWriteStates'])
 
-function parseFilters(scope: SyncErrorScope, value: unknown): SyncRuleFilters {
-  const object = parseObject(scope, value, 'filters')
-  closedKeys(scope, object, FILTER_KEYS, 'filters')
-  return {
-    assignees: stringArray(scope, object.assignees, 'filters.assignees', FILTER_LIMIT, ID_LIMIT),
-    typeIds: stringArray(scope, object.typeIds, 'filters.typeIds', FILTER_LIMIT, ID_LIMIT),
-    iterationIds: stringArray(scope, object.iterationIds, 'filters.iterationIds', FILTER_LIMIT, ID_LIMIT),
-    statusIds: stringArray(scope, object.statusIds, 'filters.statusIds', FILTER_LIMIT, ID_LIMIT),
-  }
-}
-
-function parseReadStates(scope: SyncErrorScope, value: unknown): Record<string, TaskStatus> {
-  const object = parseObject(scope, value, 'readStates')
-  if (Object.keys(object).length > STATE_LIMIT) fail(scope, 'readStates')
-  const out: Record<string, TaskStatus> = {}
-  for (const [remote, local] of Object.entries(object)) {
-    const key = text(scope, remote, 'readStates', ID_LIMIT, false)
-    if (typeof local !== 'string' || !TASK_STATUSES.has(local as TaskStatus)) fail(scope, 'readStates')
-    out[key] = local as TaskStatus
-  }
+/**
+ * The rule's three local statuses, each naming the platform status it writes.
+ * Every one is required: a rule that cannot map all three is not usable.
+ */
+function parseStatusWriteStates(scope: SyncErrorScope, value: unknown): StatusWriteStates {
+  const object = parseObject(scope, value, 'statusWriteStates')
+  closedKeys(scope, object, new Set(TASK_STATUSES), 'statusWriteStates')
+  const out = {} as StatusWriteStates
+  for (const status of TASK_STATUSES) out[status] = text(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT, true)
   return out
-}
-
-function parseWriteStates(scope: SyncErrorScope, value: unknown): Record<TaskStatus, string> {
-  const object = parseObject(scope, value, 'writeStates')
-  const out = {} as Record<TaskStatus, string>
-  for (const [local, remote] of Object.entries(object)) {
-    if (!TASK_STATUSES.has(local as TaskStatus)) fail(scope, 'writeStates')
-    out[local as TaskStatus] = text(scope, remote, 'writeStates', ID_LIMIT, false)
-  }
-  return out
-}
-
-function parseOptionalFields(scope: SyncErrorScope, value: unknown): ('priority' | 'tags' | 'storyPoints')[] {
-  if (!Array.isArray(value)) fail(scope, 'optionalFields')
-  const out: ('priority' | 'tags' | 'storyPoints')[] = []
-  for (const item of value) {
-    if (!OPTIONAL_FIELDS.has(item as 'priority' | 'tags' | 'storyPoints')) fail(scope, 'optionalFields')
-    const field = item as 'priority' | 'tags' | 'storyPoints'
-    if (out.includes(field)) fail(scope, 'optionalFields')
-    out.push(field)
-  }
-  return out
-}
-
-function parseFieldIds(scope: SyncErrorScope, value: unknown): Partial<Record<SyncField, string>> {
-  const object = parseObject(scope, value, 'fieldIds')
-  const out: Partial<Record<SyncField, string>> = {}
-  for (const [field, remoteId] of Object.entries(object)) {
-    if (!SYNC_FIELD_NAMES.has(field as SyncField)) fail(scope, 'fieldIds')
-    out[field as SyncField] = text(scope, remoteId, 'fieldIds', ID_LIMIT, true)
-  }
-  return out
-}
-
-function parseValueMaps(scope: SyncErrorScope, value: unknown): Partial<Record<'priority' | 'tags', Record<string, string>>> {
-  const object = parseObject(scope, value, 'valueMaps')
-  const out: Partial<Record<'priority' | 'tags', Record<string, string>>> = {}
-  for (const [field, rawMap] of Object.entries(object)) {
-    if (field !== 'priority' && field !== 'tags') fail(scope, 'valueMaps')
-    const map = parseObject(scope, rawMap, 'valueMaps')
-    const inner: Record<string, string> = {}
-    for (const [local, remote] of Object.entries(map)) {
-      const localKey = text(scope, local, 'valueMaps', ID_LIMIT, false)
-      inner[localKey] = text(scope, remote, 'valueMaps', ID_LIMIT, false)
-    }
-    out[field] = inner
-  }
-  return out
-}
-
-function parseTypeMapping(scope: SyncErrorScope, value: unknown): TypeMapping {
-  const object = parseObject(scope, value, 'mappings')
-  closedKeys(scope, object, TYPE_MAPPING_KEYS, 'mappings')
-  return {
-    typeId: text(scope, object.typeId, 'typeId', ID_LIMIT, true),
-    category: text(scope, object.category, 'category', ID_LIMIT, true),
-    readStates: parseReadStates(scope, object.readStates),
-    writeStates: parseWriteStates(scope, object.writeStates),
-    optionalFields: parseOptionalFields(scope, object.optionalFields),
-    fieldIds: parseFieldIds(scope, object.fieldIds),
-    valueMaps: parseValueMaps(scope, object.valueMaps),
-  }
-}
-
-function parseMappings(scope: SyncErrorScope, value: unknown): TypeMapping[] {
-  if (!Array.isArray(value) || value.length > TYPES_LIMIT) fail(scope, 'mappings')
-  return value.map(item => parseTypeMapping(scope, item))
 }
 
 function parseCreateRule(value: unknown): CreateSyncRuleRequest {
@@ -351,8 +269,8 @@ function parseCreateRule(value: unknown): CreateSyncRuleRequest {
     projectName: optionalProjectName(scope, object.projectName),
     workspaceId: object.workspaceId === undefined || object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true),
     enabled: object.enabled === undefined ? false : bool(scope, object.enabled, 'enabled'),
-    filters: parseFilters(scope, object.filters),
-    mappings: parseMappings(scope, object.mappings),
+    conditions: parseWorkitemConditions(scope, object.conditions ?? []),
+    statusWriteStates: parseStatusWriteStates(scope, object.statusWriteStates),
   }
 }
 
@@ -368,8 +286,8 @@ function parseUpdateRule(value: unknown): UpdateSyncRuleRequest {
   if (object.projectName !== undefined) out.projectName = optionalProjectName(scope, object.projectName)
   if (object.workspaceId !== undefined) out.workspaceId = object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true)
   if (object.enabled !== undefined) out.enabled = bool(scope, object.enabled, 'enabled')
-  if (object.filters !== undefined) out.filters = parseFilters(scope, object.filters)
-  if (object.mappings !== undefined) out.mappings = parseMappings(scope, object.mappings)
+  if (object.conditions !== undefined) out.conditions = parseWorkitemConditions(scope, object.conditions)
+  if (object.statusWriteStates !== undefined) out.statusWriteStates = parseStatusWriteStates(scope, object.statusWriteStates)
   return out
 }
 
@@ -435,11 +353,13 @@ function parseEmpty(scope: SyncErrorScope, value: unknown, method: SyncMethod): 
 function parseListOrganizations(value: unknown): ListOrganizationsRequest {
   const scope: SyncErrorScope = 'connection'
   const object = parseObject(scope, value, 'listSyncOrganizations')
-  closedKeys(scope, object, new Set(['token', 'connectionId']), 'listSyncOrganizations')
+  closedKeys(scope, object, new Set(['token', 'connectionId', 'platform']), 'listSyncOrganizations')
   if (object.token === undefined && object.connectionId === undefined) fail(scope, 'token')
+  if (object.platform !== undefined && object.platform !== 'yunxiao' && object.platform !== 'tapd') fail(scope, 'platform')
   return {
     ...(object.token !== undefined ? { token: text(scope, object.token, 'token', SECRET_LIMIT, false) } : {}),
     ...(object.connectionId !== undefined ? { connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false) } : {}),
+    ...(object.platform !== undefined ? { platform: object.platform as 'yunxiao' | 'tapd' } : {}),
   }
 }
 
@@ -456,8 +376,13 @@ function parseOrganizationChoice(value: unknown): OrganizationChoice {
 const WORKITEM_FIELDS = new Set<string>(LIST_FIELDS)
 const ORDER_FIELDS = new Set(['gmtCreate', 'subject', 'status', 'priority', 'assignedTo'])
 const CATEGORIES = /^[A-Za-z]+(?:,[A-Za-z]+)*$/u
-const FILTER_OPERATORS = new Set(['EQUALS', 'CONTAINS', 'BETWEEN'])
-const FILTER_FIELDS = new Set(['assignedTo', 'creator', 'status', 'statusStage', 'sprint', 'workitemType', 'priority', 'tag', 'subject', 'gmtCreate', 'gmtModified', 'updateStatusAt'])
+/**
+ * The verified field/operator matrix, imported from the platform request builder
+ * so a rule query and the wire request can never disagree about which operator a
+ * field accepts.
+ */
+const CONDITION_SPECS = new Map(CONDITION_FIELDS.map(spec => [spec.field as string, spec] as const))
+const FILTER_FIELDS = new Set(CONDITION_SPECS.keys())
 const DATETIME = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?$/u
 const MAX_CONDITION_GROUPS = 10
 const MAX_CONDITIONS_PER_GROUP = 20
@@ -471,17 +396,24 @@ const MAX_FIELD_OPTIONS = 200
 /** A work item body can be long; the transport already caps a response at 2 MiB. */
 const CONTENT_LIMIT = 200_000
 
-/** One filter object; the field/operator pair is checked against the verified matrix. */
+/**
+ * One filter object; the field/operator pair is checked against the verified
+ * matrix, so a query the platform would silently ignore never reaches a rule.
+ * The matrix lives with the platform request builder, so both sides agree.
+ */
 function parseWorkitemCondition(scope: SyncErrorScope, value: unknown): WorkitemFilterCondition {
   const object = parseObject(scope, value, 'conditions')
   closedKeys(scope, object, new Set(['field', 'operator', 'value', 'toValue']), 'conditions')
   const field = text(scope, object.field, 'conditions.field', 32, true)
   if (!FILTER_FIELDS.has(field)) fail(scope, 'conditions.field')
-  const operator = object.operator === undefined ? undefined : text(scope, object.operator, 'conditions.operator', 16, true)
-  if (operator !== undefined && !FILTER_OPERATORS.has(operator)) fail(scope, 'conditions.operator')
+  const spec = CONDITION_SPECS.get(field)!
+  const operator = object.operator === undefined ? spec.operators[0]! : text(scope, object.operator, 'conditions.operator', 16, true)
+  if (!spec.operators.includes(operator as WorkitemFilterOperator)) fail(scope, 'conditions.operator')
   const values = stringArray(scope, object.value, 'conditions.value', MAX_FILTER_VALUES, FILTER_VALUE_LIMIT)
-  const out: WorkitemFilterCondition = { field, value: values }
-  if (operator !== undefined) out.operator = operator as WorkitemFilterOperator
+  // An empty value set describes no condition at all; the platform would ignore
+  // it, so it is refused here rather than silently widening the query.
+  if (values.length === 0) fail(scope, 'conditions.value')
+  const out: WorkitemFilterCondition = { field, operator: operator as WorkitemFilterOperator, value: values }
   if (object.toValue !== undefined && object.toValue !== null) {
     const to = text(scope, object.toValue, 'conditions.toValue', FILTER_VALUE_LIMIT, true)
     if (!DATETIME.test(to)) fail(scope, 'conditions.toValue')
@@ -556,17 +488,17 @@ function parseWorkitemPage(value: unknown): SafeWorkitemPage {
   }
 }
 
-/** List the selectable fields of one project category (native + custom). */
+/** List the selectable fields of one or more project categories (native + custom). */
 function parseListWorkitemFields(value: unknown): ListWorkitemFieldsRequest {
   const scope: SyncErrorScope = 'query'
   const object = parseObject(scope, value, 'listWorkitemFields')
-  closedKeys(scope, object, new Set(['connectionId', 'projectId', 'category']), 'listWorkitemFields')
-  const category = text(scope, object.category, 'category', NAME_LIMIT, true)
-  if (!CATEGORIES.test(category) || category.includes(',')) fail(scope, 'category')
+  closedKeys(scope, object, new Set(['connectionId', 'projectId', 'categories']), 'listWorkitemFields')
+  const categories = text(scope, object.categories, 'categories', NAME_LIMIT, true)
+  if (!CATEGORIES.test(categories) || categories.split(',').some(part => part.trim() === '')) fail(scope, 'categories')
   return {
     connectionId: text(scope, object.connectionId, 'connectionId', ID_LIMIT, false),
     projectId: text(scope, object.projectId, 'projectId', ID_LIMIT, true),
-    category,
+    categories,
   }
 }
 
@@ -615,7 +547,7 @@ function parseWorkitemDescriptionResult(value: unknown): SafeWorkitemDescription
   closedKeys(scope, object, new Set(['description']), 'getWorkitemDescription')
   if (object.description === null || object.description === undefined) return { description: null }
   const description = parseObject(scope, object.description, 'description')
-  closedKeys(scope, description, new Set(['format', 'html', 'plain']), 'description')
+  closedKeys(scope, description, new Set(['format', 'html', 'plain', 'content']), 'description')
   const format = text(scope, description.format, 'description.format', 16, true)
   if (format !== 'richtext' && format !== 'markdown' && format !== 'text') fail(scope, 'description.format')
   return {
@@ -623,7 +555,23 @@ function parseWorkitemDescriptionResult(value: unknown): SafeWorkitemDescription
       format,
       html: description.html === null || description.html === undefined ? null : boundedText(scope, description.html, 'description.html', CONTENT_LIMIT),
       plain: boundedText(scope, description.plain, 'description.plain', CONTENT_LIMIT),
+      content: description.content === undefined || description.content === null ? null : parseWorkitemContent(description.content),
     },
+  }
+}
+
+/**
+ * The decoded body, validated with the same closed content validator the task
+ * store uses — remote HTML never crosses the wire, only this explicit vocabulary.
+ */
+function parseWorkitemContent(value: unknown): TaskContent {
+  const scope: SyncErrorScope = 'item'
+  const object = parseObject(scope, value, 'content')
+  if (!isJsonValue(object)) fail(scope, 'content')
+  try {
+    return validateContent(object)
+  } catch {
+    return fail(scope, 'content')
   }
 }
 
@@ -697,9 +645,21 @@ function parseRemoteKey(value: unknown): RemoteKey {
   }
 }
 
-const CONNECTION_BASE_KEYS = ['id', 'name', 'enabled', 'revision', 'credentialPresent', 'instance', 'platform', 'authentication']
+const CONNECTION_BASE_KEYS = ['id', 'name', 'enabled', 'revision', 'credentialPresent', 'instance', 'platform', 'authentication', 'fillFields']
 const YUNXIAO_OUTPUT_KEYS = new Set([...CONNECTION_BASE_KEYS, 'mode', 'organizationId', 'regionHost', 'tokenEnv'])
-const TAPD_OUTPUT_KEYS = new Set([...CONNECTION_BASE_KEYS, 'companyId', 'userEnv', 'passwordEnv', 'authentication'])
+const TAPD_OUTPUT_KEYS = new Set([...CONNECTION_BASE_KEYS, 'companyId', 'tokenEnv'])
+
+/**
+ * The per-connection prefill selection: known ids only, at most one of each.
+ * An absent key means "use the default set" rather than "clear everything".
+ */
+function parseFillFields(value: unknown): WorkitemFillField[] {
+  const scope: SyncErrorScope = 'connection'
+  const known = new Set<string>(WORKITEM_FILL_FIELDS)
+  const fields = stringArray(scope, value, 'fillFields', WORKITEM_FILL_FIELDS.length, 32)
+  for (const field of fields) if (!known.has(field)) fail(scope, 'fillFields')
+  return [...new Set(fields)] as WorkitemFillField[]
+}
 
 function parseSafeConnection(value: unknown): SafeConnection {
   const scope: SyncErrorScope = 'connection'
@@ -712,6 +672,7 @@ function parseSafeConnection(value: unknown): SafeConnection {
     enabled: bool(scope, object.enabled, 'enabled'),
     revision: int(scope, object.revision, 'revision', 0, Number.MAX_SAFE_INTEGER),
     ...(object.authentication !== undefined ? { authentication: parseConnectionAuth(object.authentication) } : {}),
+    fillFields: object.fillFields === undefined ? [...DEFAULT_WORKITEM_FILL_FIELDS] : parseFillFields(object.fillFields),
     credentialPresent: bool(scope, object.credentialPresent, 'credentialPresent'),
     instance: text(scope, object.instance, 'instance', ID_LIMIT, true),
   }
@@ -731,12 +692,11 @@ function parseSafeConnection(value: unknown): SafeConnection {
   return {
     ...base, platform: 'tapd',
     companyId: text(scope, object.companyId, 'companyId', ID_LIMIT, true),
-    userEnv: envName(scope, object.userEnv, 'userEnv'),
-    passwordEnv: envName(scope, object.passwordEnv, 'passwordEnv'),
+    tokenEnv: envName(scope, object.tokenEnv, 'tokenEnv'),
   }
 }
 
-const RULE_OUTPUT_KEYS = new Set(['id', 'revision', 'connectionId', 'projectId', 'projectName', 'enabled', 'workspaceId', 'filters', 'mappings'])
+const RULE_OUTPUT_KEYS = new Set(['id', 'revision', 'connectionId', 'projectId', 'projectName', 'enabled', 'workspaceId', 'conditions', 'statusWriteStates'])
 
 function parseSyncRule(value: unknown): SyncRule {
   const scope: SyncErrorScope = 'rule'
@@ -750,8 +710,8 @@ function parseSyncRule(value: unknown): SyncRule {
     projectName: optionalProjectName(scope, object.projectName),
     enabled: bool(scope, object.enabled, 'enabled'),
     workspaceId: object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true),
-    filters: parseFilters(scope, object.filters),
-    mappings: parseMappings(scope, object.mappings),
+    conditions: parseWorkitemConditions(scope, object.conditions),
+    statusWriteStates: parseStatusWriteStates(scope, object.statusWriteStates),
   }
 }
 
