@@ -2,11 +2,11 @@ import type {
   HostCredentials, RemoteItem, RemoteKey, SyncAdapter, SyncPatch, SyncTransport, WriteEvidence, WriteIntent,
 } from '../types.ts'
 import type {
-  MetadataScope, Option, OrganizationChoice, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities,
+  MetadataScope, Option, OrganizationChoice, SafeConnection, SyncMetadata, SyncRule, TypeCapabilities, WorkitemConditionGroups,
 } from '../dto.ts'
 import {
   classifyWriteBusinessError, decodeCollection, decodeEnvelope, decodeFieldMap, decodeOptionCollection,
-  decodeStatusMap, decodeStatusOptions, decodeTapdFilterIdentity, decodeTapdItem, decodeTapdItemId,
+  decodeStatusMap, decodeStatusOptions, decodeTapdItem, decodeTapdItemId,
   decodeTransitions, decodeWorkflows, decodeWorkitemTypes, hasFieldConfig, TAPD_CATEGORY_FIELDS,
   TAPD_COLLECTION, TAPD_WORKFLOW_SYSTEM, TAPD_WORKFLOW_SYSTEM_NAME, TAPD_WRAPPER,
   type TapdCategory, type TapdWorkflow, type TapdWorkitemType,
@@ -19,21 +19,106 @@ const PAGE_SIZE = 200
 const ORIGIN = 'https://api.tapd.cn'
 
 /**
- * TAPD splits work items across three collections, so a rule's own type *is* one
- * of them. The rule names it with a `category` condition — the TAPD counterpart
- * of 云效's type — and every other condition becomes a query parameter.
+ * Only documented collection fields are evaluated. Do not flatten AND/OR groups
+ * into URL parameters: duplicate fields overwrite each other, bug field names
+ * differ, and an ignored parameter would silently widen imports. The local
+ * predicate also serves the read-only TAPD query surface.
+ * Docs: https://o.tapd.tencent.com/document/api-doc/API文档/api_reference/{story,bug,task}/
  */
-function categoryOf(rule: SyncRule): TapdCategory {
-  const value = rule.conditions.flat().find(condition => String(condition.field) === 'category')?.value[0]
-  if (value === 'story' || value === 'bug' || value === 'task') return value
-  throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'category' }))
+const CONDITION_OPERATORS: Readonly<Record<string, readonly string[]>> = {
+  category: ['EQUALS', 'CONTAINS'], workitemType: ['EQUALS', 'CONTAINS'],
+  assignedTo: ['EQUALS', 'CONTAINS'], creator: ['EQUALS', 'CONTAINS'], status: ['EQUALS', 'CONTAINS'],
+  sprint: ['CONTAINS'], priority: ['EQUALS', 'CONTAINS'], tag: ['CONTAINS'], subject: ['CONTAINS'],
+  gmtCreate: ['BETWEEN'], gmtModified: ['BETWEEN'],
+}
+const DATETIME = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?$/u
+const CONTROL = /[\u0000-\u001f]/u
+
+function invalidCondition(field: string): never {
+  throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field }))
 }
 
-/** One condition field → the TAPD query parameter that selects the same rows. */
-const CONDITION_PARAMS: Readonly<Record<string, string>> = {
-  category: 'workitem_type', workitemType: 'workitem_type_id', status: 'status', statusStage: 'status',
-  assignedTo: 'owner', creator: 'creator', priority: 'priority', sprint: 'iteration_id',
-  gmtCreate: 'created', gmtModified: 'modified', subject: 'name', tag: 'label',
+/** Compare platform wall-clock dates without guessing a browser/host timezone. */
+function dateValue(value: string, endOfDay = false): string | null {
+  const match = DATETIME.exec(value)
+  if (!match) return null
+  const [, year, month, day, hour, minute, second] = match
+  const stamp = new Date(`${year}-${month}-${day}T${hour ?? '00'}:${minute ?? '00'}:${second ?? '00'}Z`)
+  if (!Number.isFinite(stamp.getTime()) || stamp.toISOString().slice(0, 19) !== `${year}-${month}-${day}T${hour ?? '00'}:${minute ?? '00'}:${second ?? '00'}`) return null
+  return `${year}-${month}-${day} ${hour ?? (endOfDay ? '23' : '00')}:${minute ?? (endOfDay ? '59' : '00')}:${second ?? (endOfDay ? '59' : '00')}`
+}
+
+export function compileTapdConditions(groups: WorkitemConditionGroups): {
+  categories: TapdCategory[]
+  matches(category: TapdCategory, raw: unknown): boolean
+} {
+  if (!Array.isArray(groups) || groups.length > 10) invalidCondition('conditions')
+  const compiled = groups.filter(group => {
+    if (!Array.isArray(group) || group.length > 20) invalidCondition('conditions')
+    return group.length > 0
+  }).map(group => group.map(condition => {
+    if (!condition || typeof condition.field !== 'string') invalidCondition('conditions.field')
+    const field = condition.field
+    const operators = CONDITION_OPERATORS[field]
+    if (!operators) invalidCondition(`conditions.${field}`)
+    const operator = condition.operator ?? operators[0]!
+    if (!operators.includes(operator)) invalidCondition(`conditions.operator(${field})`)
+    if (!Array.isArray(condition.value) || condition.value.length === 0 || condition.value.length > 50
+      || condition.value.some(value => typeof value !== 'string' || !value.trim() || value.length > 200 || CONTROL.test(value))) invalidCondition(`conditions.value(${field})`)
+    const values = [...condition.value]
+    const type = field === 'category' || field === 'workitemType'
+    if (type && !values.every(isTapdCategory)) invalidCondition(`conditions.value(${field})`)
+    let from: string | null = null
+    let to: string | null = null
+    if (operator === 'BETWEEN') {
+      if (values.length !== 1 || typeof condition.toValue !== 'string') invalidCondition(`conditions.value(${field})`)
+      from = dateValue(values[0]!)
+      to = dateValue(condition.toValue, true)
+      if (from === null || to === null || from > to) invalidCondition(`conditions.value(${field})`)
+    } else if (condition.toValue !== undefined) invalidCondition(`conditions.toValue(${field})`)
+    return { field, values, type, from, to }
+  }))
+  const relevantGroups = (category: TapdCategory) => compiled.filter(group => group.every(condition => !condition.type || condition.values.includes(category)))
+  const categories = TAPD_CATEGORIES.filter(category => compiled.length === 0 || relevantGroups(category).length > 0)
+  return {
+    categories,
+    matches(category, raw) {
+      if (compiled.length === 0) return true
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'item' }))
+      }
+      const row = raw as Record<string, unknown>
+      return relevantGroups(category).map(group => group.map(condition => {
+        if (condition.type) return true
+        const { field, values, from, to } = condition
+        const remoteField = field === 'assignedTo' ? TAPD_CATEGORY_FIELDS[category].owner
+          : field === 'subject' ? TAPD_CATEGORY_FIELDS[category].title
+          : field === 'creator' ? (category === 'bug' ? 'reporter' : 'creator')
+          : ({ status: 'status', sprint: 'iteration_id', priority: 'priority_label', tag: 'label', gmtCreate: 'created', gmtModified: 'modified' } as Record<string, string>)[field]!
+        const value = row[remoteField]
+        if (value === undefined || (value !== null && typeof value !== 'string') || (typeof value === 'string' && CONTROL.test(value))) {
+          throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: remoteField }))
+        }
+        if (value === null || value === '') return false
+        if (from !== null && to !== null) {
+          const date = dateValue(value as string)
+          if (date === null) throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: remoteField }))
+          return date >= from && date <= to
+        }
+        if (field === 'subject') return values.some(candidate => (value as string).includes(candidate))
+        // TAPD people lists use ';', labels use '|'. Match complete identities,
+        // never substrings (alice must not match alice2).
+        const entries = field === 'assignedTo' || field === 'creator' ? (value as string).split(';').map(entry => entry.trim())
+          : field === 'tag' ? (value as string).split('|').map(entry => entry.trim()) : [value as string]
+        return values.some(candidate => entries.includes(candidate))
+      }).every(Boolean)).some(Boolean)
+    },
+  }
+}
+
+function categoryOfKey(key: RemoteKey): TapdCategory {
+  if (isTapdCategory(key.typeId)) return key.typeId
+  throw syncRemoteError(syncError('InvalidConfig', { scope: 'item', field: 'typeId' }))
 }
 
 /** The three collections a TAPD rule can target, in the platform's own order. */
@@ -43,14 +128,6 @@ const TAPD_TYPE_LABELS: Readonly<Record<TapdCategory, string>> = { story: '需�
 
 function isTapdCategory(value: string): value is TapdCategory {
   return value === 'story' || value === 'bug' || value === 'task'
-}
-
-/** The equality values of one condition field, if the rule set any. */
-function conditionValues(rule: SyncRule, field: string): string[] {
-  return rule.conditions.flat()
-    .filter(condition => String(condition.field) === field)
-    .flatMap(condition => condition.value)
-    .filter(value => value !== '')
 }
 
 /**
@@ -220,21 +297,40 @@ export function createTapdAdapter(
       candidateFields.push({ field: 'tags', remoteId: 'label', format: 'label', writable: true })
     }
 
-    const readStates = category === 'task'
-      ? decodeStatusOptions(fieldMap)
-      : await fetchStatusMap(projectId, category, category, signal)
-
+    let readStates: Option[]
     let workflow: TypeCapabilities['workflow'] = { readOnly: true }
     let writeStates: Option[] = []
-    if (category === 'task') {
-      // No workflow API; the fixed states are writable with auto_complete_effort=0.
-      workflow = { readOnly: false }
-      writeStates = readStates
+    if (category === 'story') {
+      // A story's category is not its workitem_type_id. Each subtype has its
+      // own status map and workflow; never query status_map with 'story'. The
+      // category-wide selector can safely offer writes only to states shared
+      // by every subtype with a known classic workflow.
+      const storyTypes = (await fetchWorkitemTypes(projectId, signal)).filter(type => type.entityType === 'story')
+      const statusMaps = await Promise.all(storyTypes.map(type => fetchStatusMap(projectId, category, type.id, signal)))
+      const labels = new Map<string, string>()
+      const conflicts = new Set<string>()
+      for (const options of statusMaps) for (const option of options) {
+        const previous = labels.get(option.id)
+        if (previous !== undefined && previous !== option.label) conflicts.add(option.id)
+        else labels.set(option.id, option.label)
+      }
+      readStates = [...labels].filter(([id]) => !conflicts.has(id)).map(([id, label]) => ({ id, label }))
+      if (storyTypes.length > 0 && storyTypes.every(type => resolveWorkflow(category, type.workflowId, workflows)?.type === 'classic')) {
+        workflow = { readOnly: false }
+        writeStates = readStates.filter(option => statusMaps.every(map => map.some(state => state.id === option.id)))
+      }
     } else {
-      const resolved = resolveWorkflow(category, null, workflows)
-      if (resolved !== null && resolved.type === 'classic') {
+      readStates = category === 'task' ? decodeStatusOptions(fieldMap) : await fetchStatusMap(projectId, category, category, signal)
+      if (category === 'task') {
+        // No workflow API; the fixed states are writable with auto_complete_effort=0.
         workflow = { readOnly: false }
         writeStates = readStates
+      } else {
+        const resolved = resolveWorkflow(category, null, workflows)
+        if (resolved !== null && resolved.type === 'classic') {
+          workflow = { readOnly: false }
+          writeStates = readStates
+        }
       }
     }
 
@@ -244,7 +340,7 @@ export function createTapdAdapter(
       readStates,
       writeStates,
       representation: { format: 'text', roundTrip: true },
-      paging: { kind: 'cursor' },
+      paging: { kind: 'page' },
       workflow,
       candidateFields,
     }
@@ -259,17 +355,51 @@ export function createTapdAdapter(
     signal: AbortSignal,
   ): Promise<void> {
     if (category === 'task') return
+    let workitemTypeId: string = category
+    let workflowId: string | null = null
+    if (category === 'story') {
+      // RemoteItem deliberately carries no subtype. Re-read this exact story
+      // before writing: never infer the subtype from its collection or a rule.
+      const response = await transport.read({
+        url: url('/stories', { workspace_id: key.projectId, id: key.id }),
+        method: 'GET', headers: auth(), readOnly: true,
+      }, signal)
+      const stories = decodeCollection(response.value, 'Story')
+      if (stories.length !== 1 || decodeTapdItemId(stories[0]) !== key.id) {
+        throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
+      }
+      const raw = stories[0] as Record<string, unknown>
+      if (raw.workspace_id !== key.projectId || raw.status !== currentRaw) {
+        throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
+      }
+      const subtype = raw.workitem_type_id
+      if (typeof subtype !== 'string' || !subtype.trim() || CONTROL.test(subtype)) {
+        throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'workitem_type_id' }))
+      }
+      const types = await fetchWorkitemTypes(key.projectId, signal)
+      const matches = types.filter(type => type.id === subtype && type.entityType === 'story')
+      if (matches.length !== 1 || matches[0]!.workflowId === null) {
+        throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'workitem_type_id' }))
+      }
+      workitemTypeId = subtype
+      workflowId = matches[0]!.workflowId
+    }
     const workflows = await fetchWorkflows(key.projectId, category, signal)
-    const workflow = resolveWorkflow(category, null, workflows)
-    if (workflow === null || workflow.type !== 'classic') {
+    const workflow = resolveWorkflow(category, workflowId, workflows)
+    if (workflow === null || workflow.type !== 'classic' || (category === 'story' && workflows.filter(w => w.id === workflow.id).length !== 1)) {
       throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
     }
-    const transitions = await fetchTransitions(key.projectId, category, category, signal)
-    const edge = transitions.find(t => t.source === currentRaw && t.target === targetRaw)
-    if (edge === undefined || edge.requiresUnsupported) {
-      throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
+    if (category === 'story') {
+      const states = await fetchStatusMap(key.projectId, category, workitemTypeId, signal)
+      if (!states.some(state => state.id === currentRaw) || !states.some(state => state.id === targetRaw)) {
+        throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
+      }
     }
-    if (edge.workflowId !== null && edge.workflowId !== workflow.id) {
+    const transitions = await fetchTransitions(key.projectId, category, workitemTypeId, signal)
+    const edges = transitions.filter(t => t.source === currentRaw && t.target === targetRaw)
+    const edge = edges[0]
+    if (edge === undefined || (category === 'story' && edges.length !== 1) || edge.requiresUnsupported
+      || (edge.workflowId !== null && edge.workflowId !== workflow.id)) {
       throw syncRemoteError(syncError('WorkflowRejected', { scope: 'item', field: 'status' }))
     }
   }
@@ -320,82 +450,55 @@ export function createTapdAdapter(
     },
 
     async *discover(rule: SyncRule, signal: AbortSignal): AsyncIterable<RemoteItem[]> {
-      // The rule's own type is the collection to walk; its category condition is
-      // spent on that choice and never sent as a filter parameter.
-      const category = categoryOf(rule)
-      const ownerField = TAPD_CATEGORY_FIELDS[category].owner
-      const assignees = conditionValues(rule, 'assignedTo')
-      const iterationIds = conditionValues(rule, 'sprint')
-      const statusIds = conditionValues(rule, 'status')
-      const filters = Object.entries(CONDITION_PARAMS)
-        .filter(([field]) => field !== 'category')
-        .flatMap(([field, parameter]) => {
-          const values = conditionValues(rule, field)
-          return values.length > 0 ? [[parameter, values.join('|')] as const] : []
-        })
-      let cursor: string | null = null
-      for (;;) {
-        const params: Record<string, string> = {
-          workspace_id: rule.projectId,
-          limit: String(PAGE_SIZE),
-          order: 'id desc',
-        }
-        for (const [parameter, value] of filters) params[parameter] = value
-        if (cursor === null) params.page = '1'
-        else params.cursor = cursor
-        const response = await transport.read({
-          url: url(`/${collectionFor(category)}`, params),
-          method: 'GET',
-          headers: auth(),
-          readOnly: true,
-        }, signal)
-        const rawItems = decodeCollection(response.value, wrapperFor(category))
-        if (rawItems.length > PAGE_SIZE) {
-          throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'connection', field: 'page' }))
-        }
-        const batch: RemoteItem[] = []
-        for (const rawItem of rawItems) {
-          const item = decodeTapdItem(rawItem, {
-            instance, projectId: rule.projectId, typeId: category, category, statusWriteStates: rule.statusWriteStates,
-          })
-          // The platform already filtered, but a silently ignored parameter would
-          // widen the scope, so the identity-bearing ones are verified once more.
-          if (statusIds.length > 0 && !statusIds.includes(item.rawStatus)) continue
-          const identity = decodeTapdFilterIdentity(rawItem, ownerField)
-          if (assignees.length > 0) {
-            if (identity.owner.kind === 'absent' || identity.owner.kind === 'malformed') {
-              throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: ownerField }))
-            }
-            if (identity.owner.kind === 'null') continue
-            if (!assignees.includes(identity.owner.id)) continue
+      const filter = compileTapdConditions(rule.conditions)
+      for (const category of filter.categories) {
+        const seen = new Set<string>()
+        let previousLast: bigint | null = null
+        // TAPD documents page/limit, not cursor. Bound even a server that keeps
+        // fabricating forward pages; the executor also has a wall-clock budget.
+        for (let page = 1; ; page += 1) {
+          if (page > 10_000) throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection', field: 'page' }))
+          const response = await transport.read({
+            url: url(`/${collectionFor(category)}`, {
+              workspace_id: rule.projectId, limit: String(PAGE_SIZE), page: String(page), order: 'id desc',
+            }),
+            method: 'GET', headers: auth(), readOnly: true,
+          }, signal)
+          const rawItems = decodeCollection(response.value, wrapperFor(category))
+          if (rawItems.length > PAGE_SIZE) {
+            throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'connection', field: 'page' }))
           }
-          if (iterationIds.length > 0) {
-            if (identity.iteration.kind === 'absent' || identity.iteration.kind === 'malformed') {
-              throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'iteration_id' }))
-            }
-            if (identity.iteration.kind === 'null') continue
-            if (!iterationIds.includes(identity.iteration.id)) continue
+          const batch: RemoteItem[] = []
+          let last: bigint | null = null
+          for (const rawItem of rawItems) {
+            const id = decodeTapdItemId(rawItem)
+            // IDs are decimal strings (larger than JS safe integers). Descending
+            // order must be honored; repeated/overlapping rows are deduplicated.
+            if (!/^\d+$/u.test(id)) throw syncRemoteError(syncError('InvalidRemoteResponse', { scope: 'item', field: 'id' }))
+            const numericId = BigInt(id)
+            if (last !== null && numericId > last) throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection', field: 'order' }))
+            last = numericId
+            if (seen.has(id)) continue
+            seen.add(id)
+            if (!filter.matches(category, rawItem)) continue
+            batch.push(decodeTapdItem(rawItem, {
+              instance, projectId: rule.projectId, typeId: category, category, statusWriteStates: rule.statusWriteStates,
+            }))
           }
-          batch.push(item)
+          // Detect an ignored page parameter before yielding duplicate data or
+          // claiming completeness, including a repeated *short* terminal page.
+          if (last !== null && previousLast !== null && last >= previousLast) {
+            throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection', field: 'page' }))
+          }
+          yield batch
+          if (rawItems.length < PAGE_SIZE) break
+          previousLast = last
         }
-        yield batch
-        if (rawItems.length < PAGE_SIZE) break
-        // Full page: advance the ID cursor from the last raw item's id.
-        let lastId: string
-        try {
-          lastId = decodeTapdItemId(rawItems[rawItems.length - 1]!)
-        } catch {
-          throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
-        }
-        if (cursor !== null && lastId === cursor) {
-          throw syncRemoteError(syncError('IncompleteDiscovery', { scope: 'connection' }))
-        }
-        cursor = lastId
       }
     },
 
     async read(key: RemoteKey, rule: SyncRule, signal: AbortSignal): Promise<RemoteItem> {
-      const category = isTapdCategory(key.typeId) ? key.typeId : categoryOf(rule)
+      const category = categoryOfKey(key)
       const response = await transport.read({
         url: url(`/${collectionFor(category)}`, { workspace_id: key.projectId, id: key.id }),
         method: 'GET',
@@ -426,7 +529,7 @@ export function createTapdAdapter(
         }
       }
       if (patch.status === undefined) return
-      const category = isTapdCategory(key.typeId) ? key.typeId : categoryOf(rule)
+      const category = categoryOfKey(key)
       const targetRaw = encodeStatus(patch.status, observed.rawStatus, rule.statusWriteStates)
       if (targetRaw === observed.rawStatus) return
       await gateStatusWrite(key, category, observed.rawStatus, targetRaw, signal)

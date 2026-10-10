@@ -200,9 +200,6 @@ export class SyncExecutor {
       for (const connection of connections) {
         if (signal.aborted || overBudget()) { discoveryComplete = false; unprocessedKnown = null; break }
         if (!connection.enabled) continue
-        // Sync is Yunxiao-only: a stored connection of another platform is skipped
-        // rather than failing the run it happens to share a database with.
-        if (connection.platform !== 'yunxiao') continue
         const rules = this.config.listRules(connection.id)
         for (const rule of rules) {
           if (signal.aborted || overBudget()) { discoveryComplete = false; unprocessedKnown = null; break }

@@ -13,6 +13,7 @@ const t = (key: TaskKey) => zh[key]
 const connections = [
   { id: 'conn-1', name: '云效 · Alpha', platform: 'yunxiao', enabled: true, fillFields: ['title', 'description', 'number'] },
   { id: 'conn-2', name: '云效 · Beta', platform: 'yunxiao', enabled: false, fillFields: ['title', 'number'] },
+  { id: 'conn-3', name: 'TAPD · Gamma', platform: 'tapd', enabled: true, fillFields: ['title'] },
 ]
 const projects = [{ id: 'space-1', label: 'Project One' }, { id: 'space-2', label: 'Project Two' }]
 
@@ -99,10 +100,19 @@ async function open(options: {
 }
 
 describe('more tasks page', () => {
+  it('uses TAPD categories for both the field catalog and the page query', async () => {
+    const { calls, fieldCalls } = await open()
+    fireEvent.change(screen.getByLabelText(zh.moreTasksConnection), { target: { value: 'conn-3' } })
+    await waitFor(() => {
+      expect(fieldCalls.some(call => call.connectionId === 'conn-3' && call.categories === 'story,bug,task')).toBe(true)
+      expect(calls.some(call => call.connectionId === 'conn-3' && call.categories === 'story,bug,task')).toBe(true)
+    })
+  })
+
   it('loads the first connection and project, then lists the platform columns', async () => {
     const { calls, fieldCalls } = await open()
     const select = screen.getByLabelText(zh.moreTasksConnection) as HTMLSelectElement
-    expect(Array.from(select.options).map(option => option.textContent)).toEqual(['云效 · Alpha', '云效 · Beta'])
+    expect(Array.from(select.options).map(option => option.textContent)).toEqual(['云效 · Alpha', '云效 · Beta', 'TAPD · Gamma'])
     expect(select.value).toBe('conn-1')
     expect((screen.getByLabelText(zh.moreTasksProject) as HTMLSelectElement).value).toBe('space-1')
     expect(fieldCalls[0]).toEqual({ connectionId: 'conn-1', projectId: 'space-1', categories: 'Req,Bug,Task' })

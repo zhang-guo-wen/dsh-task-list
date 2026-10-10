@@ -1,5 +1,4 @@
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { Page, SafeItemResult, SafeRun } from '../../sync/dto.ts'
+import type { SafeRun } from '../../sync/dto.ts'
 import type { TaskKey } from '../locales.ts'
 import css from './Sync.module.css'
 export type SyncTranslate = (key: TaskKey) => string
@@ -21,29 +20,27 @@ export function SyncFailure({ error, t }: { error: unknown; t: SyncTranslate }) 
   const cause = typeof detail.cause === 'string' ? detail.cause : ''
   return <p role="alert" className={css.error}>{t(key)} {code && <code>{cause !== '' ? `${code}: ${cause}` : code}</code>}</p>
 }
-export function SyncResults({ run, items, t, changePage }: { run: SafeRun; items: Page<SafeItemResult>; t: SyncTranslate; changePage: (page: number) => void }) {
+
+/** A dismissible run summary; item IDs are not task-list content. */
+export function SyncResults({ run, t, onDismiss }: { run: SafeRun; t: SyncTranslate; onDismiss: () => void }) {
   const label = run.status === 'running' ? 'syncRunning' : run.status === 'completed' ? 'syncCompleted' : run.status === 'interrupted' ? 'syncInterrupted' : run.status === 'partial' ? 'syncPartial' : 'syncFailed'
   const count = run.counts
+  const summary = Object.entries(categories)
+    .filter(([key]) => count[key as keyof typeof categories] > 0)
+    .map(([key, text]) => `${t(text)}：${count[key as keyof typeof categories]}`)
+  if (count.pending > 0) summary.push(`${t('syncPending')}：${count.pending}`)
   return <section className={css.results} aria-label={t('syncResults')}>
-    <strong role="status" aria-live="polite">{t(label)}</strong>
-    <p>{Object.entries(categories).map(([key, text]) => `${t(text)}：${count[key as keyof typeof categories]}`).join(' · ')} · {t('syncPending')}：{count.pending}</p>
-    {!run.discoveryComplete && <p>{t('syncIncomplete')}</p>}
-    {count.pending > 0 && <p>{t('syncPendingHint')}</p>}
-    {run.status === 'completed' && count.unchanged > 0 && count.imported + count.pulled + count.pushed + count.merged + count.failed === 0 && <p>{t('syncUnchanged')}</p>}
-    {run.errors.map((error, index) => <SyncFailure key={index} error={error} t={t} />)}
-    <ul className={css.resultList}>{items.items.map(item => <li key={`${item.key.instance}:${item.key.projectId}:${item.key.typeId}:${item.key.id}`}>
-      <span>{item.key.id} · {t(categories[item.category])}</span>
-      {item.outsideFilter && <span>{t('syncOutside')}</span>}
-      {item.error && <SyncFailure error={item.error} t={t} />}
-      {(item.discardedFields.length > 0 || item.writtenBack) && <details><summary>{t('syncDetails')}</summary>
-        {item.discardedFields.length > 0 && <p>{t('syncDiscarded')}: {item.discardedFields.join(', ')}</p>}
-        {item.writtenBack && <p>{t('syncWritten')}: {item.changedFields.join(', ')}</p>}
-      </details>}
-    </li>)}</ul>
-    {items.total > 20 && <div className={css.actions}>
-      <Button size="sm" disabled={items.page <= 1} onClick={() => changePage(items.page - 1)}>{t('prevPage')}</Button>
-      <span>{items.page} / {Math.ceil(items.total / 20)}</span>
-      <Button size="sm" disabled={items.page * 20 >= items.total} onClick={() => changePage(items.page + 1)}>{t('nextPage')}</Button>
-    </div>}
+    <div className={css.resultHeading}>
+      <strong role="status" aria-live="polite">{t(label)}</strong>
+      <button type="button" className={css.noticeClose} onClick={onDismiss}>{t('syncCloseResult')}</button>
+    </div>
+    {summary.length > 0 && <p className={css.resultSummary}>{summary.join(' · ')}</p>}
+    <p className={css.resultHint}>{t('syncScope')}</p>
+    {run.status !== 'running' && !run.discoveryComplete && <p className={css.resultHint}>{t('syncIncomplete')}</p>}
+    {count.pending > 0 && <p className={css.resultHint}>{t('syncPendingHint')}</p>}
+    {run.errors.length > 0 && <details className={css.resultErrors}>
+      <summary>{t('syncFailed')}：{run.errors.length}</summary>
+      <div>{run.errors.map((error, index) => <SyncFailure key={index} error={error} t={t} />)}</div>
+    </details>}
   </section>
 }

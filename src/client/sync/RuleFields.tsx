@@ -38,11 +38,11 @@ export const RULE_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'don
  * platform reports statuses per type; a rule maps one local status to one of
  * them, so the union is what the editor offers.
  */
-export function projectStatuses(metadata: SyncMetadata | null): Option[] {
+export function projectStatuses(metadata: SyncMetadata | null, mode: 'read' | 'write' = 'write'): Option[] {
   if (metadata === null) return []
   const out = new Map<string, Option>()
   for (const capability of metadata.typeCapabilities) {
-    for (const status of capability.writeStates) if (!out.has(status.id)) out.set(status.id, status)
+    for (const status of mode === 'read' ? capability.readStates : capability.writeStates) if (!out.has(status.id)) out.set(status.id, status)
   }
   return [...out.values()]
 }

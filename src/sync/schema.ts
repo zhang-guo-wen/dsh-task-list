@@ -3,7 +3,7 @@ import type { RemoteKey } from './types.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 
 /** Schema version the sync tables land in; the store refuses anything newer. */
-export const SYNC_SCHEMA_VERSION = 13
+export const SYNC_SCHEMA_VERSION = 14
 
 /**
  * Stable, unique serialization of a remote identity. Ids stay strings and may
@@ -252,11 +252,23 @@ function migrateV7ToV8(db: DatabaseSync): void {
     )`)
 }
 
+/** Legacy rules have no three-status mapping; disable them until the user edits them. */
+function migrateV13ToV14(db: DatabaseSync): void {
+  const columns = tableColumns(db, 'sync_rules')
+  if (!hasAll(columns, ['conditions', 'status_write_states'])) throw storageShapeError('sync_rules')
+  db.exec(`UPDATE sync_rules SET enabled = 0 WHERE status_write_states = '{}' AND enabled = 1`)
+}
+
 /** Create or advance the sync tables to the current version; any failure rolls the whole DDL back. */
 export function migrateSyncSchema(db: DatabaseSync): void {
   const version = readUserVersion(db)
   if (version > SYNC_SCHEMA_VERSION) throw new Error(`unsupported task database version: ${version}`)
   if (version === SYNC_SCHEMA_VERSION) return
+  if (version === 13) {
+    migrateV13ToV14(db)
+    db.exec(`PRAGMA user_version = ${SYNC_SCHEMA_VERSION}`)
+    return
+  }
   if (version < 6) {
     // Sync tables are introduced at version 6, so there is nothing to preserve.
     db.exec(syncSchema)
@@ -298,5 +310,6 @@ export function migrateSyncSchema(db: DatabaseSync): void {
     if (!ruleColumns.has('conditions')) db.exec(`ALTER TABLE sync_rules ADD COLUMN conditions TEXT NOT NULL DEFAULT '[]'`)
     if (!ruleColumns.has('status_write_states')) db.exec(`ALTER TABLE sync_rules ADD COLUMN status_write_states TEXT NOT NULL DEFAULT '{}'`)
   }
+  migrateV13ToV14(db)
   db.exec(`PRAGMA user_version = ${SYNC_SCHEMA_VERSION}`)
 }

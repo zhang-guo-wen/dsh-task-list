@@ -41,16 +41,21 @@ export function SyncActions({ addLabel, onCreate, panel, t }: {
  */
 export function SyncStatus({ panel, t }: { panel: SyncPanel; t: SyncTranslate }) {
   const { run, prompt, scopeError, dismiss } = panel
-  if (prompt === null && scopeError === null && run.queryError === null && run.run === null) return null
+  if (panel.hidden) return null
+  const visibleRun = run.run?.id === panel.dismissedRunId ? null : run.run
+  if (prompt === null && scopeError === null && run.queryError === null && visibleRun === null) return null
   return <section className={css.status} aria-label={t('syncResults')}>
-    {prompt !== null && <p className={css.notice} role="status">{t(prompt === 'none' ? 'syncNoConnection' : 'syncNoScope')}
+    {prompt !== null && <p className={css.notice} role="status">{t(prompt === 'none' ? 'syncNoConnection' : prompt === 'noRule' ? 'syncNoEnabledRule' : 'syncNoScope')}
       <button type="button" className={css.noticeClose} onClick={dismiss}>{t('syncNoticeDismiss')}</button></p>}
-    {scopeError !== null && <SyncFailure error={scopeError} t={t} />}
-    {run.queryError !== null && <>
-      <SyncFailure error={run.queryError} t={t} />
-      <p>{t('syncQueryFailed')}</p>
-      <Button onClick={() => void run.reconnect()}>{t('syncReconnect')}</Button>
-    </>}
-    {run.run && <SyncResults run={run.run} items={run.items} t={t} changePage={run.changePage} />}
+    {scopeError !== null && <div className={css.statusError}>
+      <SyncFailure error={scopeError} t={t} />
+      <button type="button" className={css.noticeClose} onClick={dismiss}>{t('syncCloseResult')}</button>
+    </div>}
+    {run.queryError !== null && <div className={css.statusError}>
+      <div><SyncFailure error={run.queryError} t={t} /><p>{t('syncQueryFailed')}</p>
+        <Button onClick={() => void run.reconnect()}>{t('syncReconnect')}</Button></div>
+      <button type="button" className={css.noticeClose} onClick={dismiss}>{t('syncCloseResult')}</button>
+    </div>}
+    {visibleRun && <SyncResults run={visibleRun} t={t} onDismiss={dismiss} />}
   </section>
 }

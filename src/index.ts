@@ -20,6 +20,7 @@ import { SyncService } from './sync/service.ts'
 import { SyncTransport } from './sync/transport.ts'
 import { createYunxiaoAdapter, listYunxiaoOrganizations } from './sync/adapters/yunxiao.ts'
 import { createYunxiaoQuery } from './sync/adapters/yunxiao-query.ts'
+import { createTapdQuery } from './sync/adapters/tapd-query.ts'
 import { createTapdAdapter, listTapdOrganizations } from './sync/adapters/tapd.ts'
 import type { AdapterFactory, Clock } from './sync/types.ts'
 import type { WorkitemQueryFactory } from './sync/service.ts'
@@ -105,14 +106,16 @@ export function apply(ctx: Context, config: Config = {}): void {
   // The read-only query surface reuses the same credential resolution, but its
   // gate is a no-op: it never runs inside a sync run's ownership fence.
   const queryFactory: WorkitemQueryFactory = async connection => {
-    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
     const transport = new SyncTransport({ fetch: globalThis.fetch, clock: realClock, beforeRequest: () => {} })
     if (connection.authentication?.mode === 'oauth') {
+      if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'authentication' }))
       const token = await authorization.yunxiaoToken(connection)
       if (token === null) throw syncRemoteError(syncError('CredentialMissing', { scope: 'connection', field: 'authentication' }))
       return createYunxiaoQuery(connection, transport, undefined, { kind: 'yunxiao', token })
     }
     const stored = secrets.store ? await secrets.store.read(connection.id) : null
+    if (connection.platform === 'tapd') return createTapdQuery(connection, transport, undefined, stored?.platform === 'tapd' ? { kind: 'tapd', token: stored.token } : undefined)
+    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
     return createYunxiaoQuery(connection, transport, undefined, stored?.platform === 'yunxiao' ? { kind: 'yunxiao', token: stored.token } : undefined)
   }
   const sync = new SyncService({

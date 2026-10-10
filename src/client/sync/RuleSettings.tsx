@@ -20,7 +20,7 @@ const flattenConditions = (rule: SyncRule | null): WorkitemFilterCondition[] =>
 
 /** One group means the conditions are ANDed, which is the editor's own wording. */
 const toGroups = (conditions: readonly WorkitemFilterCondition[]): WorkitemConditionGroups =>
-  conditions.length === 0 ? [] : [[...conditions]]
+  conditions.every(condition => condition.value.length === 0) ? [] : [[...conditions.filter(condition => condition.value.some(value => value.trim() !== ''))]]
 
 /** A new rule starts unmapped, so saving without choosing a target is refused. */
 const emptyStatuses = (): StatusWriteStates => ({ todo: '', in_progress: '', done: '' })
@@ -48,6 +48,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
   const [statusWriteStates, setStatusWriteStates] = useState<StatusWriteStates>(rule?.statusWriteStates ?? emptyStatuses())
   const [metadata, setMetadata] = useState<SyncMetadata | null>(null)
   const [priorities, setPriorities] = useState<ConditionOptions['priority']>([])
+  const [loadedProjectId, setLoadedProjectId] = useState('')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [armed, setArmed] = useState(false)
@@ -56,7 +57,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
   const mounted = useRef(true)
   const saving = useRef(false)
   const connection = connections.find(item => item.id === connectionId)
-  const scopeReady = Boolean(connection && projectId && !loading)
+  const scopeReady = Boolean(connection && projectId && loadedProjectId === projectId && !loading)
   const mappingComplete = Object.values(statusWriteStates).every(target => target.trim() !== '')
   const ready = Boolean(scopeReady && mappingComplete)
   /**
@@ -68,24 +69,34 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
   const load = async (id: string, project = '') => {
     if (!id) return
     const revision = ++generation.current
-    setLoading(true); setError(null); setMetadata(null); setPriorities([])
+    setLoading(true); setError(null); setMetadata(null); setPriorities([]); setLoadedProjectId('')
     try {
-      const next = await face.getSyncMetadata({ connectionId: id, ...(project ? { projectId: project } : {}) })
+      let next = await face.getSyncMetadata({ connectionId: id, ...(project ? { projectId: project } : {}) })
       if (!mounted.current || revision !== generation.current) return
       setMetadata(next)
-      // The connection-level read preselects the first project, so the editor
-      // continues without a second click.
-      if (project === '' && next.projects.length > 0) setProjectId(current => current === '' ? next.projects[0]!.id : current)
-      if (project === '') return
+      // Preselection must perform the same project-scoped read as a click.
+      // Connection metadata only contains projects, not the picker candidates.
+      if (project === '') {
+        project = next.projects[0]?.id ?? ''
+        setProjectId(project)
+        if (project === '') return
+        next = await face.getSyncMetadata({ connectionId: id, projectId: project })
+        if (!mounted.current || revision !== generation.current) return
+        setMetadata(next)
+      }
+      setLoadedProjectId(project)
       // Priority is a project custom field; its candidate values come from the
       // field catalog the "more tasks" page already reads. A refused catalog only
       // costs that picker its options.
       try {
-        const fields = await listWorkitemFields({ connectionId: id, projectId: project, categories: 'Req,Bug,Task' })
+        const categories = connections.find(item => item.id === id)?.platform === 'tapd' ? 'story,bug,task' : 'Req,Bug,Task'
+        const fields = await listWorkitemFields({ connectionId: id, projectId: project, categories })
         if (mounted.current && revision === generation.current) {
           setPriorities(fields.find(field => field.id === 'priority')?.options ?? [])
         }
-      } catch { /* the priority picker simply stays empty */ }
+      } catch (failure) {
+        if (mounted.current && revision === generation.current) setError(failure)
+      }
     } catch (failure) { if (mounted.current && revision === generation.current) setError(failure) }
     finally { if (mounted.current && revision === generation.current) setLoading(false) }
   }
@@ -99,13 +110,13 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
     void load(id)
   }
   const changeProject = (id: string) => {
-    if (id === projectId) return
-    setProjectId(id); setConditions([]); void load(connectionId, id)
+    if (id === projectId && loadedProjectId === id) return
+    setProjectId(id); setConditions([]); setStatusWriteStates(emptyStatuses()); void load(connectionId, id)
   }
   /** Values the query editor offers; each one comes from the platform's own list. */
   const options: ConditionOptions = {
     ...EMPTY_CONDITION_OPTIONS,
-    status: projectStatuses(metadata),
+    status: projectStatuses(metadata, 'read'),
     user: metadata?.members ?? [],
     sprint: metadata?.iterations ?? [],
     type: metadata?.types ?? [],
@@ -113,7 +124,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
   }
   const statuses = projectStatuses(metadata)
   const save = async () => {
-    if (saving.current || !scopeReady || (rule?.enabled === true && !ready)) return
+    if (saving.current || !ready) return
     saving.current = true; setBusy(true); setError(null)
     try {
       // The project's display name travels with the rule, so the roster can name
@@ -151,7 +162,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
     <ol className={css.steps} aria-label={t('syncRule')}>
       {(['syncStepScope', 'syncStepQuery', 'syncStepStatus'] as const).map((key, index) => <li key={key} aria-current={step === index + 1 ? 'step' : undefined} data-active={step === index + 1}>{t(key)}</li>)}
     </ol>
-    {error !== null && <SyncFailure error={error} t={t} />}
+    {error !== null && <><SyncFailure error={error} t={t} /><Button disabled={loading} onClick={() => void load(connectionId, projectId)}>{t('retry')}</Button></>}
     <div className={css.editorBox}>
     {step === 1 && <>
       <div className={css.formGrid}>
@@ -168,7 +179,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
     </>}
     {step === 2 && <>
       <h4 className={css.editorTitle}>{t('syncConditions')}</h4>
-      <ConditionBuilder conditions={conditions} options={options} t={t} onChange={setConditions} />
+      <ConditionBuilder conditions={conditions} options={options} t={t} platform={connection?.platform ?? 'yunxiao'} onChange={setConditions} />
       {loading && <p>{t('loading')}</p>}
     </>}
     {step === 3 && <>
@@ -192,7 +203,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
         <Button disabled={busy} onClick={() => (step === 1 ? onBack() : setStep(step - 1))}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
         {step < 3
           ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !scopeReady} onClick={() => { setError(null); setStep(step + 1) }}>{t('syncNext')}</Button>
-          : <Button variant="primary" disabled={busy || (rule?.enabled === true && !ready)} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
+          : <Button variant="primary" disabled={busy || !ready} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
       </div>
     </div>
     </div>

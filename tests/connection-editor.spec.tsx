@@ -54,11 +54,33 @@ describe('connection editor usability', () => {
     editor({ connection: null })
     expect(screen.getByLabelText(zh.fillCustomFields)).toBeTruthy()
     expect(screen.getByLabelText(zh.fillSource)).toBeTruthy()
-    // The platform selector is gone: 云效 Projex is the only platform this
-    // editor can configure, and the retired TAPD-only fields never appear.
-    expect(screen.queryByRole('button', { name: zh.syncPlatform })).toBeNull()
+    // New connections offer both platforms; defaults still belong to 云效.
+    expect(screen.getByRole('button', { name: zh.syncPlatform })).toBeTruthy()
     expect(screen.queryByLabelText(zh.fillTags)).toBeNull()
     expect(screen.queryByLabelText(zh.fillCreator)).toBeNull()
+  })
+
+  it('offers TAPD, reads its organizations and saves a token-only connection', async () => {
+    const requests: unknown[] = []
+    const saved: unknown[] = []
+    editor({ connection: null, face: {
+      listSyncOrganizations: async request => { requests.push(request); return [{ id: '2001', name: '研发公司' }] },
+      createSyncConnection: async request => { saved.push(request); return { ...request, id: 'tapd-new', revision: 1, credentialPresent: true, instance: '2001' } as never },
+    } })
+    fireEvent.click(screen.getByRole('button', { name: zh.syncPlatform }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: zh.syncTapd }))
+    expect(screen.queryByRole('button', { name: zh.syncLoginCloud })).toBeNull()
+    expect(screen.getByLabelText(zh.fillTags)).toBeTruthy()
+    expect(screen.getByLabelText(zh.fillCreator)).toBeTruthy()
+    expect(screen.queryByLabelText(zh.fillCustomFields)).toBeNull()
+    fireEvent.change(screen.getByLabelText(zh.syncToken), { target: { value: 'tapd-pat' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.syncOrganization }))
+    await waitFor(() => expect(screen.getByRole('button', { name: zh.syncOrganization }).textContent).toContain('研发公司'))
+    fireEvent.click(screen.getByRole('button', { name: zh.syncSaveConnection }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(requests).toEqual([{ platform: 'tapd', token: 'tapd-pat' }])
+    expect(saved[0]).toMatchObject({ platform: 'tapd', companyId: '2001', authentication: { mode: 'manual' }, tokenEnv: 'TASK_LIST_TAPD_TOKEN', secret: { platform: 'tapd', token: 'tapd-pat' } })
+    expect(saved[0]).not.toHaveProperty('organizationId')
   })
 
   it('saves the picked organization together with the typed token', async () => {

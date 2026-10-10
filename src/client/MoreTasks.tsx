@@ -21,6 +21,7 @@ import css from './MoreTasks.module.css'
  */
 const WORKITEM_CATEGORIES = ['Req', 'Bug', 'Task'] as const
 const CATEGORIES = WORKITEM_CATEGORIES.join(',')
+const TAPD_CATEGORIES = 'story,bug,task'
 
 const PAGE_SIZES = [20, 50, 100, 200] as const
 
@@ -256,7 +257,7 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
     sync.listSyncConnections()
       .then(list => {
         if (cancelled) return
-        const usable = list.filter(connection => connection.platform === 'yunxiao')
+        const usable = list
         setConnections(usable)
         const first = usable.find(connection => connection.enabled) ?? usable[0]
         if (first !== undefined) setConnectionId(first.id)
@@ -286,6 +287,8 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
   // It is cleared only when the project really changes, and replaced only when
   // the payload differs: a fresh array of the same fields would cascade into a
   // new projection and re-fetch the list on every parent render.
+  const platform = connections?.find(connection => connection.id === connectionId)?.platform ?? 'yunxiao'
+  const categories = platform === 'tapd' ? TAPD_CATEGORIES : CATEGORIES
   const catalogKey = `${connectionId}\u0000${projectId}`
   const loadedCatalogKey = useRef<string | null>(null)
   useEffect(() => {
@@ -295,14 +298,14 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
       setFields(null)
     }
     let cancelled = false
-    listWorkitemFields({ connectionId, projectId, categories: CATEGORIES })
+    listWorkitemFields({ connectionId, projectId, categories })
       .then(list => {
         if (cancelled) return
         setFields(current => (sameCatalog(current, list) ? current : list))
       })
       .catch(() => { if (!cancelled) setFields(current => (current !== null && current.length === 0 ? current : [])) })
     return () => { cancelled = true }
-  }, [listWorkitemFields, connectionId, projectId, catalogKey])
+  }, [listWorkitemFields, connectionId, projectId, catalogKey, categories])
 
   const catalog = useMemo(() => buildCatalog(fields ?? []), [fields])
   const byKey = useMemo(() => new Map(catalog.map(column => [column.key, column])), [catalog])
@@ -367,7 +370,7 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
     listWorkitems({
       connectionId,
       projectId,
-      categories: CATEGORIES,
+      categories,
       page,
       perPage: pageSize,
       fields: [...native],
@@ -383,7 +386,7 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
         setError(failure instanceof Error ? failure.message : String(failure))
       })
       .finally(() => { if (id === sequence.current) setBusy(false) })
-  }, [listWorkitems, connectionId, projectId, page, pageSize, columns, selected, title, conditions])
+  }, [listWorkitems, connectionId, projectId, page, pageSize, columns, selected, title, conditions, categories])
 
   useEffect(load, [load])
 
@@ -445,7 +448,7 @@ export function MoreTasks({ sync, listWorkitems, listWorkitemFields, getWorkitem
    * Every verified filter field is offered; the platform decides what each one
    * means. The cap stays at two conditions plus the title search.
    */
-  const availableFilters = useMemo(() => FILTER_FIELDS.map(field => field.id), [])
+  const availableFilters = useMemo(() => FILTER_FIELDS.filter(field => platform !== 'tapd' || field.id !== 'statusStage').map(field => field.id), [platform])
   const conditionLimit = Math.min(MAX_CONDITIONS, availableFilters.length)
   const addCondition = (): void => {
     setConditions(current => {

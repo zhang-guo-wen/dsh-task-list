@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Option, WorkitemFilterCondition } from '../../sync/dto.ts'
 import { CONDITION_FIELDS, type ConditionFieldSpec, type WorkitemFilterField } from '../../sync/query/filters.ts'
 import type { TaskKey } from '../locales.ts'
@@ -63,11 +63,11 @@ function ValueChoice({ label, options, selected, onChange, empty }: {
       onClick={() => setOpen(!open)}><span className={css.choiceValue}>{summary}</span><IconChevronDownOutlineRegular size={14} /></Button>} />
 }
 
-function FieldChoice({ label, value, onChange, t }: { label: string; value: WorkitemFilterField; onChange: (field: WorkitemFilterField) => void; t: SyncTranslate }) {
+function FieldChoice({ label, value, onChange, t, fields }: { label: string; value: WorkitemFilterField; onChange: (field: WorkitemFilterField) => void; t: SyncTranslate; fields: typeof RULE_CONDITION_FIELDS }) {
   const [open, setOpen] = useState(false)
   const current = RULE_CONDITION_FIELDS.find(entry => entry.spec.field === value)?.label
   return <Menu open={open} onClose={() => setOpen(false)} selectedId={value}
-    items={RULE_CONDITION_FIELDS.map(entry => ({ id: entry.spec.field, label: t(entry.label) }))} className={css.choiceAnchor}
+    items={fields.map(entry => ({ id: entry.spec.field, label: t(entry.label) }))} className={css.choiceAnchor}
     onSelect={id => { onChange(id as WorkitemFilterField); setOpen(false) }}    anchor={<Button variant="outline" aria-label={label} aria-haspopup="menu" aria-expanded={open}
       onClick={() => setOpen(!open)}><span className={css.choiceValue}>{current === undefined ? '—' : t(current)}</span><IconChevronDownOutlineRegular size={14} /></Button>} />
 }
@@ -81,12 +81,14 @@ function DateRange({ from, to, onChange, t }: { from: string; to: string; onChan
   </div>
 }
 
-export function ConditionBuilder({ conditions, options, t, onChange }: {
+export function ConditionBuilder({ conditions, options, t, onChange, platform = 'yunxiao' }: {
   conditions: readonly WorkitemFilterCondition[]
   options: ConditionOptions
   t: SyncTranslate
   onChange: (next: WorkitemFilterCondition[]) => void
+  platform?: 'yunxiao' | 'tapd'
 }) {
+  const fields = platform === 'tapd' ? RULE_CONDITION_FIELDS.filter(entry => !['statusStage', 'updateStatusAt'].includes(entry.spec.field)) : RULE_CONDITION_FIELDS
   const update = (index: number, patch: Partial<WorkitemFilterCondition>): void => {
     onChange(conditions.map((condition, position) => position === index ? { ...condition, ...patch } : condition))
   }
@@ -97,7 +99,7 @@ export function ConditionBuilder({ conditions, options, t, onChange }: {
     CONDITION_FIELDS.find(entry => entry.field === field)?.operators[0] ?? 'EQUALS'
   const add = (): void => {
     const used = new Set(conditions.map(condition => condition.field))
-    const free = RULE_CONDITION_FIELDS.find(entry => !used.has(entry.spec.field)) ?? RULE_CONDITION_FIELDS[0]!
+    const free = fields.find(entry => !used.has(entry.spec.field)) ?? fields[0]!
     onChange([...conditions, { field: free.spec.field, operator: primaryOperator(free.spec.field), value: [] }])
   }
   return <div className={css.conditions}>
@@ -108,13 +110,24 @@ export function ConditionBuilder({ conditions, options, t, onChange }: {
         const isDate = spec.source === 'date'
         return <div className={css.conditionRow} key={`${condition.field}-${index}`}>
           <FieldChoice label={`${t('syncConditionField')} ${index + 1}`} value={condition.field as WorkitemFilterField}
-            t={t}
-            onChange={field => { const next = CONDITION_FIELDS.find(entry => entry.field === field)!; update(index, { field, operator: next.operators[0] ?? 'EQUALS', value: [], ...(next.source === 'date' ? { toValue: '' } : {}) }) }} />
+            t={t} fields={fields}
+            onChange={field => {
+              const next = CONDITION_FIELDS.find(entry => entry.field === field)!
+              // Replace rather than patch: a previous date range's toValue must
+              // not leak into a text/status condition and fail rule validation.
+              onChange(conditions.map((condition, position) => position === index
+                ? { field, operator: next.operators[0] ?? 'EQUALS', value: [], ...(next.source === 'date' ? { toValue: '' } : {}) }
+                : condition))
+            }} />
           {isDate
             ? <DateRange from={condition.value[0] ?? ''} to={condition.toValue ?? ''} t={t}
               onChange={(from, to) => update(index, { value: from === '' ? [] : [from], toValue: to })} />
-            : <ValueChoice label={`${spec.field} ${index + 1}`} options={optionsFor(spec, options)} selected={condition.value} empty={t('syncConditionAny')}
-              onChange={value => update(index, { value })} />}
+            : spec.source === 'text' || spec.source === 'stage'
+              ? <Input aria-label={`${spec.field} ${index + 1}`} value={condition.value.join(',')} maxLength={200} placeholder={t(spec.source === 'stage' ? 'filterStageHint' : 'syncConditionAny')}
+                onChange={event => update(index, { value: event.target.value.trim() ? (spec.source === 'stage' ? event.target.value.split(',').map(value => value.trim()).filter(Boolean) : [event.target.value]) : [] })} />
+              : <div><ValueChoice label={`${spec.field} ${index + 1}`} options={optionsFor(spec, options)} selected={condition.value} empty={t('syncConditionAny')}
+                onChange={value => update(index, { value })} />
+                {optionsFor(spec, options).length === 0 && <small>{t('syncNoCandidates')}</small>}</div>}
           <button type="button" className={css.conditionRemove} aria-label={`${t('filterRemove')} ${index + 1}`} onClick={() => remove(index)}>×</button>
         </div>
       })}

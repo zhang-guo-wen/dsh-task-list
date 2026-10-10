@@ -187,6 +187,12 @@ function storedFillFields(platform: 'yunxiao' | 'tapd', fields: readonly Workite
 }
 
 function toSyncRule(row: RuleRow): SyncRule {
+  const storedStates = parseStored<StatusWriteStates>(row.status_write_states, 'statusWriteStates')
+  // v13 gave preexisting rules an empty map. Keep them visible for editing,
+  // without ever allowing an unmapped rule to run.
+  const statusWriteStates = row.enabled === 0 && Object.keys(storedStates).length === 0
+    ? { todo: '', in_progress: '', done: '' }
+    : storedStates
   return {
     id: row.id,
     revision: row.revision,
@@ -196,7 +202,7 @@ function toSyncRule(row: RuleRow): SyncRule {
     enabled: row.enabled === 1,
     workspaceId: row.workspace_id,
     conditions: parseStored<WorkitemConditionGroups>(row.conditions, 'conditions'),
-    statusWriteStates: parseStored<StatusWriteStates>(row.status_write_states, 'statusWriteStates'),
+    statusWriteStates,
   }
 }
 
@@ -352,12 +358,19 @@ export class SyncConfigStore {
     const duplicate = this.db.prepare('SELECT 1 FROM sync_rules WHERE instance = ? AND project_id = ?').get(instance, input.projectId)
     if (duplicate) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'projectId' }))
     const id = randomUUID()
+    // Upgraded v12 databases retain the old NOT NULL columns so historical
+    // filters/mappings remain recoverable. They are inert, but new rows must
+    // supply harmless placeholders; a fresh v13+ database has no such columns.
+    const columns = new Set((this.db.prepare('PRAGMA table_info(sync_rules)').all() as { name: string }[]).map(column => column.name))
+    const legacy = columns.has('filters') && columns.has('mappings')
+    if (columns.has('filters') !== columns.has('mappings')) throw syncRemoteError(syncError('StorageFailure', { scope: 'rule', field: 'schema' }))
     withSqliteTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO sync_rules
-        (id, revision, connection_id, instance, project_id, project_name, enabled, workspace_id, conditions, status_write_states)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        (id, revision, connection_id, instance, project_id, project_name, enabled, workspace_id, conditions, status_write_states${legacy ? ', filters, mappings' : ''})
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?${legacy ? ', ?, ?' : ''})`).run(
         id, input.connectionId, instance, input.projectId, input.projectName ?? null, input.enabled ? 1 : 0,
         input.workspaceId, JSON.stringify(input.conditions), JSON.stringify(input.statusWriteStates),
+        ...(legacy ? ['[]', '{}'] : []),
       )
     })
     return this.getRule(id)!
@@ -377,6 +390,7 @@ export class SyncConfigStore {
       if (duplicate) throw syncRemoteError(syncError('InvalidConfig', { scope: 'rule', field: 'projectId' }))
     }
     const enabled = input.enabled === undefined ? row.enabled === 1 : input.enabled
+    if (enabled) validateStatusMap(statusWriteStates)
     const projectName = input.projectName !== undefined ? input.projectName : row.project_name
     const workspaceId = input.workspaceId !== undefined ? input.workspaceId : row.workspace_id
     withSqliteTransaction(this.db, () => {

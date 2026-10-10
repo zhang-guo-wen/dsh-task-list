@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, SegmentedTabs, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ListWorkitemFieldsRequest, SafeWorkitemField, SyncRule, YunxiaoConnection } from '../../sync/dto.ts'
+import type { ListWorkitemFieldsRequest, SafeWorkitemField, SyncRule, SafeConnection } from '../../sync/dto.ts'
 import type { SyncFace } from './face.ts'
 import { SyncFailure } from './SyncResults.tsx'
 import { ConnectionSettings } from './ConnectionSettings.tsx'
@@ -25,9 +25,9 @@ export type SyncSectionProps = PropsRuntime<'settings.section'> & PropsLocale<'t
 export function SyncSection({ sync: face, listWorkitemFields, t }: SyncSectionProps) {
   const [tab, setTab] = useState<'connections' | 'rules'>('connections')
   const [view, setView] = useState<'list' | 'edit'>('list')
-  const [connections, setConnections] = useState<YunxiaoConnection[]>([])
+  const [connections, setConnections] = useState<SafeConnection[]>([])
   const [rules, setRules] = useState<SyncRule[]>([])
-  const [editingConnection, setEditingConnection] = useState<YunxiaoConnection | null>(null)
+  const [editingConnection, setEditingConnection] = useState<SafeConnection | null>(null)
   const [editingRule, setEditingRule] = useState<SyncRule | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
@@ -38,17 +38,14 @@ export function SyncSection({ sync: face, listWorkitemFields, t }: SyncSectionPr
     try {
       const [nextConnections, nextRules] = await Promise.all([face.listSyncConnections(), face.listSyncRules()])
       if (revision !== generation.current) return
-      // Only Yunxiao participates in sync; a stored TAPD row is not part of this
-      // surface any more, and the Host refuses to run it either.
-      const yunxiao = nextConnections.filter(connection => connection.platform === 'yunxiao')
-      setConnections(yunxiao); setRules(nextRules); setError(null)
+      setConnections(nextConnections); setRules(nextRules); setError(null)
     } catch (failure) { if (revision === generation.current) setError(failure) }
     finally { if (revision === generation.current) setLoading(false) }
   }, [face])
   useEffect(() => { void refresh(); return () => { generation.current++ } }, [refresh])
   const saved = async () => { await refresh(); setNotice(t('syncSaved')) }
   /** Enable or disable from the roster itself: the switch belongs with the row it governs. */
-  const toggleEnabled = async (connection: YunxiaoConnection, next: boolean) => {
+  const toggleEnabled = async (connection: SafeConnection, next: boolean) => {
     try { await face.updateSyncConnection({ id: connection.id, revision: connection.revision, enabled: next }); await refresh() }
     catch (failure) { setError(failure) }
   }
@@ -74,8 +71,8 @@ export function SyncSection({ sync: face, listWorkitemFields, t }: SyncSectionPr
           <div className={css.sectionHeading}><h3>{t('syncConnectionsTab')}</h3><Button variant="primary" onClick={() => { setEditingConnection(null); setView('edit'); setNotice('') }}>{t('syncNewConnection')}</Button></div>
           {connections.length === 0 && <p className={css.hint}>{t('syncNoConnections')}</p>}
           <ul className={css.cards}>{connections.map(connection => <li className={css.connectionCard} key={connection.id}>
-            <span className={css.platformBadge} data-platform={connection.platform}>云</span>
-            <div className={css.cardText}><strong>{connection.name}</strong><small>云效 Projex · {rules.filter(rule => rule.connectionId === connection.id).length} {t('syncRule')}</small></div>
+            <span className={css.platformBadge} data-platform={connection.platform}>{t(connection.platform === 'tapd' ? 'syncTapdBadge' : 'syncYunxiaoBadge')}</span>
+            <div className={css.cardText}><strong>{connection.name}</strong><small>{t(connection.platform === 'tapd' ? 'syncTapd' : 'syncYunxiao')} · {rules.filter(rule => rule.connectionId === connection.id).length} {t('syncRule')}</small></div>
             <Switch label={t('syncEnableConnection')} checked={connection.enabled} disabled={!connection.credentialPresent}
               onChange={next => void toggleEnabled(connection, next)} />
             <Button size="sm" aria-label={`${t('syncConfigure')}: ${connection.name}`} onClick={() => { setEditingConnection(connection); setView('edit'); setNotice('') }}>{t('syncConfigure')} ›</Button>

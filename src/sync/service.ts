@@ -22,7 +22,8 @@ import type {
 export type OrganizationLister = (token: string) => Promise<OrganizationChoice[]>
 
 /** Builds the read-only work-item query surface for one connection. */
-export type WorkitemQueryFactory = (connection: SafeConnection) => Promise<YunxiaoQuery>
+export type WorkitemQuery = Pick<YunxiaoQuery, 'listWorkitems' | 'getWorkitem' | 'listFields'>
+export type WorkitemQueryFactory = (connection: SafeConnection) => Promise<WorkitemQuery>
 
 /** Everything one manual sync service needs: the stores, the run owner, and the adapter builder. */
 export interface SyncServiceOptions {
@@ -218,7 +219,6 @@ export class SyncService {
    */
   async listWorkitems(request: ListWorkitemsRequest): Promise<SafeWorkitemPage> {
     const connection = this.requireConnection(request.connectionId)
-    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
     if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
     const query = await this.queryFactory(connection)
     const conditions = request.conditions?.map(group => group.map(condition => ({
@@ -255,7 +255,6 @@ export class SyncService {
    */
   async getWorkitemDescription(request: GetWorkitemDescriptionRequest): Promise<SafeWorkitemDescriptionResult> {
     const connection = this.requireConnection(request.connectionId)
-    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
     if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
     const query = await this.queryFactory(connection)
     const detail = await query.getWorkitem({
@@ -274,7 +273,6 @@ export class SyncService {
    */
   async listWorkitemFields(request: ListWorkitemFieldsRequest): Promise<SafeWorkitemField[]> {
     const connection = this.requireConnection(request.connectionId)
-    if (connection.platform !== 'yunxiao') throw syncRemoteError(syncError('InvalidConfig', { scope: 'query', field: 'platform' }))
     if (this.queryFactory === undefined) throw syncRemoteError(syncError('HostRestartRequired', { scope: 'query', field: 'queryFactory' }))
     const query = await this.queryFactory(connection)
     return query.listFields(

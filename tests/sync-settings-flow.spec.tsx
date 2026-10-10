@@ -84,13 +84,13 @@ describe('compact native sync settings', () => {
     await screen.findByText('云效 · 研发组织'); fireEvent.click(screen.getByRole('tab', { name: /规则/ })); fireEvent.click(screen.getByRole('button', { name: '新增规则' }))
     // The connection is read on mount: no "load candidates" button, and the
     // first project is already selected.
-    await waitFor(() => expect(reads).toEqual([{ connectionId: 'c1' }]))
+    await waitFor(() => expect(reads).toEqual([{ connectionId: 'c1' }, { connectionId: 'c1', projectId: 'p-1' }]))
     expect(screen.queryByRole('button', { name: '读取候选' })).toBeNull()
     await waitFor(() => expect(screen.getByRole('button', { name: '项目' }).textContent).toContain('平台项目集'))
     // Choosing the project loads that project's own statuses for the write-back step.
     fireEvent.click(screen.getByRole('button', { name: '项目' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: '第二项目' }))
-    await waitFor(() => expect(reads).toEqual([{ connectionId: 'c1' }, { connectionId: 'c1', projectId: 'p-2' }]))
+    await waitFor(() => expect(reads).toEqual([{ connectionId: 'c1' }, { connectionId: 'c1', projectId: 'p-1' }, { connectionId: 'c1', projectId: 'p-2' }]))
   })
   it('new rules show only the scope step, not the query and write-back controls', async () => {
     render(section(api()))

@@ -39,7 +39,7 @@ function SyncHarness({ api, onCreate = () => {} }: { api: SyncFace; onCreate?: (
 /** Open the header's trailing menu and activate Sync. */
 async function clickSyncRow() {
   fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
-  fireEvent.click(await screen.findByRole('menuitem', { name: '同步' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: '批量同步' }))
 }
 /** Stable roster object: useSyncExternalStore requires an unchanging snapshot. */
 const noWorkspaces = { items: [] as readonly { workspaceId: string; title: string }[] }
@@ -84,22 +84,40 @@ describe('manual sync controls', () => {
     expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
     expect(screen.queryByText(/双方都改动时/)).toBeNull()
     await clickSyncRow()
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
     expect(start).not.toHaveBeenCalled()
   })
-  it('connections without an enabled rule point at the settings page too', async () => {
+  it('without any rules, bulk sync asks to create and enable one without starting', async () => {
     const api = face(); api.listSyncRules = async () => []
     const start = vi.fn(api.startSync); api.startSync = start
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('请在「设置 → 任务同步」中启用连接和规则。')
+    await screen.findByText('没有已启用的规则。请在「设置 → 任务同步 → 规则」中新建并启用规则。')
+    expect(start).not.toHaveBeenCalled()
+  })
+  it('without an enabled rule, bulk sync points at rule creation and does not start', async () => {
+    const api = face()
+    api.listSyncRules = async () => [{ ...(await face().listSyncRules())[0], enabled: false }]
+    const start = vi.fn(api.startSync); api.startSync = start
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
+    await screen.findByText('没有已启用的规则。请在「设置 → 任务同步 → 规则」中新建并启用规则。')
+    expect(start).not.toHaveBeenCalled()
+  })
+  it('with an enabled rule but unusable connection, bulk sync points at connection setup', async () => {
+    const api = face()
+    api.listSyncConnections = async () => [{ ...(await face().listSyncConnections())[0], enabled: false }]
+    const start = vi.fn(api.startSync); api.startSync = start
+    render(<SyncHarness api={api} />)
+    await clickSyncRow()
+    await screen.findByText('请在「设置 → 任务同步」中启用连接并确认凭据可用。')
     expect(start).not.toHaveBeenCalled()
   })
   it('the refused prompt can be dismissed and leaves the page clean again', async () => {
     const api = face(); api.listSyncConnections = async () => []
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
     fireEvent.click(screen.getByRole('button', { name: '知道了' }))
     expect(screen.queryByText(/还没有同步连接/)).toBeNull()
   })
@@ -108,20 +126,33 @@ describe('manual sync controls', () => {
     render(<SyncHarness api={face()} />)
     const handle = screen.getByRole('button', { name: '更多操作' })
     await user.click(handle)
-    await screen.findByRole('menuitem', { name: '同步' })
+    await screen.findByRole('menuitem', { name: '批量同步' })
     await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.queryByRole('menuitem', { name: '同步' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: '批量同步' })).toBeNull())
     expect(document.activeElement).toBe(handle)
   })
-  it('result pagination queries page two without starting another run', async () => {
-    const api = face(); const pages: number[] = []
-    api.listSyncRuns = async () => ({ items: [completed], total: 1, page: 1, pageSize: 1 })
-    api.listSyncItemResults = async request => { pages.push(request.page); return { items: [], total: 21, page: request.page, pageSize: 20 } }
-    const start = vi.fn(api.startSync); api.startSync = start
+  it('shows a compact summary without item IDs and keeps a dismissed run hidden across remounts', async () => {
+    const api = face()
+    const imported = { ...completed, counts: { ...completed.counts, imported: 74 } }
+    api.listSyncRuns = async () => ({ items: [imported], total: 1, page: 1, pageSize: 1 })
+    const getRun = vi.fn(async (request: { id: string }) => request.id === 'run1' ? imported : { ...completed, id: 'run2' })
+    api.getSyncRun = getRun
+    const items = vi.fn(api.listSyncItemResults); api.listSyncItemResults = items
+    const start = vi.fn(async () => ({ runId: 'run2', existing: false })); api.startSync = start
+    const first = render(<SyncHarness api={api} />)
+    await screen.findByText('导入：74')
+    expect(screen.getByText('同步所有已启用规则，不受当前列表筛选影响。')).toBeDefined()
+    expect(screen.queryByRole('button', { name: '下一页' })).toBeNull()
+    expect(items).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(screen.queryByText('同步完成')).toBeNull()
+    first.unmount()
     render(<SyncHarness api={api} />)
-    fireEvent.click(await screen.findByRole('button', { name: '下一页' }))
-    await waitFor(() => expect(pages).toEqual([1, 2]))
-    expect(start).not.toHaveBeenCalled()
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText('同步完成')).toBeNull()
+    await clickSyncRow()
+    await screen.findByText('导入：1')
+    expect(start).toHaveBeenCalledOnce()
   })
   it('structured credential errors are localized without displaying a secret or raw provider message', async () => {
     const api = face()
@@ -170,10 +201,10 @@ describe('manual sync controls', () => {
     }
     render(<RuleSettings rule={null} connections={[connection('A'), connection('B')] as any} face={api} t={t} onBack={() => {}} onSaved={async () => {}} />)
     // The initial connection is read on mount, with no button to click.
-    await waitFor(() => expect(reads).toEqual(['A']))
+    await waitFor(() => expect(reads).toEqual(['A', 'A']))
     expect(screen.queryByRole('button', { name: '读取候选' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '连接与凭据' })); fireEvent.click(await screen.findByRole('menuitem', { name: 'B' }))
-    await waitFor(() => expect(reads).toEqual(['A', 'B']))
+    await waitFor(() => expect(reads).toEqual(['A', 'A', 'B', 'B']))
     await waitFor(() => expect(screen.getByRole('button', { name: '项目' }).textContent).toContain('Project B'))
   })
   it('a new rule saves the conditions and the three status targets, disabled', async () => {
@@ -272,8 +303,8 @@ describe('manual sync controls', () => {
     expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
     expect(screen.queryByText(/双方都改动时/)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: '同步' }))
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接。')
+    fireEvent.click(await screen.findByRole('menuitem', { name: '批量同步' }))
+    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
   })
   it('the settings page is an inline section, not a modal, and keeps its two tabs', async () => {
     render(section(face()))
@@ -289,7 +320,7 @@ describe('manual sync controls', () => {
     // A typed token is what resolves the organization list; nothing is read
     // until the menu is opened.
     api.listSyncOrganizations = async request => {
-      expect(request).toEqual({ token: 'yunxiao-pat' })
+      expect(request).toEqual({ platform: 'yunxiao', token: 'yunxiao-pat' })
       return [{ id: '56474829', name: '示例组织' }] as any
     }
     const start = vi.fn(api.startSync); api.startSync = start
@@ -313,7 +344,7 @@ describe('manual sync controls', () => {
   it('a typed token lists organizations and the picked id is saved with the credential', async () => {
     const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
     api.listSyncOrganizations = async request => {
-      expect(request).toEqual({ token: 'pat-secret' })
+      expect(request).toEqual({ platform: 'yunxiao', token: 'pat-secret' })
       return [{ id: 'org-1', name: '示例企业' }] as any
     }
     let saved: any

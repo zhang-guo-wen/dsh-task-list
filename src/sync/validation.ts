@@ -251,11 +251,13 @@ const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'projectName', 
  * The rule's three local statuses, each naming the platform status it writes.
  * Every one is required: a rule that cannot map all three is not usable.
  */
-function parseStatusWriteStates(scope: SyncErrorScope, value: unknown): StatusWriteStates {
+function parseStatusWriteStates(scope: SyncErrorScope, value: unknown, allowUnmapped = false): StatusWriteStates {
   const object = parseObject(scope, value, 'statusWriteStates')
   closedKeys(scope, object, new Set(TASK_STATUSES), 'statusWriteStates')
   const out = {} as StatusWriteStates
-  for (const status of TASK_STATUSES) out[status] = text(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT, true)
+  for (const status of TASK_STATUSES) out[status] = allowUnmapped
+    ? boundedText(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT).trim()
+    : text(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT, true)
   return out
 }
 
@@ -711,7 +713,7 @@ function parseSyncRule(value: unknown): SyncRule {
     enabled: bool(scope, object.enabled, 'enabled'),
     workspaceId: object.workspaceId === null ? null : text(scope, object.workspaceId, 'workspaceId', ID_LIMIT, true),
     conditions: parseWorkitemConditions(scope, object.conditions),
-    statusWriteStates: parseStatusWriteStates(scope, object.statusWriteStates),
+    statusWriteStates: parseStatusWriteStates(scope, object.statusWriteStates, object.enabled === false),
   }
 }
 
