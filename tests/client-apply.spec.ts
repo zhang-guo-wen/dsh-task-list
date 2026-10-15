@@ -35,7 +35,8 @@ describe('client contribution', () => {
       expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
     ])
     expect(TYPERT_REMOTE.descriptors.map(row => row.method)).toEqual([
-      'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask', 'calculateStatistics',
+      'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask',
+      'listTaskRelations', 'getTaskGraph', 'getTaskOverview', 'calculateStatistics',
       'startStatistics', 'getStatisticsRun', 'cancelStatistics',
       'listSyncConnections', 'createSyncConnection', 'updateSyncConnection', 'deleteSyncConnection',
       'listSyncRules', 'createSyncRule', 'updateSyncRule', 'deleteSyncRule',
@@ -88,8 +89,8 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
 
     expect(panel.sessionSnapshot().items).toEqual([
-      { id: 's-2', title: 'sessionUntitled', archived: false, subagent: false, blank: false },
-      { id: 's-1', title: 'Release notes', archived: false, subagent: false, blank: false },
+      { id: 's-2', title: 'sessionUntitled', archived: false, subagent: false, blank: false, agent: undefined, running: false },
+      { id: 's-1', title: 'Release notes', archived: false, subagent: false, blank: false, agent: undefined, running: false },
     ])
     // useSyncExternalStore compares by identity, so one snapshot projects once.
     expect(panel.sessionSnapshot()).toBe(panel.sessionSnapshot())
@@ -111,7 +112,7 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
     const before = panel.sessionSnapshot()
     expect(before.items).toHaveLength(205)
-    expect(before.items[204]).toEqual({ id: 'session-204', title: '较早的中文会话', archived: false, subagent: false, blank: false })
+    expect(before.items[204]).toEqual({ id: 'session-204', title: '较早的中文会话', archived: false, subagent: false, blank: false, agent: undefined, running: false })
     expect(before.items[0].title).toBe('sessionUntitled')
     snapshot = { ...snapshot, byId: { ...snapshot.byId, 'session-204': { displayTitle: '改名后的会话' } } }
     expect(panel.sessionSnapshot()).not.toBe(before)
@@ -134,10 +135,10 @@ describe('subtasks and sessions', () => {
     const panel = panelOf(ctx)
 
     expect(panel.sessionSnapshot().items).toEqual([
-      { id: 's-1', title: 'Live', archived: false, subagent: false, blank: false },
-      { id: 's-2', title: 'Old', archived: true, subagent: false, blank: false },
-      { id: 's-3', title: 'Subagent run', archived: false, subagent: true, blank: false },
-      { id: 's-4', title: 'Blank', archived: false, subagent: false, blank: true },
+      { id: 's-1', title: 'Live', archived: false, subagent: false, blank: false, agent: undefined, running: false },
+      { id: 's-2', title: 'Old', archived: true, subagent: false, blank: false, agent: undefined, running: false },
+      { id: 's-3', title: 'Subagent run', archived: false, subagent: true, blank: false, agent: undefined, running: false },
+      { id: 's-4', title: 'Blank', archived: false, subagent: false, blank: true, agent: undefined, running: false },
     ])
     // An unchanged archive set keeps the projection identity, an archive or
     // unarchive republishes it so the picker drops or restores the row.

@@ -45,9 +45,27 @@
    rail compensation follows to 9px and the rows keep the column's right line.
    Scoped to the list page: the report and the work-item page scroll in their
    own regions and keep the theme's default rail. */
-.page[data-list='true'] { overflow: hidden; --dsh-scrollbar-width: 9px; --dsh-scrollbar-thumb-border: 2px; }
+/* Task list, topology canvas, and card board share one frame: a fixed header
+   and toolbar above a body that fills the remaining panel height, so the canvas
+   can pan inside its own box instead of growing the page. */
+.page[data-list='true'], .page[data-graph='true'] { overflow: hidden; --dsh-scrollbar-width: 9px; --dsh-scrollbar-thumb-border: 2px; }
 .page[data-list='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
 .page[data-list='true'] .header, .page[data-list='true'] .toolbar { flex: none; }
+.page[data-graph='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
+.page[data-graph='true'] .header, .page[data-graph='true'] .graphToolbar { flex: none; }
+.graphToolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+.graphMeta { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.graphCount, .graphWarn { font-size: 12px; line-height: 18px; }
+.graphCount { color: var(--dsw-alias-label-tertiary); }
+.graphWarn { color: var(--dsw-alias-state-warn-label); }
+.graphSurface { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 18px; }
+/* Placeholder shown while the first graph read is in flight. */
+.skeleton { flex: 1; min-height: 0; border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-skeleton); }
+/* The view switch keeps the title row on one line and yields before the page
+   actions wrap; it shares the filter chips' pressed-button shape. */
+.viewSwitch { flex: none; margin: 0 4px; }
+.selectedView { composes: selected; }
+@media (max-width: 900px) { .viewSwitch { margin: 0; } }
 /* The rail reserved by `scrollbar-gutter` comes out of the rows, because this
    body scrolls inside the content column: every row ended one rail short of the
    header and the toolbar above it. Widening the body by exactly that rail moves
@@ -55,7 +73,7 @@
    and right lines. The theme owns the rail width, so it is read, not guessed. */
 .listBody { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; margin-top: 18px; margin-right: calc(-1 * var(--dsh-scrollbar-width)); }
 .listBody .list { margin-top: 0; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.header { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 12px 16px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
 /* The list header's right end: the report button and the create/sync split
    block, kept on one baseline. */
@@ -130,12 +148,13 @@
 .content:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; border-radius: 4px; }
 .statusChip {
   display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
-  height: 22px; padding: 0 8px; border-radius: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-tertiary, #81858c);
-  font-size: 12px; line-height: 1;
+  height: 22px; padding: 0 8px; border-radius: var(--dsw-radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-tertiary);
+  font-size: 12px; line-height: 18px;
 }
-.statusChip[data-status='in_progress'] { background: #e8f1fd; color: #2f6fbd; }
-.statusChip[data-status='done'] { background: #e8f5ea; color: #3f7d4f; }
+.statusChip[data-status='in_progress'] { background: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-label-primary-foreground); }
+.statusChip[data-status='approving'] { background: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-label-primary-foreground); }
+.statusChip[data-status='done'] { background: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-label-primary-foreground); }
 .workspaceMeta {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c);

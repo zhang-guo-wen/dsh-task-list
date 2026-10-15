@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT,
+  DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT, TASK_STATUSES,
   // The subtask remotes stay on the face while the panel hides the feature.
   type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type DeleteTaskRequest,
-  type ListTasksRequest, type SubtaskRecord, type TaskPage, type TaskPriority, type TaskRecord, type TaskStatus,
-  type UpdateSubtaskRequest, type UpdateTaskRequest,
+  type ListTasksRequest, type SubtaskRecord, type TaskGraph, type TaskOverview, type TaskPage, type TaskPriority,
+  type TaskRecord, type TaskStatus, type UpdateSubtaskRequest, type UpdateTaskRequest,
 } from '../types.ts'
 import type { TaskKey } from './locales.ts'
 import { deriveTaskTitle } from './task-title.ts'
@@ -26,13 +26,27 @@ import { StatisticsCalendar } from './StatisticsCalendar.tsx'
 import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
 import { MoreTasks } from './MoreTasks.tsx'
 import { markQuickAddSaved, quickAddState, subscribeQuickAdd } from './quick-add.ts'
+import { TaskCanvas, type TaskExecutionInfo } from './TaskCanvas.tsx'
+import { TaskBoard } from './TaskBoard.tsx'
+import { TaskRelationsField } from './TaskRelationsField.tsx'
+import { GRAPH_NODE_LIMIT, useTaskRelations } from './use-task-relations.ts'
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
 }
 
 /** One Session offered by the session picker. */
-export interface SessionOption { id: string; title: string; archived: boolean; subagent: boolean; blank: boolean }
+export interface SessionOption {
+  id: string
+  title: string
+  archived: boolean
+  subagent: boolean
+  blank: boolean
+  /** Agent preset the Session runs, when the Host projects one. */
+  agent?: string | undefined
+  /** True while the Session owns a live Agent. */
+  running?: boolean | undefined
+}
 export interface SessionSnapshot { items: readonly SessionOption[] }
 
 export class WorktreeNotGitError extends Error {
@@ -68,6 +82,12 @@ export interface TaskFace {
   listAgents(): Promise<readonly { id: string; name?: string; isDefault: boolean; broken?: string }[]>
   workspaceSnapshot(): WorkspaceSnapshot
   subscribeWorkspaces(listener: () => void): () => void
+  /** One page of relationship data behind the canvas, the board, and the relation pickers. */
+  taskGraph(): Promise<TaskGraph>
+  /** Counts per status plus the Sessions the tasks are handled in. */
+  taskOverview(): Promise<TaskOverview>
+  /** Execution facts of one Session, or null when it is gone. */
+  sessionExecution(sessionId: string): TaskExecutionInfo | null
   /** Manual sync surface; consumed by the sync UI, not by the task list rows. */
   sync: SyncFace
   /** One page of remote work items for the "more tasks" page. */
@@ -87,9 +107,15 @@ export type TaskPanelProps = PropsLocale<'taskList'> & InjectFace<TaskFace> & {
   dialog?: { onClose(): void } | undefined
 }
 type StatusFilter = 'all' | TaskStatus
-const statusKeys: TaskStatus[] = ['todo', 'in_progress', 'done']
+/** The task list's own view switch; the value names the surface it draws. */
+export type TaskView = 'list' | 'canvas' | 'board'
+const statusKeys: TaskStatus[] = [...TASK_STATUSES]
 const priorityKeys: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
 const pageSizes: number[] = [10, 20, 50, MAX_PAGE_SIZE]
+/** Counts shown while the overview has not loaded yet. */
+const EMPTY_OVERVIEW: TaskOverview = {
+  counts: { todo: 0, in_progress: 0, approving: 0, done: 0 }, total: 0, blocked: 0, sessionIds: [],
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -104,7 +130,9 @@ function formattedTime(timestamp: number): string {
 }
 
 function statusKey(status: TaskStatus): TaskKey {
-  return status === 'in_progress' ? 'inProgress' : status
+  if (status === 'in_progress') return 'inProgress'
+  if (status === 'approving') return 'approving'
+  return status
 }
 
 /** The stored title is derived from the content, so legacy rows without content fall back to it. */
@@ -115,14 +143,16 @@ function contentOf(task: TaskRecord): string {
 export function TaskPanel({
   list, create, update, remove, readAttachments,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces,
-  sessionSnapshot, subscribeSessions, sync, calculateStatistics, listWorkitems, listWorkitemFields, getWorkitemDescription, t,
-  dialog,
+  sessionSnapshot, subscribeSessions, openSession, sync, calculateStatistics, listWorkitems, listWorkitemFields, getWorkitemDescription,
+  taskGraph, taskOverview, sessionExecution, t, dialog,
 }: TaskPanelProps) {
   const dialogMode = dialog !== undefined
   const [reportsOpen, setReportsOpen] = useState(false)
   const reportButton = useRef<HTMLButtonElement>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const moreButton = useRef<HTMLButtonElement>(null)
+  const [view, setView] = useState<TaskView>('list')
+  const relations = useTaskRelations(taskGraph, taskOverview)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -150,6 +180,8 @@ export function TaskPanel({
   const [sendImmediately, setSendImmediately] = useState(false)
   const [sessionId, setSessionId] = useState('')
   const [agent, setAgent] = useState('')
+  const [parentId, setParentId] = useState<string | null>(null)
+  const [blockingIds, setBlockingIds] = useState<string[]>([])
   const [useWorktree, setUseWorktree] = useState(false)
   const [worktreeProbe, setWorktreeProbe] = useState<{ workspaceId: string; checking: boolean; needsInit: boolean; error: string } | null>(null)
   const [initializeTask, setInitializeTask] = useState<{ task: TaskRecord; workspaceTitle: string; workspacePath: string } | null>(null)
@@ -288,6 +320,15 @@ export function TaskPanel({
     return () => { active = false }
   }, [composerOpen, useWorktree, workspaceId, probeWorktree])
 
+  // The canvas and the board draw the relationship graph, and the composer's
+  // two relation pickers read the same snapshot. One read serves all three; the
+  // explicit refresh and the dialogs that write relations ask for a reload.
+  const relationsLoad = relations.load
+  useEffect(() => {
+    if (dialogMode) return
+    if (view !== 'list' || composerOpen) void relationsLoad()
+  }, [view, composerOpen, dialogMode, relationsLoad])
+
   const openCreate = () => {
     setEditing(null)
     setContent(textContent(''))
@@ -302,6 +343,8 @@ export function TaskPanel({
     setSendImmediately(false)
     setSessionId('')
     setAgent('')
+    setParentId(null)
+    setBlockingIds([])
     setUseWorktree(false)
     setError('')
     setComposerOpen(true)
@@ -332,6 +375,8 @@ export function TaskPanel({
     setSendImmediately(false)
     setSessionId('')
     setAgent('')
+    setParentId(null)
+    setBlockingIds([])
     setUseWorktree(false)
     setError('')
     setMoreOpen(false)
@@ -355,6 +400,10 @@ export function TaskPanel({
     setSendImmediately(task.sendImmediately)
     setSessionId(task.sessionId ?? '')
     setAgent(task.agent ?? '')
+    // The list row carries both relations, so the composer opens with them and
+    // a save that changes nothing else still writes them back unchanged.
+    setParentId(task.parentId ?? null)
+    setBlockingIds([...task.blockingIds])
     setUseWorktree(task.useWorktree)
     setError('')
     setComposerOpen(true)
@@ -386,6 +435,7 @@ export function TaskPanel({
       tags: tagsInput.split(/[,，]/u).map(tag => tag.trim()).filter(Boolean),
       workspaceId: workspaceId || null,
       sendImmediately, sessionId: sessionId.trim() || null, agent: agent || null, useWorktree,
+      parentId, blockingIds,
     }
     // The composer's status is authoritative, so the same payload serves the
     // create and the edit path and any transition is one save away.
@@ -404,6 +454,9 @@ export function TaskPanel({
       if (!mounted.current) return
       setEditing(null)
       closeComposer()
+      // A saved relation (parent or dependency) changes the graph the canvas
+      // and the pickers draw, so the snapshot is re-read with the page.
+      void relationsLoad(true)
       // The dialog's own copy creates the row, not a page: the mounted task
       // list reloads through the request store instead.
       if (dialogMode) markQuickAddSaved()
@@ -451,14 +504,17 @@ export function TaskPanel({
     setError('')
     try {
       await remove({ id: task.id, version: task.version })
-      if (mounted.current) await refresh()
+      if (mounted.current) {
+        await refresh()
+        void relationsLoad(true)
+      }
     } catch (failure) {
       if (mounted.current) {
         await refresh()
         if (mounted.current) setError(errorText(failure))
       }
     } finally { if (mounted.current) setBusy(false) }
-  }, [busy, remove, refresh])
+  }, [busy, remove, refresh, relationsLoad])
 
   const startTask = useCallback(async (task: TaskRecord) => {
     if (busy) return
@@ -516,7 +572,7 @@ export function TaskPanel({
         if (mounted.current) setError(errorText(failure))
       }
     } finally { if (mounted.current) setBusy(false) }
-  }, [busy, update, refresh])
+  }, [busy, update, refresh, relationsLoad])
 
   const workspaceOptions = new Map(workspaceNames)
   for (const task of tasks) {
@@ -570,6 +626,69 @@ export function TaskPanel({
       </div>}
     </li>
   }), [tasks, workspaceNames, defaultWorkspaceId, busy, t, openEdit, startTask, finishTask, deleteTask])
+
+  // Everything below derives from the rows above, so the row memo is not
+  // invalidated by a change to any of these elements.
+
+  /** Execution facts of one Session; undefined when the Session is gone. */
+  const executionOf = (id: string): TaskExecutionInfo | undefined => sessionExecution(id) ?? undefined
+
+  // One page's controls, shared by the list and the canvas: the status tabs
+  // stay usable in both views, while search and paging belong to the list.
+  const statusFilters = <div className={css.filters} role="group" aria-label={t('status')}>
+    {(['all', ...statusKeys] as StatusFilter[]).map(item => <button
+      key={item} type="button" className={filter === item ? css.selected : css.filter}
+      aria-pressed={filter === item} onClick={() => changeFilter(item)}>{item === 'all' ? t('all') : t(statusKey(item))}</button>)}
+  </div>
+
+  const listToolbar = <div className={css.toolbar}>
+    {statusFilters}
+    <div className={css.toolbarRight}>
+      <form className={css.searchBox} role="search" onSubmit={event => { event.preventDefault(); submitSearch() }}>
+        <input value={searchText} maxLength={SEARCH_LIMIT} placeholder={t('searchPlaceholder')}
+          aria-label={t('searchPlaceholder')} onChange={event => setSearchText(event.target.value)} />
+        {searchText !== '' && <button type="button" className={css.searchClear} title={t('clearSearch')}
+          aria-label={t('clearSearch')} onClick={clearSearch}>×</button>}
+        <button type="submit" className={css.searchButton} disabled={loading}>{t('search')}</button>
+      </form>
+      <select aria-label={t('workspace')} value={workspaceFilter} onChange={event => changeWorkspaceFilter(event.target.value)}>
+        <option value="all">{t('allWorkspaces')}</option>
+        {[...workspaceOptions].map(([id, name]) => <option key={id} value={`ws:${id}`}>{name}</option>)}
+      </select>
+      <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}>{t('refresh')}</button>
+    </div>
+  </div>
+
+  const listBodyView = <div className={css.listBody} ref={listBody}>
+  {/* Sync's own output only: a refused click's prompt, a failure, or a run's
+      results. Idle, it renders nothing — the standing description of what
+      sync does lives on its settings page. */}
+  <SyncStatus panel={syncPanel} t={t} />
+
+  {/* With the composer open its own copy is the visible one, so the banner
+      stays quiet to avoid announcing the same failure twice. */}
+  {error && !composerOpen && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
+  {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : tasks.length === 0 ? <div className={css.empty}>
+    <strong>{filtered ? t('emptySearch') : t('empty')}</strong><span>{filtered ? t('emptySearchHint') : t('emptyHint')}</span>
+  </div> : <ul className={css.list}>
+    {rows}
+  </ul>}
+  </div>
+
+  const pager = total > 0 && <div className={css.pager}>
+    <label className={css.pageSize}>{t('perPage')}
+      <select aria-label={t('perPage')} value={String(pageSize)} onChange={event => changePageSize(Number(event.target.value))}>
+        {pageSizes.map(size => <option key={size} value={size}>{size}</option>)}
+      </select>
+    </label>
+    <span className={css.pageSummary}>{pageSummary}</span>
+    <div className={css.pageButtons}>
+      <button type="button" className={css.textButton} disabled={loading || page <= 1}
+        onClick={() => setPage(value => Math.max(1, value - 1))}>{t('prevPage')}</button>
+      <button type="button" className={css.textButton} disabled={loading || page >= pageCount}
+        onClick={() => setPage(value => Math.min(pageCount, value + 1))}>{t('nextPage')}</button>
+    </div>
+  </div>
 
   // One composer serves both surfaces: the page renders these two blocks over
   // its list, and the frame overlay's dialog copy renders them alone, so the
@@ -636,6 +755,8 @@ export function TaskPanel({
             {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
             {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
           </section>
+          <TaskRelationsField t={t} options={relations.optionsFor(editing?.id)} parentId={parentId} blockingIds={blockingIds}
+            selfId={editing?.id} disabled={busy} onChange={next => { setParentId(next.parentId); setBlockingIds(next.blockingIds) }} />
         </form>
       </div>
       <div className={css.dialogFooter}>
@@ -689,6 +810,67 @@ export function TaskPanel({
     </div>
   </div>
 
+  // The view switch belongs to the header, beside the page title, and holds for
+  // every surface that is not a full-page dialog. It is the panel's own pressed
+  // button group, the same control shape as the status filters below it: the
+  // three surfaces are one page's modes, not three pages to navigate to.
+  const viewSwitcher = <div className={css.viewSwitch + ' ' + css.filters} role="group" aria-label={t('viewLabel')}>
+    {(['list', 'canvas', 'board'] as TaskView[]).map(item => <button
+      key={item} type="button" className={view === item ? css.selectedView : css.filter}
+      aria-pressed={view === item} onClick={() => setView(item)}>
+      {t(item === 'list' ? 'viewList' : item === 'canvas' ? 'viewCanvas' : 'viewBoard')}
+    </button>)}
+  </div>
+
+  const header = <header className={css.header}>
+    <h1>{t('title')}</h1>
+    {viewSwitcher}
+    <div className={css.titleActions}>
+      <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
+      <Button className={css.reportButton} variant="outline" ref={moreButton} onClick={() => setMoreOpen(true)}>{t('moreTasksTitle')}</Button>
+      {/* One right-hand block: the body creates a task, the trailing caret
+          opens the menu holding Sync. */}
+      <SyncActions addLabel={t('add')} onCreate={openCreate} panel={syncPanel} t={t} />
+    </div>
+  </header>
+
+  // The canvas reads the same status filter as the list and applies it to the
+  // nodes it draws; `all` means no restriction.
+  const canvasFilter: TaskStatus[] = filter === 'all' ? [] : [filter]
+  const graph = relations.graph
+  const graphEdges = graph === null ? 0
+    : graph.nodes.reduce((sum, node) => sum + node.parents.length + node.waitsOn.length, 0)
+  const truncated = graph !== null && graph.nodes.length >= GRAPH_NODE_LIMIT
+  const nodeSummary = t('canvasNodeCount')
+    .replace('{count}', String(graph?.nodes.length ?? 0)).replace('{edges}', String(graphEdges))
+  const relationError = relations.error
+
+  const relationSurface = <div className={css.graphSurface}>
+    {relationError !== '' ? <div className={css.error} role="alert">{t('error')}: {relationError}
+      <button type="button" onClick={() => void relations.load(true)}>{t('retry')}</button></div>
+      : relations.loading && graph === null ? <><div className={css.skeleton} aria-hidden="true" />
+        <p className={css.placeholder} role="status">{t('loading')}</p></>
+        : view === 'canvas' ? <TaskCanvas graph={graph ?? { nodes: [], truncated: false }} t={t} onOpen={openEdit}
+          onOpenSession={sessionId => openSession(sessionId)} executionOf={executionOf} statusFilter={canvasFilter}
+          empty={graph === null || graph.nodes.length === 0} />
+          : <TaskBoard graph={graph ?? { nodes: [], truncated: false }} overview={relations.overview ?? EMPTY_OVERVIEW} t={t}
+            onOpen={openEdit} onOpenSession={sessionId => openSession(sessionId)} executionOf={executionOf} />}
+    {graph !== null && graph.nodes.length === 0 && relationError === '' && view === 'board'
+      && <div className={css.empty}><strong>{t('canvasEmpty')}</strong><span>{t('canvasEmptyHint')}</span></div>}
+  </div>
+
+  // The canvas draws its own header, counts, node summary, and view controls, so
+  // it gets the status tabs alone; the board has no header of its own and takes
+  // the whole toolbar.
+  const relationToolbar = <div className={css.graphToolbar}>
+    {statusFilters}
+    {view === 'canvas' ? null : <div className={css.graphMeta}>
+      <span className={css.graphCount}>{nodeSummary}</span>
+      {truncated && <span className={css.graphWarn} role="status">{t('canvasTruncated').replace('{count}', String(GRAPH_NODE_LIMIT))}</span>}
+      <button type="button" className={css.textButton} onClick={() => void relations.load(true)} disabled={relations.loading}>{t('refresh')}</button>
+    </div>}
+  </div>
+
   // The overlay's copy is the dialog itself: it renders the composer over
   // whatever page is on screen and never draws the task page.
   if (dialog !== undefined) return <>{composerDialog}{initializationDialog}</>
@@ -712,71 +894,22 @@ export function TaskPanel({
     </div>
   </main>
 
+  if (view !== 'list') return <main className={css.page} data-graph="true">
+    <div className={css.inner}>
+      {header}
+      {relationToolbar}
+      {relationSurface}
+    </div>
+    {composerDialog}
+    {initializationDialog}
+  </main>
+
   return <main className={css.page} data-list="true">
     <div className={css.inner}>
-      <header className={css.header}>
-        <h1>{t('title')}</h1>
-        <div className={css.titleActions}>
-          <Button className={css.reportButton} variant="outline" ref={reportButton} onClick={() => setReportsOpen(true)}>{t('statisticsTitle')}</Button>
-          <Button className={css.reportButton} variant="outline" ref={moreButton} onClick={() => setMoreOpen(true)}>{t('moreTasksTitle')}</Button>
-          {/* One right-hand block: the body creates a task, the trailing caret
-              opens the menu holding Sync. */}
-          <SyncActions addLabel={t('add')} onCreate={openCreate} panel={syncPanel} t={t} />
-        </div>
-      </header>
-
-      <div className={css.toolbar}>
-        <div className={css.filters} role="group" aria-label={t('status')}>
-          {(['all', ...statusKeys] as StatusFilter[]).map(item => <button
-            key={item} type="button" className={filter === item ? css.selected : css.filter}
-            aria-pressed={filter === item} onClick={() => changeFilter(item)}>{t(item === 'in_progress' ? 'inProgress' : item)}</button>)}
-        </div>
-        <div className={css.toolbarRight}>
-          <form className={css.searchBox} role="search" onSubmit={event => { event.preventDefault(); submitSearch() }}>
-            <input value={searchText} maxLength={SEARCH_LIMIT} placeholder={t('searchPlaceholder')}
-              aria-label={t('searchPlaceholder')} onChange={event => setSearchText(event.target.value)} />
-            {searchText !== '' && <button type="button" className={css.searchClear} title={t('clearSearch')}
-              aria-label={t('clearSearch')} onClick={clearSearch}>×</button>}
-            <button type="submit" className={css.searchButton} disabled={loading}>{t('search')}</button>
-          </form>
-          <select aria-label={t('workspace')} value={workspaceFilter} onChange={event => changeWorkspaceFilter(event.target.value)}>
-            <option value="all">{t('allWorkspaces')}</option>
-            {[...workspaceOptions].map(([id, name]) => <option key={id} value={`ws:${id}`}>{name}</option>)}
-          </select>
-          <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}>{t('refresh')}</button>
-        </div>
-      </div>
-
-      <div className={css.listBody} ref={listBody}>
-      {/* Sync's own output only: a refused click's prompt, a failure, or a run's
-          results. Idle, it renders nothing — the standing description of what
-          sync does lives on its settings page. */}
-      <SyncStatus panel={syncPanel} t={t} />
-
-      {/* With the composer open its own copy is the visible one, so the banner
-          stays quiet to avoid announcing the same failure twice. */}
-      {error && !composerOpen && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
-      {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : tasks.length === 0 ? <div className={css.empty}>
-        <strong>{filtered ? t('emptySearch') : t('empty')}</strong><span>{filtered ? t('emptySearchHint') : t('emptyHint')}</span>
-      </div> : <ul className={css.list}>
-        {rows}
-      </ul>}
-      </div>
-
-      {total > 0 && <div className={css.pager}>
-        <label className={css.pageSize}>{t('perPage')}
-          <select aria-label={t('perPage')} value={String(pageSize)} onChange={event => changePageSize(Number(event.target.value))}>
-            {pageSizes.map(size => <option key={size} value={size}>{size}</option>)}
-          </select>
-        </label>
-        <span className={css.pageSummary}>{pageSummary}</span>
-        <div className={css.pageButtons}>
-          <button type="button" className={css.textButton} disabled={loading || page <= 1}
-            onClick={() => setPage(value => Math.max(1, value - 1))}>{t('prevPage')}</button>
-          <button type="button" className={css.textButton} disabled={loading || page >= pageCount}
-            onClick={() => setPage(value => Math.min(pageCount, value + 1))}>{t('nextPage')}</button>
-        </div>
-      </div>}
+      {header}
+      {listToolbar}
+      {listBodyView}
+      {pager}
     </div>
 
     {composerDialog}

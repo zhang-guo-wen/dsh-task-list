@@ -26,6 +26,9 @@ function face() {
     subscribeWorkspaces: () => () => {},
     sessionSnapshot: () => sessions,
     subscribeSessions: () => () => {},
+    taskGraph: vi.fn(async () => ({ nodes: [], truncated: false })),
+    taskOverview: vi.fn(async () => ({ counts: { todo: 0, in_progress: 0, approving: 0, done: 0 }, total: 0, blocked: 0, sessionIds: [] })),
+    sessionExecution: () => null,
     sync: { listSyncRuns: async () => ({ items: [], total: 0, page: 1, pageSize: 1 }) },
     t,
   }

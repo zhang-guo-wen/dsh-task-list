@@ -26,6 +26,8 @@ export function local(overrides: Partial<TaskRecord> = {}): TaskRecord {
     useWorktree: false,
     startedAt: null,
     completedAt: null,
+    parentId: null,
+    blockingIds: [],
     version: 1,
     createdAt: fixedTime,
     updatedAt: fixedTime,

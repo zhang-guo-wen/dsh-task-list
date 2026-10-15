@@ -26,11 +26,21 @@ describe('Host Remote parameter contract', () => {
 
   it('exposes sync, authorization, legacy and statistics methods on the taskList namespace', () => {
     const methods = TYPERT_REMOTE.descriptors.map(row => row.method)
-    expect(methods).toHaveLength(35)
+    expect(methods).toHaveLength(38)
     for (const method of SYNC_METHODS) expect(methods).toContain(method)
-    for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask']) {
+    for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask', 'listTaskRelations', 'getTaskGraph', 'getTaskOverview']) {
       expect(methods).toContain(method)
     }
+  })
+
+  it('exposes the relationship reads with a descriptor-compatible request', () => {
+    const source = readFileSync(new URL('../src/task-service.ts', import.meta.url), 'utf8')
+    for (const method of ['listTaskRelations', 'getTaskGraph', 'getTaskOverview']) {
+      expect(TYPERT_REMOTE.descriptors.find(row => row.method === method)?.parameters[0]?.name).toBe('request')
+    }
+    expect(source).toMatch(/async listTaskRelations\(request: Record<string, never>\)/u)
+    expect(source).toMatch(/async getTaskGraph\(request: GetTaskGraphRequest\)/u)
+    expect(source).toMatch(/async getTaskOverview\(request: Record<string, never>\)/u)
   })
 
   it('applies a closed request and result codec to sync methods while legacy stays passthrough', () => {

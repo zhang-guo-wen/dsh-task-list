@@ -68,6 +68,11 @@ describe('status write admission', () => {
     expect(statusMappingReady({ todo: 'open', in_progress: 'doing' } as StatusWriteStates)).toBe(false)
     expect(statusMappingReady(null)).toBe(false)
   })
+
+  it('refuses the local review gate as a write target', () => {
+    const states: StatusWriteStates = { todo: 'open', in_progress: 'doing', done: 'done' }
+    expectSyncCode(() => encodeStatus('approving', 'doing', states), 'MappingIncompatible')
+  })
 })
 
 describe('encodeStatus and statusForRaw', () => {
@@ -155,6 +160,27 @@ describe('planSync: the status is the only reconciled field', () => {
     const plan = planSync({ local: changed, remote: item, baseline: null, rule: r })
     expect(plan.remotePatch).toEqual({ status: 'in_progress' })
     expect(plan.localPatch).toEqual({})
+  })
+
+  // The review gate is local-only: entering it never writes the platform status,
+  // and leaving it resumes the ordinary push.
+  it('holds the review gate back on the baseline path', () => {
+    const { task, item, base, r } = synced()
+    const gated = { ...task, status: 'approving' as TaskStatus }
+    const plan = planSync({ local: gated, remote: item, baseline: base, rule: r })
+    expect(plan.kind).toBe('unchanged')
+    expect(plan.remotePatch).toEqual({})
+    expect(plan.localPatch).toEqual({})
+    const released = { ...task, status: 'done' as TaskStatus }
+    expect(planSync({ local: released, remote: item, baseline: base, rule: r }).remotePatch).toEqual({ status: 'done' })
+  })
+
+  it('holds the review gate back when the link has no baseline', () => {
+    const { task, item, r } = synced()
+    const gated = { ...task, status: 'approving' as TaskStatus }
+    const plan = planSync({ local: gated, remote: item, baseline: null, rule: r })
+    expect(plan.kind).toBe('unchanged')
+    expect(plan.remotePatch).toEqual({})
   })
 })
 

@@ -30,7 +30,7 @@ describe('non-secret connection authorization config', () => {
     migrateSyncSchema(db)
     const columns = db.prepare('PRAGMA table_info(sync_connections)').all() as any[]
     expect(columns.some(column => column.name === 'authentication')).toBe(true)
-    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 14 })
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
     expect((db.prepare('PRAGMA table_info(sync_rules)').all() as any[]).some(column => column.name === 'project_name')).toBe(true)
     // Schema 11 stores each connection's prefill selection beside the connection.
     expect((db.prepare('PRAGMA table_info(sync_connections)').all() as any[]).some(column => column.name === 'fill_fields')).toBe(true)
@@ -95,7 +95,7 @@ describe('non-secret connection authorization config', () => {
           'remote', '1', NULL, 'legacy-remote', 1, NULL, NULL, 1, 1)`).run(connection.platform, connection.instance)
       db.exec('PRAGMA user_version = 12')
       migrateSyncSchema(db)
-      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(14)
+      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(15)
       const oldRule = config.listRules().find(rule => rule.id === 'old-rule')!
       expect(oldRule.enabled).toBe(false)
       expect(db.prepare('SELECT rule_id FROM sync_links WHERE id = ?').get('link-old'))

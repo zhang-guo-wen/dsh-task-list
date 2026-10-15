@@ -23,7 +23,7 @@ const toGroups = (conditions: readonly WorkitemFilterCondition[]): WorkitemCondi
   conditions.every(condition => condition.value.length === 0) ? [] : [[...conditions.filter(condition => condition.value.some(value => value.trim() !== ''))]]
 
 /** A new rule starts unmapped, so saving without choosing a target is refused. */
-const emptyStatuses = (): StatusWriteStates => ({ todo: '', in_progress: '', done: '' })
+const emptyStatuses = (): StatusWriteStates => ({ todo: '', in_progress: '', done: '' } satisfies StatusWriteStates)
 
 /**
  * One rule's editor: pick the connection, pick a project from the list the

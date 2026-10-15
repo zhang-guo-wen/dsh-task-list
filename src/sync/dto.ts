@@ -1,4 +1,4 @@
-import type { TaskContent, TaskStatus } from '../types.ts'
+import type { MappableStatus, TaskContent } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 
 /** The 18 RPC methods added by the sync feature (connections4/rules4/metadata2/runs4/orgs1/query3). */
@@ -106,8 +106,12 @@ export interface WorkitemFilterCondition {
 /** Groups are ORed; conditions inside one group are ANDed. */
 export type WorkitemConditionGroups = WorkitemFilterCondition[][]
 
-/** The three local statuses a rule maps back to the platform. */
-export type StatusWriteStates = Record<TaskStatus, string>
+/**
+ * The three local statuses a rule maps back to the platform. `approving` is a
+ * local review gate with no remote counterpart, so it is not mappable and a
+ * rule request that carries it is refused.
+ */
+export type StatusWriteStates = Record<MappableStatus, string>
 
 /**
  * A sync rule is one 云效 project plus the query that selects its work items.

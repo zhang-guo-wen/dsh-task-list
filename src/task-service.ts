@@ -1,8 +1,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {
-  CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
-  SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
+  CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, GetTaskGraphRequest,
+  ListTasksRequest, SubtaskRecord, TaskGraph, TaskOverview, TaskPage, TaskRecord, TaskRelation,
+  UpdateSubtaskRequest, UpdateTaskRequest,
 } from './types.ts'
 import type { TaskStore } from './store.ts'
 import type { SyncAuthorizationService } from './sync/authorization-service.ts'
@@ -107,6 +108,24 @@ export class TaskService extends TypertRemoteService {
   async deleteSubtask(request: DeleteSubtaskRequest): Promise<{ deleted: true }> {
     this.store.deleteSubtask(request?.id, request?.version)
     return { deleted: true }
+  }
+
+  /** Parent and wait-on edges of every task, for the relation pickers and the canvas. */
+  @Remote('listTaskRelations')
+  async listTaskRelations(request: Record<string, never>): Promise<TaskRelation[]> {
+    return this.store.listTaskRelations()
+  }
+
+  /** One relationship graph, scoped to a root task or spanning the whole list. */
+  @Remote('getTaskGraph')
+  async getTaskGraph(request: GetTaskGraphRequest): Promise<TaskGraph> {
+    return this.store.graph(request ?? {})
+  }
+
+  /** Counts per status, the derived blocked count, and the Sessions the tasks are handled in. */
+  @Remote('getTaskOverview')
+  async getTaskOverview(request: Record<string, never>): Promise<TaskOverview> {
+    return this.store.overview()
   }
 
   @Remote('listSyncConnections')

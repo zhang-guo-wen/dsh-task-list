@@ -1,0 +1,395 @@
+/* The relationship canvas. Every colour is a semantic theme alias, every corner
+   a theme radius step, and the two transitions are 0.18s and turned off under
+   prefers-reduced-motion. No light/dark selector lives here: the theme owns both. */
+
+.canvas {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family, system-ui, sans-serif);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  flex: none;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.heading {
+  flex: none;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-right: auto;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.statValue {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.statLabel {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.stat[data-status='in_progress'] .statValue { color: var(--dsw-alias-state-business-primary); }
+.stat[data-status='approving'] .statValue { color: var(--dsw-alias-state-warn-label); }
+.stat[data-status='done'] .statValue { color: var(--dsw-alias-state-success-primary); }
+
+/* The four canvas controls are native buttons: 28px tall, keyboard reachable,
+   and a visible focus ring rather than a colour change alone. */
+.viewControls {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.viewControls button {
+  box-sizing: border-box;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.viewControls button:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.viewControls button:active { background: var(--dsw-alias-interactive-bg-active); }
+.viewControls button:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+
+.viewport {
+  position: relative;
+  flex: 1;
+  min-height: 240px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-base);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.viewport[data-dragging='true'] { cursor: grabbing; }
+.viewport:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+
+/* One transformed surface carries the SVG edge layer and the HTML card layer, so
+   panning and zooming never re-lay-out the cards. */
+.surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.edgeParent {
+  fill: none;
+  stroke: var(--dsw-alias-border-l4);
+  stroke-width: 1;
+}
+
+/* A wait edge is dashed and carries an arrow: the waiter points at the task it
+   waits on. */
+.edgeWaits {
+  fill: none;
+  stroke: var(--dsw-alias-state-warn-primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+.arrowParent { fill: var(--dsw-alias-border-l4); }
+.arrowWaits { fill: var(--dsw-alias-state-warn-primary); }
+
+.card {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 236px;
+  height: 118px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-left: 4px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-elevation-soft);
+  overflow: hidden;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.card:hover { box-shadow: var(--dsw-elevation-panel); }
+.card[data-status='done'] { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); }
+
+/* A blocked task reads as a warning surface: amber border, amber-tinted fill. */
+.card[data-blocked='true'] {
+  border-color: var(--dsw-alias-state-warn-primary);
+  border-left-color: var(--dsw-alias-state-warn-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, var(--dsw-alias-bg-base));
+}
+
+.cardTop {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.statusChip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.statusChip[data-status='in_progress'] { background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); }
+.statusChip[data-status='approving'] { background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label); }
+.statusChip[data-status='done'] { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
+
+.priority {
+  flex: none;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+.priority[data-priority='high'] { color: var(--dsw-alias-state-warn-label); }
+.priority[data-priority='urgent'] { color: var(--dsw-alias-state-error-primary); }
+
+.blocked {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: var(--dsw-radius-xs);
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* The title is the card's own control: one line, ellipsised, with the full text
+   in its tooltip. */
+.title {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.title:hover { text-decoration: underline; }
+.title:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; border-radius: var(--dsw-radius-xs); }
+
+.meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.workspace {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-caption);
+}
+
+.sessionRow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The session badge opens the conversation; the Agent mark sits next to it. */
+.session {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-link);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session:hover:not(:disabled) { text-decoration: underline; }
+.session:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.session:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 1px; border-radius: var(--dsw-radius-xs); }
+
+.agentBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 12px;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+
+.sessionEmpty {
+  flex: none;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 240px;
+  padding: 24px;
+  color: var(--dsw-alias-label-tertiary);
+  text-align: center;
+}
+
+.empty strong { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; font-weight: 500; }
+.empty span { font-size: 12px; line-height: 18px; }
+
+.footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 10px;
+}
+
+.nodeCount { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+
+.truncated {
+  margin: 0;
+  padding: 2px 8px;
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* A narrow panel keeps the controls on their own row instead of squeezing the
+   title. Touch targets grow to 44px on coarse pointers. */
+@media (max-width: 560px) {
+  .canvas { padding: 12px; }
+  .header { flex-wrap: wrap; }
+  .viewControls { width: 100%; }
+  .viewControls button { flex: 1; justify-content: center; }
+}
+
+@media (pointer: coarse) {
+  .viewport { touch-action: none; }
+  .title { min-height: 44px; }
+  .session { min-height: 44px; }
+  .viewControls button { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+  .viewControls button { transition: none; }
+}

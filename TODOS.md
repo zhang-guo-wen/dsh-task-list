@@ -2,6 +2,26 @@
 
 These items are not implementation authorization. Added by /autoplan on 2026-10-07 at HEAD 4083365. The sync feature is implemented; these separately scoped follow-ups remain deferred.
 
+## P3: Subtask rows cannot enter the approval gate (recorded 2026-10-14 with the hierarchy work)
+
+- What: Rebuild the `subtasks` table so its `status` CHECK accepts `approving` as well, if checklist rows ever become visible again.
+- Why: `tasks` was rebuilt for the four-status vocabulary, but `subtasks` keeps a three-status CHECK, so `createSubtask`/`updateSubtask` with `approving` fail with `invalid subtask status`. The panel hides the subtask feature today (only the remotes remain on the face), so nothing reaches it.
+- Pros: One status vocabulary across task rows and checklist rows.
+- Cons: Another table rebuild for a surface no current UI shows; it also needs a decision about whether a checklist row's review is meaningful on its own.
+- Context: The store validates the value in TypeScript before SQLite sees it, so the refusal is a clear application error rather than a constraint violation. Do this together with whatever brings the subtask UI back, not on its own.
+- Effort: human 2 hours / AI 30 minutes including a v-style migration test; estimate only.
+- Depends on: A decision to show checklist rows in the panel again.
+
+## P3: In-host end-to-end verification of the canvas views (recorded 2026-10-14)
+
+- What: Drive the topology canvas and the card board inside a real `dsh web` instance, not only in the bundled browser fixture.
+- Why: The fixture drives the real components, the real Host theme tokens, and real Chromium, but it mounts the panel directly rather than through the Host shell. A fresh instance (`npx @deepseek-ai/dsh@0.2.0-rc.1`, isolated `DSH_HOME`, this checkout added as a plugin link) boots to an API-key gate and then a new-session page, so the task page never became reachable without a key.
+- Pros: Proves the slot registration, the three new remotes, and SQLite migrations against the shipped Host in one run.
+- Cons: Needs a provider key or a Host path that reaches the page without one.
+- Context: `tests/verify-host-relations.mjs` already performs the whole walk (sidebar entry, composer relations, approving filter, canvas edges, board counts); it stops at the key gate. The instance used `C:\02-codespace\DeepSeek\.scratch\harness-tests\tasklist-0.8.0-relviews` and port 47311 and was stopped afterwards.
+- Effort: human 15 minutes with a key / AI 15 minutes; estimate only.
+- Depends on: A disposable key or explicit permission to use one for a test instance.
+
 ## P2: Linked-task lifecycle and scale
 - What: Evaluate explicit retirement/unlink behavior only after measuring accumulated linked inventory and request duration.
 - Why: Discovery filters intentionally do not remove existing links. Completed/out-of-filter items can increase every manual run's request count.

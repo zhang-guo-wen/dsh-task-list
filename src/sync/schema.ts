@@ -3,7 +3,7 @@ import type { RemoteKey } from './types.ts'
 import { syncError, syncRemoteError } from './errors.ts'
 
 /** Schema version the sync tables land in; the store refuses anything newer. */
-export const SYNC_SCHEMA_VERSION = 14
+export const SYNC_SCHEMA_VERSION = 15
 
 /**
  * Stable, unique serialization of a remote identity. Ids stay strings and may

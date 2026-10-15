@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Button, IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Option, StatusWriteStates, SyncMetadata } from '../../sync/dto.ts'
 import { statusMappingReady } from '../../sync/mapping.ts'
-import type { TaskStatus } from '../../types.ts'
+import { RULE_STATUSES } from '../../types.ts'
 import type { SyncTranslate } from './SyncResults.tsx'
 import css from './Sync.module.css'
 
@@ -30,8 +30,6 @@ export function MultiChoice({ label, options, selected, onChange, empty }: { lab
     anchor={<Button variant="outline" aria-label={label} aria-haspopup="menu" aria-expanded={open} disabled={options.length === 0}
       onClick={() => setOpen(!open)}><span className={css.choiceValue}>{summary}</span><IconChevronDownOutlineRegular size={14} /></Button>} /></div>
 }
-
-export const RULE_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'done']
 
 /**
  * Every status the project's work-item types expose, deduplicated by id. The

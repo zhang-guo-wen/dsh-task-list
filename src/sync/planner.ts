@@ -53,7 +53,11 @@ export function planSync(input: {
     const remotePatch: SyncPatch = {}
     for (const field of selected) {
       if (field === 'status') {
-        if (!deepEqual(localFields.status, remoteFields.status)) setField(remotePatch, 'status', localFields.status)
+        // `approving` is the local review gate: it has no remote counterpart, so
+        // it is never written back and never blocks the rest of the merge.
+        if (localFields.status !== 'approving' && !deepEqual(localFields.status, remoteFields.status)) {
+          setField(remotePatch, 'status', localFields.status)
+        }
       } else if (!deepEqual(remoteFields[field], localFields[field])) {
         setField(localPatch, field, remoteFields[field])
       }
@@ -70,8 +74,10 @@ export function planSync(input: {
 
   // Status is the only reconciled field and the local side always wins it: the
   // user's own status change is the intent, so the remote target is written back
-  // whether or not the platform moved the status in the meantime.
+  // whether or not the platform moved the status in the meantime. `approving` is
+  // the exception: it is a local review gate with no remote counterpart, so the
+  // task keeps the platform's current status until it leaves the gate.
   const remotePatch: SyncPatch = {}
-  if (localChanged.includes('status')) setField(remotePatch, 'status', localFields.status)
+  if (localChanged.includes('status') && localFields.status !== 'approving') setField(remotePatch, 'status', localFields.status)
   return { kind: hasPatch(remotePatch) ? 'push' : 'unchanged', localPatch: {}, remotePatch, selectedFields: selected }
 }

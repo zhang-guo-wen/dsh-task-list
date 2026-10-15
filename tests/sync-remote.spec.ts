@@ -92,9 +92,10 @@ const mapping = {
 describe('RPC descriptor contract', () => {
   it('exposes sync, authorization, legacy and statistics methods on the taskList namespace', () => {
     const methods = TYPERT_REMOTE.descriptors.map(row => row.method)
-    expect(methods).toHaveLength(35)
+    expect(methods).toHaveLength(38)
     for (const method of SYNC_METHODS) expect(methods).toContain(method)
-    for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask']) {
+    for (const method of ['capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments', 'createSubtask', 'updateSubtask', 'deleteSubtask',
+      'listTaskRelations', 'getTaskGraph', 'getTaskOverview']) {
       expect(methods).toContain(method)
     }
   })

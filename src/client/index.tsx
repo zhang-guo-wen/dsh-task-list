@@ -10,9 +10,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import type {
-  CreateSubtaskRequest, CreateTaskRequest, DeleteSubtaskRequest, DeleteTaskRequest, ListTasksRequest,
-  SubtaskRecord, TaskPage, TaskRecord, UpdateSubtaskRequest, UpdateTaskRequest,
+import {
+  MAX_GRAPH_NODES,
+  type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type DeleteTaskRequest, type ListTasksRequest,
+  type SubtaskRecord, type TaskGraph, type TaskOverview, type TaskPage, type TaskRecord, type TaskRelation,
+  type UpdateSubtaskRequest, type UpdateTaskRequest,
 } from '../types.ts'
 import type { GetWorkitemDescriptionRequest, ListOrganizationsRequest, ListWorkitemFieldsRequest, ListWorkitemsRequest, OrganizationChoice, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage } from '../sync/dto.ts'
 import { REMOTE_NAMESPACE, TYPERT_REMOTE } from '../remote.ts'
@@ -47,6 +49,9 @@ interface RemoteService {
   capabilities(request: Record<string, never>): Promise<RemoteResult<TaskStorageCapabilities>>
   readTaskAttachments(request: { id: string; version: number }): Promise<RemoteResult<TaskAttachmentUpload[]>>
   listTasks(request: ListTasksRequest): Promise<RemoteResult<TaskPage>>
+  listTaskRelations(request: Record<string, never>): Promise<RemoteResult<TaskRelation[]>>
+  getTaskGraph(request: { includeDescendants?: boolean; maxNodes?: number }): Promise<RemoteResult<TaskGraph>>
+  getTaskOverview(request: Record<string, never>): Promise<RemoteResult<TaskOverview>>
   createTask(request: CreateTaskRequest): Promise<RemoteResult<TaskRecord>>
   updateTask(request: UpdateTaskRequest): Promise<RemoteResult<TaskRecord>>
   deleteTask(request: DeleteTaskRequest): Promise<RemoteResult<{ deleted: true }>>
@@ -67,6 +72,7 @@ interface SessionListLike {
     displayTitle?: string
     origin?: string
     blank?: boolean
+    running?: boolean
     /** Host-projected values, including the agent preset a Session runs. */
     projectionValues?: { agentPreset?: unknown }
   } | undefined>
@@ -173,7 +179,22 @@ export async function apply(ctx: Context): Promise<void> {
         archives: archivedSessionIds,
         // `subagent` and `blank` mirror the Host sidebar's own visibility rule:
         // internal subagent runs and retired blank entries never become picker rows.
-        value: { items: ids.map(id => ({ id, title: byId[id]?.displayTitle?.trim() || t('sessionUntitled'), archived: archived.has(id), subagent: byId[id]?.origin === 'subagent', blank: byId[id]?.blank === true })) },
+        // The Canvas and the board also read the Agent preset and the running
+        // state here, so both surfaces describe who handles a task from one
+        // subscription rather than a second Session read.
+        value: { items: ids.map(id => {
+          const row = byId[id]
+          const preset = row?.projectionValues?.agentPreset
+          return {
+            id,
+            title: row?.displayTitle?.trim() || t('sessionUntitled'),
+            archived: archived.has(id),
+            subagent: row?.origin === 'subagent',
+            blank: row?.blank === true,
+            agent: typeof preset === 'string' ? preset : undefined,
+            running: row?.running === true,
+          }
+        }) },
       }
     }
     return sessionCache.value
@@ -243,6 +264,16 @@ export async function apply(ctx: Context): Promise<void> {
       }
     },
     list: request => unwrap(remote().listTasks(request)),
+    // The canvas, the board, and the composer's relation pickers read one
+    // relationship snapshot; the descendant walk is what makes the graph a
+    // whole component rather than one page of rows.
+    taskGraph: async () => unwrap(remote().getTaskGraph({ includeDescendants: true, maxNodes: MAX_GRAPH_NODES })),
+    taskOverview: async () => unwrap(remote().getTaskOverview({})),
+    sessionExecution: sessionId => {
+      const row = sessionSnapshot().items.find(item => item.id === sessionId)
+      if (row === undefined) return null
+      return { title: row.title, agent: row.agent ?? null, running: row.running === true, archived: row.archived }
+    },
     listWorkitems: request => unwrap(remote().listWorkitems(request)),
     listWorkitemFields: request => unwrap(remote().listWorkitemFields(request)),
     getWorkitemDescription: request => unwrap(remote().getWorkitemDescription(request)),

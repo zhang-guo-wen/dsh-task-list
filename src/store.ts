@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
-  DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT,
-  type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type ListTasksRequest,
-  type SubtaskRecord, type TaskPage, type TaskPriority, type TaskRecord, type TaskStatus,
+  DEFAULT_PAGE_SIZE, MAX_GRAPH_NODES, MAX_PAGE_SIZE, SEARCH_LIMIT, TASK_STATUSES,
+  type CreateSubtaskRequest, type CreateTaskRequest, type DeleteSubtaskRequest, type GetTaskGraphRequest,
+  type ListTasksRequest, type SubtaskRecord, type TaskGraph, type TaskGraphNode, type TaskOverview,
+  type TaskPage, type TaskPriority, type TaskRecord, type TaskRelation, type TaskStatus,
   type UpdateSubtaskRequest, type UpdateTaskRequest,
 } from './types.ts'
 
@@ -15,18 +16,23 @@ import { withSqliteTransaction } from './sqlite-transaction.ts'
 import { migrateSyncSchema, SYNC_SCHEMA_VERSION } from './sync/schema.ts'
 import { statisticsSchema } from './statistics-store.ts'
 
-const statuses = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
+const statuses = new Set<TaskStatus>(TASK_STATUSES)
+/** Checklist rows carry no local review gate, so their CHECK stays three-state. */
+const subtaskStatuses = new Set<TaskStatus>(TASK_STATUSES.filter(status => status !== 'approving'))
 const priorities = new Set<TaskPriority>(['low', 'medium', 'high', 'urgent'])
 const titleLimit = 200
 const notesLimit = 20_000
 const subtaskNotesLimit = 2_000
+/** Most tasks one task may wait on. */
+const blockingLimit = 40
 
 /** Current schema version; the store refuses anything newer. This is the sync
  * migration's own version, which writes the same `user_version`, so the two can
  * never drift apart. */
 const schemaVersion = SYNC_SCHEMA_VERSION
 /** Newest rows first inside each status group, with a stable id tie-break. */
-const taskOrder = "ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC, id"
+const taskOrder = `ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1
+  WHEN 'approving' THEN 2 ELSE 3 END, updated_at DESC, id`
 
 function titleOf(value: unknown): string {
   if (typeof value !== 'string') throw new Error('title must be text')
@@ -51,6 +57,11 @@ function subtaskNotesOf(value: unknown): string {
 
 function statusOf(value: unknown): TaskStatus {
   if (!statuses.has(value as TaskStatus)) throw new Error('invalid task status')
+  return value as TaskStatus
+}
+
+function subtaskStatusOf(value: unknown): TaskStatus {
+  if (!subtaskStatuses.has(value as TaskStatus)) throw new Error('invalid subtask status')
   return value as TaskStatus
 }
 
@@ -132,6 +143,27 @@ function pageSizeOf(value: unknown): number {
   return value as number
 }
 
+/** Node cap of one graph request; anything larger than the shared bound is clamped. */
+function graphLimitOf(value: unknown): number {
+  if (value === undefined || value === null) return MAX_GRAPH_NODES
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error('graph node limit must be a positive integer')
+  return Math.min(value as number, MAX_GRAPH_NODES)
+}
+
+/** The tasks one task waits on: id-shaped, at most {@link blockingLimit}, de-duplicated in order. */
+function blockingIdsOf(value: unknown, selfId: string | null): string[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new Error('blocking tasks must be a list')
+  if (value.length > blockingLimit) throw new Error(`a task may wait on at most ${blockingLimit} tasks`)
+  const ids: string[] = []
+  for (const entry of value) {
+    const id = idOf(entry)
+    if (id === selfId) throw new Error('task dependency would contain a cycle')
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
 /**
  * Wrap a literal search phrase for a `LIKE … ESCAPE '\'` comparison.
  * @param query - non-empty phrase already trimmed by the caller.
@@ -139,6 +171,13 @@ function pageSizeOf(value: unknown): number {
  */
 function likePattern(query: string): string {
   return `%${query.replace(/[\\%_]/gu, match => `\\${match}`)}%`
+}
+
+/** Append one edge endpoint to its adjacency list without losing insertion order. */
+function pushInto(map: Map<string, string[]>, key: string, value: string): void {
+  const list = map.get(key)
+  if (list) list.push(value)
+  else map.set(key, [value])
 }
 
 interface TaskRow {
@@ -157,6 +196,7 @@ interface TaskRow {
   useWorktree: number
   startedAt: number | null
   completedAt: number | null
+  parentId: string | null
   version: number
   createdAt: number
   updatedAt: number
@@ -176,8 +216,11 @@ interface SubtaskRow {
 const select = `SELECT id, title, notes, content, status, priority, story_points AS storyPoints,
   tags, workspace_id AS workspaceId, send_immediately AS sendImmediately,
   session_id AS sessionId, agent, use_worktree AS useWorktree,
-  started_at AS startedAt, completed_at AS completedAt,
+  started_at AS startedAt, completed_at AS completedAt, parent_id AS parentId,
   version, created_at AS createdAt, updated_at AS updatedAt FROM tasks`
+
+/** Wait-on edges of one task, oldest insertion first so a replaced set round-trips in order. */
+const selectBlocking = `SELECT task_id AS taskId, depends_on_id AS dependsOnId FROM task_dependencies`
 
 const selectSubtask = `SELECT id, task_id AS taskId, notes, status, session_id AS sessionId,
   version, created_at AS createdAt, updated_at AS updatedAt FROM subtasks`
@@ -193,7 +236,7 @@ function taskOf(row: TaskRow): TaskRecord {
   return {
     ...row, content: storedContentOf(row), tags: tagsOf(JSON.parse(row.tags)),
     sendImmediately: row.sendImmediately === 1, useWorktree: row.useWorktree === 1,
-    subtasks: [],
+    blockingIds: [], subtasks: [],
   }
 }
 
@@ -214,6 +257,117 @@ const subtaskSchema = `CREATE TABLE subtasks (
 ) STRICT;
 CREATE INDEX subtasks_task_created ON subtasks(task_id, created_at);`
 
+/** Every column a task row holds from version 15 on; older rows hold the same minus `parent_id`. */
+const taskColumns = [
+  'id', 'title', 'notes', 'content', 'status', 'priority', 'story_points', 'tags', 'workspace_id',
+  'send_immediately', 'session_id', 'agent', 'use_worktree', 'started_at', 'completed_at',
+  'version', 'created_at', 'updated_at',
+] as const
+const taskColumnSet = new Set<string>(taskColumns)
+const taskColumnList = taskColumns.join(', ')
+
+/**
+ * Column list of the current `tasks` table. `parent_id` is a self-reference with
+ * no delete action: a parent is detached from its children by the delete path
+ * itself, so a hierarchy delete never cascades into subtask rows or links.
+ */
+const taskTableColumns = `(
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}',
+  status TEXT NOT NULL CHECK(status IN ('todo', 'in_progress', 'approving', 'done')),
+  priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent')),
+  story_points INTEGER CHECK(story_points IS NULL OR story_points BETWEEN 0 AND 1000),
+  tags TEXT NOT NULL DEFAULT '[]',
+  workspace_id TEXT,
+  send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1)),
+  session_id TEXT,
+  agent TEXT,
+  use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1)),
+  started_at INTEGER,
+  completed_at INTEGER,
+  parent_id TEXT REFERENCES tasks(id),
+  version INTEGER NOT NULL CHECK(version >= 1),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`
+const taskIndexSchema = `CREATE INDEX tasks_status_updated ON tasks(status, updated_at DESC);
+CREATE INDEX tasks_parent ON tasks(parent_id);`
+const taskSchema = `CREATE TABLE tasks ${taskTableColumns};
+${taskIndexSchema}`
+
+/** Wait-on edges; both ends are tasks, and removing either end removes the edge. */
+const taskDependencySchema = `CREATE TABLE task_dependencies (
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  depends_on_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  PRIMARY KEY (task_id, depends_on_id)
+) STRICT;
+CREATE INDEX task_dependencies_depends_on ON task_dependencies(depends_on_id);`
+const dependencyColumns = ['task_id', 'depends_on_id'] as const
+
+/** The stored shape of one table, or null when it does not exist yet. */
+function tableShape(db: DatabaseSync, table: string): { columns: Set<string>; sql: string } | null {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined
+  if (row === undefined) return null
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]
+  return { columns: new Set(columns.map(column => column.name)), sql: row.sql }
+}
+
+/**
+ * Rewrite `tasks` into the version-15 shape without inventing or dropping a row.
+ *
+ * The rebuild follows SQLite's documented table-rebuild order and relies on the
+ * caller having disabled foreign keys for it: `DROP TABLE tasks` would otherwise
+ * run its implicit delete with the children's `ON DELETE CASCADE` still armed and
+ * would take every subtask, attachment and link down with it. The copy names its
+ * columns explicitly, so the new `parent_id` starts out NULL for every old row.
+ */
+function rebuildTaskTable(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE tasks_v15 ${taskTableColumns};
+    INSERT INTO tasks_v15 (${taskColumnList}) SELECT ${taskColumnList} FROM tasks;
+    DROP TABLE tasks;
+    ALTER TABLE tasks_v15 RENAME TO tasks;
+    ${taskIndexSchema}`)
+}
+
+/**
+ * Create or check the wait-on table. A database whose `user_version` was reset by
+ * hand can already carry it, and its shape must be exactly this one — an unknown
+ * shape is a storage failure, never a heuristic drop.
+ */
+function ensureTaskDependencies(db: DatabaseSync): void {
+  const shape = tableShape(db, 'task_dependencies')
+  if (shape === null) {
+    db.exec(taskDependencySchema)
+    return
+  }
+  const known = dependencyColumns.every(column => shape.columns.has(column))
+    && [...shape.columns].every(column => (dependencyColumns as readonly string[]).includes(column))
+  if (!known) throw new Error('task database has an unrecognized task_dependencies table')
+  db.exec('CREATE INDEX IF NOT EXISTS task_dependencies_depends_on ON task_dependencies(depends_on_id)')
+}
+
+/**
+ * Whether `tasks` still carries the pre-15 shape. Only the exact old or the exact
+ * new shape is accepted: a column list that is neither is a storage failure,
+ * because a rebuild may only rewrite a shape it fully recognizes.
+ */
+function tasksNeedRebuild(db: DatabaseSync): boolean {
+  const shape = tableShape(db, 'tasks')
+  if (shape === null) return false
+  const known = taskColumns.every(column => shape.columns.has(column))
+    && [...shape.columns].every(column => taskColumnSet.has(column) || column === 'parent_id')
+  if (!known) throw new Error('task database has an unrecognized tasks table')
+  const approving = shape.sql.includes("'approving'")
+  if (shape.columns.has('parent_id')) {
+    if (!approving) throw new Error('task database has an unrecognized tasks table')
+    return false
+  }
+  if (approving) throw new Error('task database has an unrecognized tasks table')
+  return true
+}
+
 export class TaskStore {
   readonly db: DatabaseSync
 
@@ -228,30 +382,19 @@ export class TaskStore {
         const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
         if (existing.length) throw new Error('task database has unrecognized tables')
       }
-      // The whole 0..6 migration runs in one transaction; any stage failing rolls every stage back.
+      // Rebuilding `tasks` drops the table it replaces, and `DROP TABLE` runs its
+      // implicit delete with the children's ON DELETE CASCADE armed unless foreign
+      // keys are off first. The pragma is a no-op inside a transaction, so it is
+      // decided here and restored after the commit.
+      const existingTasks = tableShape(this.db, 'tasks')
+      const legacyTasks = existingTasks !== null && !existingTasks.columns.has('parent_id')
+      if (legacyTasks) this.db.exec('PRAGMA foreign_keys = OFF')
+      // The whole 0..15 migration runs in one transaction; any stage failing rolls every stage back.
       withSqliteTransaction(this.db, () => {
         if (version.user_version === 0) {
-          this.db.exec(`CREATE TABLE tasks (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            notes TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL CHECK(status IN ('todo', 'in_progress', 'done')),
-            priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent')),
-            story_points INTEGER CHECK(story_points IS NULL OR story_points BETWEEN 0 AND 1000),
-            tags TEXT NOT NULL DEFAULT '[]',
-            workspace_id TEXT,
-            send_immediately INTEGER NOT NULL DEFAULT 0 CHECK(send_immediately IN (0, 1)),
-            session_id TEXT,
-            agent TEXT,
-            use_worktree INTEGER NOT NULL DEFAULT 0 CHECK(use_worktree IN (0, 1)),
-            started_at INTEGER,
-            completed_at INTEGER,
-            version INTEGER NOT NULL CHECK(version >= 1),
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-          ) STRICT;
-          CREATE INDEX tasks_status_updated ON tasks(status, updated_at DESC);
-          ${subtaskSchema}`)
+          this.db.exec(`${taskSchema}
+          ${subtaskSchema}
+          ${taskDependencySchema}`)
         } else if (version.user_version === 1) {
           this.db.exec(`ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent'));
             ALTER TABLE tasks ADD COLUMN story_points INTEGER CHECK(story_points IS NULL OR story_points BETWEEN 0 AND 1000);
@@ -274,17 +417,26 @@ export class TaskStore {
           this.db.exec(subtaskSchema)
         }
         if (version.user_version < 5) {
-          this.db.exec(`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}';
-            CREATE TABLE task_attachments (
+          // A fresh version-0 database already carries `content`; an older one gains
+          // it here, together with the bytes table that belongs to it.
+          if (!tableShape(this.db, 'tasks')!.columns.has('content')) {
+            this.db.exec(`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT '{"version":1,"blocks":[]}'`)
+            const rows = this.db.prepare('SELECT id, notes FROM tasks').all() as unknown as { id: string; notes: string }[]
+            const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
+            for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
+          }
+          this.db.exec(`CREATE TABLE task_attachments (
               id TEXT PRIMARY KEY,
               task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
               data BLOB NOT NULL
             ) STRICT;
             CREATE INDEX task_attachments_task ON task_attachments(task_id);`)
-          const rows = this.db.prepare('SELECT id, notes FROM tasks').all() as unknown as { id: string; notes: string }[]
-          const write = this.db.prepare('UPDATE tasks SET content = ? WHERE id = ?')
-          for (const row of rows) write.run(JSON.stringify(textContent(row.notes)), row.id)
         }
+        // Version 15 adds the hierarchy link and the wait-on table. The rebuild is
+        // resolved from the stored shape, never guessed: a table that is neither
+        // the exact old nor the exact new form is refused.
+        if (tasksNeedRebuild(this.db)) rebuildTaskTable(this.db)
+        ensureTaskDependencies(this.db)
         if (version.user_version < schemaVersion) migrateSyncSchema(this.db)
         // The statistics table is a rebuildable projection cache, not task data:
         // an older build can ignore it and a newer one recreates it on demand.
@@ -292,6 +444,13 @@ export class TaskStore {
         // downgrade from locking the task database out of an older build.
         this.db.exec(statisticsSchema)
       })
+      if (legacyTasks) {
+        // The rebuild is committed; verify the references it left behind before
+        // re-arming enforcement for the rest of the connection's life.
+        const violations = this.db.prepare('PRAGMA foreign_key_check').all()
+        this.db.exec('PRAGMA foreign_keys = ON')
+        if (violations.length > 0) throw new Error('task database failed foreign key verification')
+      }
     } catch (error) {
       try { this.db.exec('ROLLBACK') } catch { /* no active transaction */ }
       this.db.close()
@@ -340,12 +499,12 @@ export class TaskStore {
     const page = Math.min(pageOf(request.page), pageCount)
     const rows = this.db.prepare(`${select}${where} ${taskOrder} LIMIT ? OFFSET ?`)
       .all(...parameters, pageSize, (page - 1) * pageSize) as unknown as TaskRow[]
-    return { items: this.attachSubtasks(rows.map(taskOf)), total: counted.total, page, pageSize }
+    return { items: this.hydrate(rows.map(taskOf)), total: counted.total, page, pageSize }
   }
 
   get(id: string): TaskRecord | null {
     const row = this.db.prepare(`${select} WHERE id = ?`).get(idOf(id)) as unknown as TaskRow | undefined
-    return row ? this.attachSubtasks([taskOf(row)])[0]! : null
+    return row ? this.hydrate([taskOf(row)])[0]! : null
   }
 
   /**
@@ -359,6 +518,146 @@ export class TaskStore {
     return this.db.prepare(`SELECT completed_at AS time, COALESCE(story_points, 0) AS points
       FROM tasks WHERE completed_at IS NOT NULL AND completed_at >= ? AND completed_at < ?
       ORDER BY completed_at`).all(from, to) as unknown as { time: number; points: number }[]
+  }
+
+  /**
+   * Parent and wait-on edges of one task.
+   * @param id - the task id; the task must exist.
+   * @returns the same edge projection a task row carries.
+   */
+  relations(id: string): TaskRelation {
+    const taskId = idOf(id)
+    const row = this.db.prepare('SELECT parent_id AS parentId FROM tasks WHERE id = ?').get(taskId) as { parentId: string | null } | undefined
+    if (row === undefined) throw new Error('task not found')
+    const edges = this.db.prepare(`${selectBlocking} WHERE task_id = ? ORDER BY rowid`)
+      .all(taskId) as unknown as { taskId: string; dependsOnId: string }[]
+    return { taskId, parentId: row.parentId, blockingIds: edges.map(edge => edge.dependsOnId) }
+  }
+
+  /**
+   * Every task's parent and wait-on edges, for a caller that needs the whole
+   * relationship set without materializing the tasks.
+   * @returns one entry per task, oldest row first.
+   */
+  listTaskRelations(): TaskRelation[] {
+    const rows = this.db.prepare('SELECT id, parent_id AS parentId FROM tasks ORDER BY created_at, id')
+      .all() as unknown as { id: string; parentId: string | null }[]
+    const grouped = new Map<string, string[]>()
+    for (const edge of this.db.prepare(`${selectBlocking} ORDER BY rowid`).all() as unknown as { taskId: string; dependsOnId: string }[]) {
+      pushInto(grouped, edge.taskId, edge.dependsOnId)
+    }
+    return rows.map(row => ({ taskId: row.id, parentId: row.parentId, blockingIds: grouped.get(row.id) ?? [] }))
+  }
+
+  /**
+   * One relationship graph.
+   *
+   * Without a root the whole task table is one graph. With a root the node set
+   * starts at that task and follows only the requested edges: `includeDescendants`
+   * down the parent chain, `includeAncestors` up it, and `includeBlockers` along
+   * the wait-on edges to the tasks the root waits for. A node carries only the
+   * edges whose far end is in the same result, so `waitsOn` and `waitedOnBy`
+   * stay each other's reverse within one graph; `task.parentId` and
+   * `task.blockingIds` keep the stored truth either way. `blocked` is derived
+   * from the stored edges, never from the node set: waiting on a task the request
+   * left out still blocks.
+   *
+   * @param request - root and edge scope, plus the node cap (clamped to `MAX_GRAPH_NODES`).
+   * @returns the selected nodes in task-list order, and whether the cap cut them.
+   */
+  graph(request: GetTaskGraphRequest = {}): TaskGraph {
+    const limit = graphLimitOf(request?.maxNodes)
+    const tasks = (this.db.prepare(`${select} ${taskOrder}`).all() as unknown as TaskRow[]).map(taskOf)
+    const blocking = new Map<string, string[]>()
+    const waitedOnBy = new Map<string, string[]>()
+    for (const edge of this.db.prepare(`${selectBlocking} ORDER BY rowid`).all() as unknown as { taskId: string; dependsOnId: string }[]) {
+      pushInto(blocking, edge.taskId, edge.dependsOnId)
+      pushInto(waitedOnBy, edge.dependsOnId, edge.taskId)
+    }
+    const byId = new Map(tasks.map(task => [task.id, task]))
+    const children = new Map<string, string[]>()
+    for (const task of tasks) {
+      if (task.parentId !== null && byId.has(task.parentId)) pushInto(children, task.parentId, task.id)
+    }
+    const chosen = this.scopeGraph(request, tasks, byId, children, blocking)
+    const truncated = chosen.length > limit
+    const selected = this.hydrate(chosen.slice(0, limit))
+    const ids = new Set(selected.map(task => task.id))
+    const nodes: TaskGraphNode[] = selected.map(task => {
+      const waits = task.blockingIds
+      return {
+        task,
+        parents: task.parentId !== null && ids.has(task.parentId) ? [task.parentId] : [],
+        children: (children.get(task.id) ?? []).filter(id => ids.has(id)),
+        waitsOn: waits.filter(id => ids.has(id)),
+        waitedOnBy: (waitedOnBy.get(task.id) ?? []).filter(id => ids.has(id)),
+        blocked: task.status !== 'done' && waits.some(id => byId.get(id)?.status !== 'done'),
+      }
+    })
+    return { nodes, truncated }
+  }
+
+  /**
+   * Counts per status, the derived blocked count, and the Sessions the tasks are
+   * handled in.
+   * @returns four counts, the total, the blocked count, and the distinct linked
+   *   session ids, most recently updated task first.
+   */
+  overview(): TaskOverview {
+    const rows = this.db.prepare('SELECT id, status, session_id AS sessionId, updated_at AS updatedAt FROM tasks')
+      .all() as unknown as { id: string; status: TaskStatus; sessionId: string | null; updatedAt: number }[]
+    const blocking = new Map<string, string[]>()
+    for (const edge of this.db.prepare(`${selectBlocking} ORDER BY rowid`).all() as unknown as { taskId: string; dependsOnId: string }[]) {
+      pushInto(blocking, edge.taskId, edge.dependsOnId)
+    }
+    const statusById = new Map(rows.map(row => [row.id, row.status]))
+    const counts: Record<TaskStatus, number> = { todo: 0, in_progress: 0, approving: 0, done: 0 }
+    const sessions = new Map<string, number>()
+    let blocked = 0
+    for (const row of rows) {
+      counts[row.status] += 1
+      if (row.sessionId !== null) sessions.set(row.sessionId, Math.max(sessions.get(row.sessionId) ?? 0, row.updatedAt))
+      const waits = blocking.get(row.id) ?? []
+      if (row.status !== 'done' && waits.some(id => statusById.get(id) !== 'done')) blocked += 1
+    }
+    const sessionIds = [...sessions.entries()]
+      .sort((left, right) => right[1] - left[1] || (left[0] < right[0] ? -1 : 1))
+      .map(([id]) => id)
+    return { counts, total: rows.length, blocked, sessionIds }
+  }
+
+  /** Nodes one graph request covers, in task-list order. */
+  private scopeGraph(
+    request: GetTaskGraphRequest,
+    tasks: TaskRecord[],
+    byId: Map<string, TaskRecord>,
+    children: Map<string, string[]>,
+    blocking: Map<string, string[]>,
+  ): TaskRecord[] {
+    const rootId = request?.rootId === undefined || request?.rootId === null ? null : idOf(request.rootId)
+    if (rootId === null) return tasks
+    if (!byId.has(rootId)) throw new Error('task not found')
+    const chosen = new Set<string>([rootId])
+    const walk = (next: (id: string) => readonly string[]): void => {
+      const queue = [rootId]
+      while (queue.length > 0) {
+        const current = queue.pop()!
+        for (const id of next(current)) {
+          if (chosen.has(id)) continue
+          chosen.add(id)
+          queue.push(id)
+        }
+      }
+    }
+    if (request.includeDescendants) walk(id => children.get(id) ?? [])
+    if (request.includeAncestors) {
+      walk(id => {
+        const parentId = byId.get(id)?.parentId
+        return parentId === null || parentId === undefined ? [] : [parentId]
+      })
+    }
+    if (request.includeBlockers) walk(id => blocking.get(id) ?? [])
+    return tasks.filter(task => chosen.has(task.id))
   }
 
   /** Rows of one task, oldest first. */
@@ -387,25 +686,91 @@ export class TaskStore {
     return tasks.map(task => ({ ...task, subtasks: grouped.get(task.id) ?? [] }))
   }
 
+  /**
+   * Load the wait-on edges of the given tasks with one query, preserving both task
+   * order and the order inside each set, so a replaced set round-trips unchanged.
+   */
+  private attachBlocking(tasks: TaskRecord[]): TaskRecord[] {
+    if (tasks.length === 0) return tasks
+    const ids = tasks.map(task => task.id)
+    const rows = this.db.prepare(`${selectBlocking} WHERE task_id IN (${ids.map(() => '?').join(', ')}) ORDER BY rowid`)
+      .all(...ids) as unknown as { taskId: string; dependsOnId: string }[]
+    const grouped = new Map<string, string[]>()
+    for (const row of rows) {
+      const list = grouped.get(row.taskId)
+      if (list) list.push(row.dependsOnId)
+      else grouped.set(row.taskId, [row.dependsOnId])
+    }
+    return tasks.map(task => ({ ...task, blockingIds: grouped.get(task.id) ?? [] }))
+  }
+
+  /** Rows, checklist rows, and wait-on edges of every given task, batched per relation. */
+  private hydrate(tasks: TaskRecord[]): TaskRecord[] {
+    return this.attachBlocking(this.attachSubtasks(tasks))
+  }
+
+  /** Replace one task's wait-on set; the caller decides the transaction it belongs to. */
+  private replaceBlocking(taskId: string, blockingIds: readonly string[]): void {
+    this.db.prepare('DELETE FROM task_dependencies WHERE task_id = ?').run(taskId)
+    const insert = this.db.prepare('INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)')
+    for (const dependsOnId of blockingIds) insert.run(taskId, dependsOnId)
+  }
+
+  /** The task must exist and its own chain must not reach `taskId` again. */
+  private assertParent(parentId: string, taskId: string): void {
+    const seen = new Set<string>([taskId])
+    let current: string | null = parentId
+    while (current !== null) {
+      if (seen.has(current)) throw new Error('task hierarchy would contain a cycle')
+      seen.add(current)
+      const row = this.db.prepare('SELECT parent_id AS parentId FROM tasks WHERE id = ?').get(current) as { parentId: string | null } | undefined
+      if (row === undefined) throw new Error('parent task not found')
+      current = row.parentId
+    }
+  }
+
+  /** Every wait-on target must exist, and no closure of theirs may reach back to `taskId`. */
+  private assertBlocking(taskId: string, blockingIds: readonly string[]): void {
+    const exists = this.db.prepare('SELECT 1 FROM tasks WHERE id = ?')
+    for (const id of blockingIds) if (exists.get(id) === undefined) throw new Error('blocking task not found')
+    const seen = new Set<string>()
+    const queue = [...blockingIds]
+    const edges = this.db.prepare('SELECT depends_on_id AS dependsOnId FROM task_dependencies WHERE task_id = ?')
+    while (queue.length > 0) {
+      const current = queue.pop()!
+      if (current === taskId) throw new Error('task dependency would contain a cycle')
+      if (seen.has(current)) continue
+      seen.add(current)
+      for (const row of edges.all(current) as unknown as { dependsOnId: string }[]) queue.push(row.dependsOnId)
+    }
+  }
+
   create(input: CreateTaskRequest): TaskRecord {
     const id = randomUUID()
     const now = Date.now()
     // A task may be created already running or already finished, so the
     // timestamps follow the same rule as a status change on an existing row.
     const status = statusOf(input?.status ?? 'todo')
+    const parentId = input?.parentId === undefined || input?.parentId === null ? null : idOf(input.parentId)
+    const blockingIds = blockingIdsOf(input?.blockingIds, id)
     const content = validateContent(input?.content ?? textContent(notesOf(input?.notes ?? '')))
+    // The row, its wait-on edges, and its attachment bytes share one transaction:
+    // a refused edge leaves no half-linked task behind.
     return this.writeContent(id, content, input?.attachments ?? [], () => {
+    if (parentId !== null) this.assertParent(parentId, id)
+    this.assertBlocking(id, blockingIds)
     this.db.prepare(`INSERT INTO tasks
       (id, title, notes, content, status, priority, story_points, tags, workspace_id,
-       send_immediately, session_id, agent, use_worktree, started_at, completed_at, version, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
+       send_immediately, session_id, agent, use_worktree, started_at, completed_at, parent_id, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(
       id, titleOf(input?.title), contentText(content), JSON.stringify(content), status, priorityOf(input?.priority ?? 'medium'),
       storyPointsOf(input?.storyPoints ?? null), JSON.stringify(tagsOf(input?.tags ?? [])),
       workspaceIdOf(input?.workspaceId ?? null), booleanOf(input?.sendImmediately ?? false, 'send immediately') ? 1 : 0,
       optionalIdOf(input?.sessionId ?? null, 'session id'), optionalIdOf(input?.agent ?? null, 'agent'),
       booleanOf(input?.useWorktree ?? false, 'use worktree') ? 1 : 0,
-      status === 'in_progress' ? now : null, status === 'done' ? now : null, now, now,
+      status === 'in_progress' ? now : null, status === 'done' ? now : null, parentId, now, now,
     )
+    this.replaceBlocking(id, blockingIds)
     return this.get(id)!
     })
   }
@@ -429,19 +794,27 @@ export class TaskStore {
     const sessionId = input.sessionId === undefined ? current.sessionId : optionalIdOf(input.sessionId, 'session id')
     const agent = input.agent === undefined ? current.agent : optionalIdOf(input.agent, 'agent')
     const useWorktree = input.useWorktree === undefined ? current.useWorktree === 1 : booleanOf(input.useWorktree, 'use worktree')
+    const parentId = input.parentId === undefined
+      ? current.parentId
+      : input.parentId === null ? null : idOf(input.parentId)
+    // `undefined` keeps the stored set; any other value replaces it whole.
+    const blockingIds = input.blockingIds === undefined ? null : blockingIdsOf(input.blockingIds, id)
     const now = Date.now()
     const startedAt = status === 'in_progress' && current.startedAt === null ? now : current.startedAt
     const completedAt = status === current.status ? current.completedAt : status === 'done' ? now : null
     return this.writeContent(id, content, input.attachments ?? [], () => {
+    if (parentId !== null && parentId !== current.parentId) this.assertParent(parentId, id)
+    if (blockingIds !== null) this.assertBlocking(id, blockingIds)
     const result = this.db.prepare(`UPDATE tasks SET title = ?, notes = ?, content = ?, status = ?, priority = ?, story_points = ?,
       tags = ?, workspace_id = ?, send_immediately = ?, session_id = ?, agent = ?, use_worktree = ?,
-      started_at = ?, completed_at = ?, version = version + 1, updated_at = ?
+      started_at = ?, completed_at = ?, parent_id = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND version = ?`).run(
       title, notes, JSON.stringify(content), status, priority, storyPoints, JSON.stringify(tags), workspaceId,
       sendImmediately ? 1 : 0, sessionId, agent, useWorktree ? 1 : 0,
-      startedAt, completedAt, now, id, version,
+      startedAt, completedAt, parentId, now, id, version,
     )
     if (result.changes !== 1) throw new Error('task changed; refresh and retry')
+    if (blockingIds !== null) this.replaceBlocking(id, blockingIds)
     return this.get(id)!
     })
   }
@@ -501,6 +874,9 @@ export class TaskStore {
         this.db.prepare(`UPDATE sync_write_intents SET task_id = NULL, updated_at = ?
           WHERE link_id = ? AND phase IN ('dispatched', 'unknown')`).run(now, link.id)
       }
+      // Children are detached, never deleted: the hierarchy is a link, not ownership.
+      // Wait-on edges of this task are removed by the foreign key's cascade.
+      this.db.prepare('UPDATE tasks SET parent_id = NULL WHERE parent_id = ?').run(taskId)
       const result = this.db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(taskId, taskVersion)
       if (result.changes !== 1) throw new Error('task missing or changed; refresh and retry')
     })
@@ -513,7 +889,7 @@ export class TaskStore {
     const now = Date.now()
     this.db.prepare(`INSERT INTO subtasks (id, task_id, notes, status, session_id, version, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`).run(
-      id, taskId, subtaskNotesOf(input?.notes), statusOf(input?.status ?? 'todo'),
+      id, taskId, subtaskNotesOf(input?.notes), subtaskStatusOf(input?.status ?? 'todo'),
       optionalIdOf(input?.sessionId ?? null, 'session id'), now, now,
     )
     return this.getSubtask(id)!
@@ -526,7 +902,7 @@ export class TaskStore {
     if (!current) throw new Error('subtask not found')
     if (current.version !== version) throw new Error('subtask changed; refresh and retry')
     const notes = input.notes === undefined ? current.notes : subtaskNotesOf(input.notes)
-    const status = input.status === undefined ? current.status : statusOf(input.status)
+    const status = input.status === undefined ? current.status : subtaskStatusOf(input.status)
     const sessionId = input.sessionId === undefined ? current.sessionId : optionalIdOf(input.sessionId, 'session id')
     const result = this.db.prepare(`UPDATE subtasks SET notes = ?, status = ?, session_id = ?,
       version = version + 1, updated_at = ? WHERE id = ? AND version = ?`)

@@ -190,7 +190,7 @@ function toSyncRule(row: RuleRow): SyncRule {
   const storedStates = parseStored<StatusWriteStates>(row.status_write_states, 'statusWriteStates')
   // v13 gave preexisting rules an empty map. Keep them visible for editing,
   // without ever allowing an unmapped rule to run.
-  const statusWriteStates = row.enabled === 0 && Object.keys(storedStates).length === 0
+  const statusWriteStates: StatusWriteStates = row.enabled === 0 && Object.keys(storedStates).length === 0
     ? { todo: '', in_progress: '', done: '' }
     : storedStates
   return {

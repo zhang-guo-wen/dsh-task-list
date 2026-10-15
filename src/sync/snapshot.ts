@@ -47,6 +47,8 @@ function optional<T>(field: FieldValue<T>, fallback: T): T {
 
 /** Canonical local snapshot: attachments stripped, marks canonicalized, tags normalized. */
 export function projectLocal(task: TaskRecord, _projection: SyncProjection): SyncFields {
+  // The status passes through unchanged, `approving` included: it stays comparable
+  // as a local value, and the planner is what keeps the review gate off the wire.
   return {
     title: task.title,
     status: task.status,

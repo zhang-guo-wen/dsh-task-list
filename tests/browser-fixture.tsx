@@ -62,6 +62,31 @@ const face = {
   listAgents: async () => [], workspaceSnapshot: () => snapshot, subscribeWorkspaces: subscribe,
   sessionSnapshot: () => sessionSnapshot,
   subscribeSessions: (listener: () => void) => { sessionListeners.add(listener); return () => { sessionListeners.delete(listener) } },
+  // The relationship surfaces read one graph and one overview; the fixture
+  // derives both from the rows it already serves, including the reverse edges
+  // the Host computes (children and waitedOnBy), so the canvas lays out the same
+  // hierarchy the store would.
+  taskGraph: async () => ({
+    nodes: tasks.map(task => ({
+      task,
+      parents: task.parentId === null ? [] : [task.parentId],
+      children: tasks.filter(row => row.parentId === task.id).map(row => row.id),
+      waitsOn: [...task.blockingIds],
+      waitedOnBy: tasks.filter(row => row.blockingIds.includes(task.id)).map(row => row.id),
+      blocked: task.status !== 'done' && task.blockingIds.some(id => tasks.find(row => row.id === id)?.status !== 'done'),
+    })),
+    truncated: false,
+  }),
+  taskOverview: async () => ({
+    counts: { todo: tasks.filter(task => task.status === 'todo').length, in_progress: tasks.filter(task => task.status === 'in_progress').length,
+      approving: tasks.filter(task => task.status === 'approving').length, done: tasks.filter(task => task.status === 'done').length },
+    total: tasks.length, blocked: tasks.filter(task => task.status !== 'done' && task.blockingIds.length > 0).length,
+    sessionIds: tasks.map(task => task.sessionId).filter((id): id is string => id !== null),
+  }),
+  sessionExecution: (sessionId: string) => {
+    const row = sessionSnapshot.items.find(item => item.id === sessionId)
+    return row === undefined ? null : { title: row.title, agent: null, running: false, archived: row.archived }
+  },
   sync: {
     listSyncConnections: async () => syncConnections, listSyncRules: async () => [],
     listSyncRuns: async () => ({ items: [], total: 0, page: 1, pageSize: 1 }),
@@ -134,7 +159,27 @@ Object.assign(window, { fixture: {
     sessionSnapshot = { items: sessionSnapshot.items.map(row => row.id === id ? { ...row, archived } : row) }
     sessionListeners.forEach(listener => listener())
   },
-  addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },
+  addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, parentId: null, blockingIds: [], version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },
+  /**
+   * Seed one three-task hierarchy: `审批父任务` carries the running session,
+   * `审批子任务` sits under it and waits on `前置依赖`, so the canvas has one
+   * solid parent edge, one dashed wait edge, and a blocked card to draw.
+   */
+  seedRelations: () => {
+    const now = Date.now()
+    const row = (over: Partial<TaskRecord> & { id: string; title: string }): TaskRecord => ({
+      notes: over.title, content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: over.title }] }] }, status: 'todo', priority: 'medium', storyPoints: null,
+      tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false,
+      startedAt: null, completedAt: null, parentId: null, blockingIds: [], version: 1, createdAt: now, updatedAt: now,
+      subtasks: [], ...over,
+    })
+    tasks = [
+      row({ id: 'relation-blocker', title: '前置依赖', notes: '前置依赖' }),
+      row({ id: 'relation-child', title: '审批子任务', notes: '审批子任务', status: 'approving', parentId: 'relation-parent', blockingIds: ['relation-blocker'] }),
+      row({ id: 'relation-parent', title: '审批父任务', notes: '审批父任务', status: 'in_progress', sessionId: 'session-current' }),
+      ...tasks,
+    ]
+  },
   captures: () => captureRequests,
   setCaptureLink: (patch: Partial<typeof captureLink>) => { captureLink = { ...captureLink, ...patch } },
   input: () => input,

@@ -42,6 +42,11 @@ const bundle = await rolldown({
   transform: { define: { 'process.env.NODE_ENV': '"development"' } },
   plugins: [{ name: 'host-primitives', resolveId(source) {
     if (source in host.aliases) return host.aliases[source]
+    // The Host's own component sources import `clsx`, and the Host checkout has
+    // no installed dependencies for the bundler to reach, so the fixture supplies
+    // the stand-in in tests/fixtures/clsx.ts. `lib/` is unaffected: it resolves
+    // clsx from the running Host.
+    if (source === 'clsx') return resolve(root, 'tests/fixtures/clsx.ts')
     if (source === 'react') return resolve(root, 'node_modules/react/index.js')
     if (source === 'react/jsx-runtime') return resolve(root, 'node_modules/react/jsx-runtime.js')
     if (source === 'react-dom') return resolve(root, 'node_modules/react-dom/index.js')

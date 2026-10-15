@@ -10,8 +10,7 @@ import type {
   WorkitemConditionGroups, WorkitemFilterCondition, WorkitemFilterOperator, GetWorkitemDescriptionRequest,
   WorkitemFillField,
 } from './dto.ts'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../types.ts'
-import type { TaskStatus } from '../types.ts'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, RULE_STATUSES } from '../types.ts'
 import type { RemoteKey, SyncField } from './types.ts'
 import { LIST_FIELDS } from './query/fields.ts'
 import { CONDITION_FIELDS } from './query/filters.ts'
@@ -27,7 +26,8 @@ const NAME_LIMIT = 100
 const ENV_LIMIT = 128
 const SUMMARY_LIMIT = 200
 
-const TASK_STATUSES = new Set<TaskStatus>(['todo', 'in_progress', 'done'])
+/** The three mappable statuses a rule writes; `approving` stays local and is refused here. */
+const RULE_STATUS_SET = new Set<string>(RULE_STATUSES)
 const SYNC_FIELD_NAMES = new Set<SyncField>(['title', 'description', 'status', 'priority', 'tags', 'storyPoints'])
 const SCOPES = new Set<SyncErrorScope>(['config', 'connection', 'rule', 'item', 'run', 'query'])
 const DOC_KEY_SET = new Set<string>(DOC_KEYS)
@@ -253,9 +253,9 @@ const UPDATE_RULE_KEYS = new Set(['id', 'revision', 'projectId', 'projectName', 
  */
 function parseStatusWriteStates(scope: SyncErrorScope, value: unknown, allowUnmapped = false): StatusWriteStates {
   const object = parseObject(scope, value, 'statusWriteStates')
-  closedKeys(scope, object, new Set(TASK_STATUSES), 'statusWriteStates')
+  closedKeys(scope, object, RULE_STATUS_SET, 'statusWriteStates')
   const out = {} as StatusWriteStates
-  for (const status of TASK_STATUSES) out[status] = allowUnmapped
+  for (const status of RULE_STATUSES) out[status] = allowUnmapped
     ? boundedText(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT).trim()
     : text(scope, object[status], `statusWriteStates.${status}`, ID_LIMIT, true)
   return out

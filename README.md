@@ -18,6 +18,27 @@ This plugin brings task management into Harness:
 - **Create a task without leaving the page**: anywhere else in Harness — with no field, terminal, or dialog focused — the same `Ctrl+S` (`Cmd+S` on macOS) opens the **New task** dialog on top of whatever page you are on. The panel does not switch and nothing navigates: save the task and carry on from where you were, or close it with **Cancel**.
 - **Keep task context together**: rich text, attachments, priority, tags, story points, session links, and created, started, and completed timestamps. When creating or editing a task, image attachments show thumbnails; click a thumbnail to enlarge it, and close with Escape, the backdrop, or the close button. Downloads remain available for all attachments.
 
+## Hierarchy, dependencies, and the canvas views
+
+Tasks are not only a flat list. The **View** switch at the right of the page header offers three surfaces over the same task data and the same status filter:
+
+- **List**: the original row list, with search, workspace filters, and paging.
+- **Topology**: a canvas that draws how tasks relate. A parent/child relation is a solid line (parents on the left, children on the right, one column per depth) and a dependency is a dashed arrow pointing from **the waiting task to the task it waits for**. The wheel zooms (0.4×–2×), a drag pans, and **Fit to window / Zoom in / Zoom out / Reset view** sit at the top right; the keyboard pans and zooms too. Each card shows status, priority, title, workspace, the executing session and its bot, and a blocked card is marked.
+- **Cards**: a compact status board. The top counts every status (click a count to filter), with the total, the blocked count, and the number of linked sessions; the middle groups cards by status; the bottom aggregates **by session** — which tasks a session works on, with the session title, its bot (the Agent preset), and a Running/Idle badge. Click a session to enter the conversation.
+
+Both relations are edited at the end of the task composer:
+
+- **Parent task**: a task has at most one parent. Deleting a parent keeps its children and simply returns them to having no parent.
+- **Dependencies**: search for existing tasks and add them. **This task stays blocked until every one of them is done.** A blocked task is marked on the canvas and on the board. Self-references and any selection that would close a cycle are refused.
+
+The new **Approving** status is a human review gate: the filter row, the status chips, the overview counts, and the canvas all treat it as a first-class status. An approving task **never writes back a remote status** (a sync rule still maps To do / In progress / Done only), so a purely local gate never becomes a platform status.
+
+![Task topology: a parent card, its child, and the dependency it waits on, drawn as a solid tree edge and a dashed wait edge](<docs/screenshots/task-canvas.jpg>)
+
+![Card board: status counts, cards grouped by status, and the session that handles each task](<docs/screenshots/task-board.jpg>)
+
+![Task composer: parent task and dependencies](<docs/screenshots/task-relations-composer.jpg>)
+
 
 ## Screenshot
 

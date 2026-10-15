@@ -46,14 +46,14 @@ describe('panel layout', () => {
     // the page reserves Automation's 9px rail with its 5px thumb inset 2px
     // instead of the theme's 5px/0px default; the list body inherits both and
     // follows with its own -9px compensation.
-    const listPage = rule(".page[data-list='true']")
+    const listPage = rule(".page[data-list='true'], .page[data-graph='true']")
     expect(listPage).toContain('--dsh-scrollbar-width: 9px')
     expect(listPage).toContain('--dsh-scrollbar-thumb-border: 2px')
   })
 
   it('bounds the task list to the panel and scrolls only its middle body', () => {
     expect(panel).toContain('<main className={css.page} data-list="true">')
-    expect(rule(".page[data-list='true']")).toContain('overflow: hidden')
+    expect(rule(".page[data-list='true'], .page[data-graph='true']")).toContain('overflow: hidden')
     const inner = rule(".page[data-list='true'] .inner")
     expect(inner).toContain('display: flex')
     expect(inner).toContain('flex-direction: column')
@@ -74,9 +74,11 @@ describe('panel layout', () => {
     expect(pager).toContain('flex: none')
     expect(pager).toContain('padding: 16px 0')
     expect(pager).not.toMatch(/position:\s*(fixed|absolute)/)
-    const bodyStart = at('<div className={css.listBody} ref={listBody}>')
+    const bodyStart = at('const listBodyView = <div className={css.listBody} ref={listBody}>')
     expect(bodyStart).toBeLessThan(at('<SyncStatus panel={syncPanel} t={t} />'))
-    expect(panel.slice(bodyStart, at('{total > 0 && <div className={css.pager}>'))).toMatch(/<\/ul>}\s*<\/div>\s*$/)
+    // The scrolling body closes right after its row list, and the paging bar is
+    // a separate element outside it, so paging never scrolls with the rows.
+    expect(panel.slice(bodyStart, at("const pager = total > 0 && <div className={css.pager}>"))).toMatch(/<\/ul>}\s*<\/div>\s*$/)
   })
 
   it('keeps desktop filters and search on one row while only the input shrinks', () => {

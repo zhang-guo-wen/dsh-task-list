@@ -41,8 +41,9 @@ export const TYPERT_REMOTE: TypertRemoteContribution = {
   package: '@guowenzhang/dsh-task-list',
   descriptors: [
     'capabilities', 'listTasks', 'createTask', 'updateTask', 'deleteTask', 'readTaskAttachments',
-    'createSubtask', 'updateSubtask', 'deleteSubtask', 'calculateStatistics',
-    'startStatistics', 'getStatisticsRun', 'cancelStatistics',
+    'createSubtask', 'updateSubtask', 'deleteSubtask',
+    'listTaskRelations', 'getTaskGraph', 'getTaskOverview',
+    'calculateStatistics', 'startStatistics', 'getStatisticsRun', 'cancelStatistics',
     ...SYNC_METHODS, ...AUTH_METHODS,
   ].map(descriptor),
 }
