@@ -21,6 +21,7 @@ import { SyncSection } from './sync/SyncSection.tsx'
 import { NS, en, zh, type TaskKey } from './locales.ts'
 import { TaskPanel, WorktreeNotGitError, type InitialCommitEntry, type SessionSnapshot, type TaskFace } from './TaskPanel.tsx'
 import { TaskCapture } from './TaskCapture.tsx'
+import { TaskQuickAdd } from './TaskQuickAdd.tsx'
 import { captureTarget, type CaptureTarget } from './capture.ts'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentMarkdown, textContent } from '../content.ts'
@@ -327,6 +328,12 @@ export async function apply(ctx: Context): Promise<void> {
     sync: createSyncFace(() => remote()),
   }
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'task-list', locale: NS, inject: () => face }, TaskPanel))
+  // Ctrl+S outside every field, terminal, and dialog opens the New task
+  // composer in the frame's own overlay: the dialog lands on whatever page the
+  // user is on, so no panel switches under them.
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'task-quick-add', order: 40, locale: NS, inject: () => face,
+  }, TaskQuickAdd))
   // Sync settings are one page of the host's settings panel rather than a modal
   // of the task list: the same face, rendered inline. A rule no longer carries a
   // workspace, so the section does not need the workspace roster.

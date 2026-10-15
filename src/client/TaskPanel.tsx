@@ -25,6 +25,7 @@ import { useSyncPanel } from './sync/use-sync-panel.ts'
 import { StatisticsCalendar } from './StatisticsCalendar.tsx'
 import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
 import { MoreTasks } from './MoreTasks.tsx'
+import { markQuickAddSaved, quickAddState, subscribeQuickAdd } from './quick-add.ts'
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
@@ -77,7 +78,14 @@ export interface TaskFace {
   getWorkitemDescription(request: { connectionId: string; projectId: string; id: string }): Promise<SafeWorkitemDescriptionResult>
 }
 
-type TaskPanelProps = PropsLocale<'taskList'> & InjectFace<TaskFace>
+export type TaskPanelProps = PropsLocale<'taskList'> & InjectFace<TaskFace> & {
+  /**
+   * Present only for the frame overlay's copy of this panel: it renders the
+   * composer alone, over whatever page the user is on, and reports its close
+   * back to the overlay request instead of a page that is not there.
+   */
+  dialog?: { onClose(): void } | undefined
+}
 type StatusFilter = 'all' | TaskStatus
 const statusKeys: TaskStatus[] = ['todo', 'in_progress', 'done']
 const priorityKeys: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
@@ -104,7 +112,9 @@ export function TaskPanel({
   list, create, update, remove, readAttachments,
   start, probeWorktree, listInitialEntries, initializeGit, listAgents, workspaceSnapshot, subscribeWorkspaces,
   sessionSnapshot, subscribeSessions, sync, calculateStatistics, listWorkitems, listWorkitemFields, getWorkitemDescription, t,
+  dialog,
 }: TaskPanelProps) {
+  const dialogMode = dialog !== undefined
   const [reportsOpen, setReportsOpen] = useState(false)
   const reportButton = useRef<HTMLButtonElement>(null)
   const [moreOpen, setMoreOpen] = useState(false)
@@ -149,6 +159,7 @@ export function TaskPanel({
   const generation = useRef(0)
   const listBody = useRef<HTMLDivElement>(null)
   const agentPrefilled = useRef(false)
+  const quickAdd = useSyncExternalStore(subscribeQuickAdd, quickAddState)
   const sessionState = useSyncExternalStore(subscribeSessions, sessionSnapshot)
   const sessionNames = new Map(sessionState.items.map(row => [row.id, row.title]))
   // Mirror the Host sidebar's own visibility rule for the picker: internal
@@ -196,12 +207,25 @@ export function TaskPanel({
   const syncPanel = useSyncPanel(sync, refresh)
 
   // Any change to the request identity (status, phrase, workspace, paging)
-  // re-runs this effect and loads the matching page.
+  // re-runs this effect and loads the matching page. The overlay's dialog copy
+  // has no page to load, but its save path still reads `mounted` to decide
+  // whether it may still close itself.
   useEffect(() => {
     mounted.current = true
-    void refresh()
+    if (!dialogMode) void refresh()
     return () => { mounted.current = false; generation.current++ }
-  }, [refresh])
+  }, [refresh, dialogMode])
+
+  // A task created by the frame overlay's dialog is in the database, not in
+  // this page's loaded rows: reload once per save, and only when this page is
+  // the one on screen.
+  const savedRevision = quickAdd.saved
+  const seenSaved = useRef(savedRevision)
+  useEffect(() => {
+    if (savedRevision === seenSaved.current) return
+    seenSaved.current = savedRevision
+    if (!dialogMode) void refresh()
+  }, [savedRevision, dialogMode, refresh])
 
   // A new page or filter starts at its first row; ordinary refreshes keep the
   // current position. Scroll the list body, never the panel or the window.
@@ -277,6 +301,12 @@ export function TaskPanel({
     setComposerOpen(true)
   }
 
+  // The overlay mounts this copy to create a task, so its empty form is up as
+  // soon as it mounts; the page's own copy stays closed until Add is clicked.
+  useEffect(() => {
+    if (dialogMode) openCreate()
+  }, [])
+
   /**
    * Open the create composer prefilled from a remote work item. The body is
    * built from the fields the settings page has checked; saving stays the user's
@@ -322,6 +352,15 @@ export function TaskPanel({
     setComposerOpen(true)
   }
 
+  /**
+   * Close the composer. The page keeps it inline; the overlay's copy is the
+   * dialog itself, so closing means handing the request back to the frame.
+   */
+  const closeComposer = () => {
+    if (dialog !== undefined) { dialog.onClose(); return }
+    setComposerOpen(false)
+  }
+
   const changeFilter = (next: StatusFilter) => { setFilter(next); setPage(1) }
   const changeWorkspaceFilter = (next: string) => { setWorkspaceFilter(next); setPage(1) }
   const changePageSize = (next: number) => { setPageSize(next); setPage(1) }
@@ -355,9 +394,12 @@ export function TaskPanel({
     try {
       await persist()
       if (!mounted.current) return
-      setComposerOpen(false)
       setEditing(null)
-      await refresh()
+      closeComposer()
+      // The dialog's own copy creates the row, not a page: the mounted task
+      // list reloads through the request store instead.
+      if (dialogMode) markQuickAddSaved()
+      else await refresh()
     } catch (failure) { if (mounted.current) setError(errorText(failure)) }
     finally { if (mounted.current) setBusy(false) }
   }
@@ -483,6 +525,125 @@ export function TaskPanel({
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
   const filtered = query !== '' || filter !== 'all' || workspaceFilter !== 'all'
 
+  // One composer serves both surfaces: the page renders these two blocks over
+  // its list, and the frame overlay's dialog copy renders them alone, so the
+  // New task form has exactly one definition and one behavior.
+  const composerDialog = composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !attachmentBusy) closeComposer() }}>
+    <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
+      <div className={css.dialogHeader}>
+        <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
+        {editing !== null && <div className={css.headerActions}>
+          {/* Start is offered at every status: a running or finished task can be started
+              again, which opens a fresh session and rebinds the task to it. */}
+          <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(false)}
+            disabled={busy || !canSave}>{t('start')}</button>
+          {/* Nothing left to complete once the composer already reads Done. */}
+          <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(true)}
+            disabled={busy || !canSave || status === 'done'}>{t('finish')}</button>
+        </div>}
+      </div>
+      <div className={css.dialogBody}>
+        {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
+        <form id="task-list-form" onSubmit={event => void save(event)}>
+          {editing?.source && <label className={css.fullRow}>{t('externalTitle')}<input value={externalTitle} maxLength={200} required onChange={event => setExternalTitle(event.target.value)} /></label>}
+          <div className={css.fullRow}>{t('notesLabel')}{editing?.source && <span> · {t('externalDescription')}</span>}<TaskContentEditor value={content} uploads={uploads}
+            onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
+            readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
+            disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>
+          <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
+            {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
+            {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
+            {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select></label>
+          <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
+            <option value="">{t('defaultAgent')}</option>
+            {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
+            {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
+          </select></label>
+          <div className={css.toggleRow + ' ' + css.fullRow}>
+            <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
+            <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
+          </div>
+          {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
+            {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
+              : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
+          </p>}
+          <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
+            {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
+          </select></label>
+          <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
+            {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
+          </select></label>
+          <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
+          <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
+          <section className={css.metaSection + ' ' + css.fullRow}>
+            <div className={css.fieldBlock}>
+              <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
+                <option value="">{t('noSession')}</option>
+                {echoedLinkedSession && <option value={echoedLinkedSession.id}>{echoedLinkedSession.title}{echoedLinkedSession.archived ? ` · ${t('sessionArchived')}` : ''}</option>}
+                {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
+                {selectableSessions.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
+              </select></label>
+              <p className={css.fieldHint}>{t('sessionIdHint')}</p>
+            </div>
+            {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
+            {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
+            {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
+          </section>
+        </form>
+      </div>
+      <div className={css.dialogFooter}>
+        <button type="button" onClick={closeComposer} disabled={busy || attachmentBusy}>{t('cancel')}</button>
+        <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
+      </div>
+    </div>
+  </div>
+
+  const initializationDialog = initializeTask && <div className={css.backdrop} role="presentation">
+    <div className={css.dialog} role="dialog" aria-modal="true" aria-labelledby="task-list-init-title">
+      <h2 id="task-list-init-title">{t('initializeGitTitle')}</h2>
+      <p>{t('initializeGitIntro')} <strong>{initializeTask.workspaceTitle}</strong></p>
+      <p className={css.initPath}>{initializeTask.workspacePath}</p>
+      <div className={css.initToolbar}>
+        <strong>{t('initialCommitEntries')}</strong>
+        <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
+          onClick={() => setSelectedEntries(selectableInitialEntries.map(entry => entry.name))}>{t('selectAll')}</button>
+        <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
+          onClick={() => setSelectedEntries([])}>{t('selectNone')}</button>
+      </div>
+      {initialEntriesLoading ? <p className={css.initLoading}>{t('initialEntriesLoading')}</p>
+        : initialEntriesError ? <p className={css.initError} role="alert">{initialEntriesError} <button type="button"
+          onClick={() => setInitialEntriesRevision(value => value + 1)}>{t('retry')}</button></p>
+          : initialEntries.length === 0 ? <p className={css.initLoading}>{t('initialEntriesEmpty')}</p>
+            : <ul className={css.initEntries}>
+              {initialEntries.map(entry => <li key={entry.name}>
+                <label>
+                  <input type="checkbox" checked={selectedEntries.includes(entry.name)}
+                    disabled={busy || entry.kind === 'nested_repository'}
+                    onChange={event => {
+                      const checked = event.target.checked
+                      setSelectedEntries(current => checked
+                        ? [...current, entry.name] : current.filter(name => name !== entry.name))
+                    }} />
+                  <span className={css.initEntryName} title={entry.name}>{entry.name}</span>
+                  <small>{t(entry.kind === 'directory' ? 'initialDirectory' : entry.kind === 'nested_repository' ? 'initialNestedRepository' : 'initialFile')}</small>
+                </label>
+              </li>)}
+            </ul>}
+      <p className={css.initWarning}>{t('initializeGitWarning')}</p>
+      <div className={css.dialogActions}>
+        <button type="button" onClick={() => setInitializeTask(null)} disabled={busy}>{t('cancel')}</button>
+        <button type="button" onClick={() => { const task = initializeTask.task; setInitializeTask(null); openEdit(task) }} disabled={busy}>{t('changeWorkspace')}</button>
+        <button type="button" className={css.primary} onClick={() => void initializeAndStart()}
+          disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}>{t('initializeAndStart')}</button>
+      </div>
+    </div>
+  </div>
+
+  // The overlay's copy is the dialog itself: it renders the composer over
+  // whatever page is on screen and never draws the task page.
+  if (dialog !== undefined) return <>{composerDialog}{initializationDialog}</>
+
   if (reportsOpen) return <main className={css.page} data-report="true">
     <div className={css.inner}>
       <StatisticsCalendar calculate={calculateStatistics} t={t} close={() => {
@@ -598,115 +759,7 @@ export function TaskPanel({
       </div>}
     </div>
 
-    {composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !attachmentBusy) setComposerOpen(false) }}>
-      <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
-        <div className={css.dialogHeader}>
-          <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
-          {editing !== null && <div className={css.headerActions}>
-            {/* Start is offered at every status: a running or finished task can be started
-                again, which opens a fresh session and rebinds the task to it. */}
-            <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(false)}
-              disabled={busy || !canSave}>{t('start')}</button>
-            {/* Nothing left to complete once the composer already reads Done. */}
-            <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(true)}
-              disabled={busy || !canSave || status === 'done'}>{t('finish')}</button>
-          </div>}
-        </div>
-        <div className={css.dialogBody}>
-          {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
-          <form id="task-list-form" onSubmit={event => void save(event)}>
-            {editing?.source && <label className={css.fullRow}>{t('externalTitle')}<input value={externalTitle} maxLength={200} required onChange={event => setExternalTitle(event.target.value)} /></label>}
-            <div className={css.fullRow}>{t('notesLabel')}{editing?.source && <span> · {t('externalDescription')}</span>}<TaskContentEditor value={content} uploads={uploads}
-              onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
-              readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
-              disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>
-            <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
-              {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
-              {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
-              {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-            </select></label>
-            <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
-              <option value="">{t('defaultAgent')}</option>
-              {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
-              {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
-            </select></label>
-            <div className={css.toggleRow + ' ' + css.fullRow}>
-              <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
-              <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
-            </div>
-            {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
-              {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
-                : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
-            </p>}
-            <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
-              {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
-            </select></label>
-            <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
-              {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
-            </select></label>
-            <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
-            <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
-            <section className={css.metaSection + ' ' + css.fullRow}>
-              <div className={css.fieldBlock}>
-                <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
-                  <option value="">{t('noSession')}</option>
-                  {echoedLinkedSession && <option value={echoedLinkedSession.id}>{echoedLinkedSession.title}{echoedLinkedSession.archived ? ` · ${t('sessionArchived')}` : ''}</option>}
-                  {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
-                  {selectableSessions.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
-                </select></label>
-                <p className={css.fieldHint}>{t('sessionIdHint')}</p>
-              </div>
-              {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
-              {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
-              {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
-            </section>
-          </form>
-        </div>
-        <div className={css.dialogFooter}>
-          <button type="button" onClick={() => setComposerOpen(false)} disabled={busy || attachmentBusy}>{t('cancel')}</button>
-          <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
-        </div>
-      </div>
-    </div>}
-    {initializeTask && <div className={css.backdrop} role="presentation">
-      <div className={css.dialog} role="dialog" aria-modal="true" aria-labelledby="task-list-init-title">
-        <h2 id="task-list-init-title">{t('initializeGitTitle')}</h2>
-        <p>{t('initializeGitIntro')} <strong>{initializeTask.workspaceTitle}</strong></p>
-        <p className={css.initPath}>{initializeTask.workspacePath}</p>
-        <div className={css.initToolbar}>
-          <strong>{t('initialCommitEntries')}</strong>
-          <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
-            onClick={() => setSelectedEntries(selectableInitialEntries.map(entry => entry.name))}>{t('selectAll')}</button>
-          <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
-            onClick={() => setSelectedEntries([])}>{t('selectNone')}</button>
-        </div>
-        {initialEntriesLoading ? <p className={css.initLoading}>{t('initialEntriesLoading')}</p>
-          : initialEntriesError ? <p className={css.initError} role="alert">{initialEntriesError} <button type="button"
-            onClick={() => setInitialEntriesRevision(value => value + 1)}>{t('retry')}</button></p>
-            : initialEntries.length === 0 ? <p className={css.initLoading}>{t('initialEntriesEmpty')}</p>
-              : <ul className={css.initEntries}>
-                {initialEntries.map(entry => <li key={entry.name}>
-                  <label>
-                    <input type="checkbox" checked={selectedEntries.includes(entry.name)}
-                      disabled={busy || entry.kind === 'nested_repository'}
-                      onChange={event => {
-                        const checked = event.target.checked
-                        setSelectedEntries(current => checked
-                          ? [...current, entry.name] : current.filter(name => name !== entry.name))
-                      }} />
-                    <span className={css.initEntryName} title={entry.name}>{entry.name}</span>
-                    <small>{t(entry.kind === 'directory' ? 'initialDirectory' : entry.kind === 'nested_repository' ? 'initialNestedRepository' : 'initialFile')}</small>
-                  </label>
-                </li>)}
-              </ul>}
-        <p className={css.initWarning}>{t('initializeGitWarning')}</p>
-        <div className={css.dialogActions}>
-          <button type="button" onClick={() => setInitializeTask(null)} disabled={busy}>{t('cancel')}</button>
-          <button type="button" onClick={() => { const task = initializeTask.task; setInitializeTask(null); openEdit(task) }} disabled={busy}>{t('changeWorkspace')}</button>
-          <button type="button" className={css.primary} onClick={() => void initializeAndStart()}
-            disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}>{t('initializeAndStart')}</button>
-        </div>
-      </div>
-    </div>}
+    {composerDialog}
+    {initializationDialog}
   </main>
 }

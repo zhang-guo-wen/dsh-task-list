@@ -15,6 +15,7 @@ This plugin brings task management into Harness:
 - **Manage tasks in one place**: use the sidebar's **Task list** to browse To do, In progress, and Done tasks, with workspace filters, search, and paging. The header and filters stay at the top, only the middle list scrolls, and the paging bar stays at the bottom.
 - **Start a conversation from a task**: click **Start** to create a session in the selected workspace with the task content and attachments ready to use. Choose an Agent preset or optionally use a Worktree.
 - **Save unsent messages for later**: press `Ctrl+S` (`Cmd+S` on macOS) in the conversation composer to save text, images, and files as a task. The task always carries the composer's workspace and agent preset; it links the current session once that session has started, and keeps no session link while the session is still a blank New Session. Successful saves clear the captured input and show a top-of-page notification; failures preserve the input.
+- **Create a task without leaving the page**: anywhere else in Harness — with no field, terminal, or dialog focused — the same `Ctrl+S` (`Cmd+S` on macOS) opens the **New task** dialog on top of whatever page you are on. The panel does not switch and nothing navigates: save the task and carry on from where you were, or close it with **Cancel**.
 - **Keep task context together**: rich text, attachments, priority, tags, story points, session links, and created, started, and completed timestamps. When creating or editing a task, image attachments show thumbnails; click a thumbnail to enlarge it, and close with Escape, the backdrop, or the close button. Downloads remain available for all attachments.
 
 
@@ -100,7 +101,7 @@ Restart the corresponding Harness host and refresh the page, then select **Task 
 1. Click **New task**, enter the content, optionally choose a workspace, Agent, and launch options, then save. The title is generated from the content; no separate title is required.
 2. Click **Start** to create a conversation. By default, content and attachments are placed in the composer for review; they are submitted automatically only when **Send immediately** is enabled.
 3. Click **Complete** when finished. You can also change status and choose or clear a linked session in the edit dialog. The session picker lists only the sessions the sidebar shows: archived sessions, subagent runs, and unused new-session placeholders are left out. When a task's existing link has been hidden (archived, for example), that session is still echoed with an **Archived** marker so you can keep or replace it.
-4. Save messages you are not ready to send with `Ctrl+S` / `Cmd+S` in the conversation composer.
+4. Save messages you are not ready to send with `Ctrl+S` / `Cmd+S` in the conversation composer; outside the composer, the same chord opens the **New task** dialog over the current page.
 
 ### Statistics report
 

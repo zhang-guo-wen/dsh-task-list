@@ -29,6 +29,7 @@ describe('client contribution', () => {
     expect(ctx.remote.$mount).toHaveBeenCalledWith(TYPERT_REMOTE)
     expect(register.mock.calls.map(call => call[0])).toEqual([
       expect.objectContaining({ name: 'main', key: 'task-list' }),
+      expect.objectContaining({ name: 'shell.overlay', id: 'task-quick-add' }),
       expect.objectContaining({ name: 'settings.section', id: 'task-list-sync' }),
       expect.objectContaining({ name: 'sidebar.panellist', id: 'task-list' }),
       expect.objectContaining({ name: 'conversation.input.right', id: 'task-capture' }),
