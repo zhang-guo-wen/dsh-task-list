@@ -222,6 +222,14 @@ describe('panel layout', () => {
     expect(panel).toContain('{error && !composerOpen && <div className={css.error} role="alert">')
   })
 
+  it('names the Ctrl+S shortcut at the New task footer, clear of the actions', () => {
+    expect(rule('.dialogFooter')).toContain('gap: 8px')
+    expect(rule('.shortcutHint')).toContain('margin-right: auto')
+    // The hint belongs to the create form only; editing keeps the row to its actions.
+    expect(panel).toContain("{editing === null && <span className={css.shortcutHint}>{t('shortcutHint')}</span>}")
+    expect(at("css.shortcutHint")).toBeLessThan(at("onClick={closeComposer}"))
+  })
+
   it('uses the rich-text editor without altering the full-width content field', () => {
     expect(panel).toContain('<TaskContentEditor value={content} uploads={uploads}')
     expect(panel).not.toContain('<textarea')

@@ -52,6 +52,14 @@ describe('frame-wide New task dialog', () => {
     expect(api.list).not.toHaveBeenCalled()
   })
 
+  it('names the Ctrl+S shortcut in the New task footer', async () => {
+    render(<TaskQuickAdd {...(face() as never)} />)
+    await pressChord()
+    await screen.findByRole('dialog')
+
+    expect(screen.getByText(zh.shortcutHint)).toBeTruthy()
+  })
+
   it('leaves the chord to a focused field', async () => {
     const api = face()
     render(<TaskQuickAdd {...(api as never)} />)

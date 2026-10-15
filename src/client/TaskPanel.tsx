@@ -593,6 +593,9 @@ export function TaskPanel({
         </form>
       </div>
       <div className={css.dialogFooter}>
+        {/* The chord is what opens this composer on any page, so the New task form names it.
+            The edit dialog keeps the row to its own actions. */}
+        {editing === null && <span className={css.shortcutHint}>{t('shortcutHint')}</span>}
         <button type="button" onClick={closeComposer} disabled={busy || attachmentBusy}>{t('cancel')}</button>
         <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
       </div>
