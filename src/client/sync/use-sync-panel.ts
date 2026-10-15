@@ -8,12 +8,12 @@ import { useSyncRun } from './use-sync-run.ts'
  * nothing is enabled, and `unusable` means enabled rules have no usable connection.
  */
 export type SyncPanelPrompt = 'none' | 'noRule' | 'unusable' | null
-const dismissedRunKey = 'dsh-task-list:sync-dismissed-run'
 
 /**
  * One sync surface for the task list page: the header's Sync menu row and the
  * result region below the toolbar share this state, so a run is never started
- * twice and its progress is rendered in exactly one place.
+ * twice and its progress is rendered in exactly one place. A result is one-shot
+ * for the click that produced it; entering the page never restores one.
  */
 export interface SyncPanel {
   run: ReturnType<typeof useSyncRun>
@@ -21,9 +21,7 @@ export interface SyncPanel {
   prompt: SyncPanelPrompt
   /** A refused scope read (the Host or Remote namespace is unavailable). */
   scopeError: unknown
-  /** The last dismissed run stays hidden when this task page remounts. */
-  dismissedRunId: string | null
-  /** Hide transient errors too, until the next explicit Sync click. */
+  /** Hide the current prompt, error, or finished run until the next explicit Sync click. */
   hidden: boolean
   /** A run is being requested or is already running. */
   busy: boolean
@@ -42,9 +40,6 @@ export function useSyncPanel(face: SyncFace, onComplete: () => void): SyncPanel 
   const { start } = run
   const [prompt, setPrompt] = useState<SyncPanelPrompt>(null)
   const [scopeError, setScopeError] = useState<unknown>(null)
-  const [dismissedRunId, setDismissedRunId] = useState<string | null>(() => {
-    try { return sessionStorage.getItem(dismissedRunKey) } catch { return null }
-  })
   const [hidden, setHidden] = useState(false)
   const [checking, setChecking] = useState(false)
   const completed = useRef<string | null>(null)
@@ -86,10 +81,6 @@ export function useSyncPanel(face: SyncFace, onComplete: () => void): SyncPanel 
 
   const dismiss = useCallback(() => {
     setPrompt(null); setScopeError(null); setHidden(true)
-    if (run.run !== null) {
-      setDismissedRunId(run.run.id)
-      try { sessionStorage.setItem(dismissedRunKey, run.run.id) } catch { /* storage unavailable */ }
-    }
-  }, [run.run])
-  return { run, prompt, scopeError, dismissedRunId, hidden, busy: checking || run.starting || run.run?.status === 'running', sync, dismiss }
+  }, [])
+  return { run, prompt, scopeError, hidden, busy: checking || run.starting || run.run?.status === 'running', sync, dismiss }
 }

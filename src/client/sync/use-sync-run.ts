@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SafeRun } from '../../sync/dto.ts'
 import type { SyncFace } from './face.ts'
 
+/**
+ * The run this page started, if any. Nothing is read at mount: a run's result
+ * belongs to the Sync click that produced it, so re-entering the page never
+ * replays an earlier run. `reconnect` serves only the failed-query prompt,
+ * where the Host holds a run whose id never reached this page.
+ */
 export function useSyncRun(face: SyncFace) {
   const [run, setRun] = useState<SafeRun | null>(null)
   const [queryError, setQueryError] = useState<unknown>(null)
@@ -30,9 +36,8 @@ export function useSyncRun(face: SyncFace) {
   }, [face, query])
   useEffect(() => {
     active.current = true
-    void reconnect()
     return () => { active.current = false; generation.current++ }
-  }, [reconnect])
+  }, [])
   useEffect(() => {
     if (run?.status !== 'running' || queryError) return
     const timer = setTimeout(() => { if (id.current) void query(id.current) }, 1200)
@@ -44,8 +49,6 @@ export function useSyncRun(face: SyncFace) {
     try {
       const result = await face.startSync()
       id.current = result.runId
-      // Only a run identifier is retained; the Host's latest-run query remains authoritative.
-      try { sessionStorage.setItem('dsh-task-list:sync-run', result.runId) } catch { /* storage unavailable */ }
       if (active.current) await query(result.runId)
     } catch (error) { if (active.current) setQueryError(error) }
     finally { locked.current = false; if (active.current) setStarting(false) }

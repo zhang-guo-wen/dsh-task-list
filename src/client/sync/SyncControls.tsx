@@ -36,14 +36,14 @@ export function SyncActions({ addLabel, onCreate, panel, t }: {
 /**
  * Everything Sync has to say on the list page: a refused click's prompt, a
  * scope or query failure, and the running or finished run's results. It draws
- * nothing at rest, so the page carries no standing explanation of what sync
- * does — that copy lives on the settings page next to the rules it describes.
+ * nothing at rest, and only for a run this page started, so re-entering the
+ * page cannot resurrect an older result. Copy describing what Sync does lives on
+ * the settings page next to the rules it describes.
  */
 export function SyncStatus({ panel, t }: { panel: SyncPanel; t: SyncTranslate }) {
   const { run, prompt, scopeError, dismiss } = panel
   if (panel.hidden) return null
-  const visibleRun = run.run?.id === panel.dismissedRunId ? null : run.run
-  if (prompt === null && scopeError === null && run.queryError === null && visibleRun === null) return null
+  if (prompt === null && scopeError === null && run.queryError === null && run.run === null) return null
   return <section className={css.status} aria-label={t('syncResults')}>
     {prompt !== null && <p className={css.notice} role="status">{t(prompt === 'none' ? 'syncNoConnection' : prompt === 'noRule' ? 'syncNoEnabledRule' : 'syncNoScope')}
       <button type="button" className={css.noticeClose} onClick={dismiss}>{t('syncNoticeDismiss')}</button></p>}
@@ -56,6 +56,6 @@ export function SyncStatus({ panel, t }: { panel: SyncPanel; t: SyncTranslate })
         <Button onClick={() => void run.reconnect()}>{t('syncReconnect')}</Button></div>
       <button type="button" className={css.noticeClose} onClick={dismiss}>{t('syncCloseResult')}</button>
     </div>}
-    {visibleRun && <SyncResults run={visibleRun} t={t} onDismiss={dismiss} />}
+    {run.run !== null && <SyncResults run={run.run} t={t} onDismiss={dismiss} />}
   </section>
 }

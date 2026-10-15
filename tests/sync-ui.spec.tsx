@@ -15,7 +15,7 @@ import type { TaskKey } from '../src/client/locales.ts'
 import type { SyncFace } from '../src/client/sync/face.ts'
 import type { SafeRun, StatusWriteStates } from '../src/sync/dto.ts'
 
-afterEach(() => { cleanup(); sessionStorage.clear() })
+afterEach(() => { cleanup() })
 const t = (key: TaskKey) => zh[key]
 const completed: SafeRun = { id: 'run1', status: 'completed', phase: 'finished', startedAt: 1, finishedAt: 2, counts: { imported: 1, pulled: 0, pushed: 0, merged: 0, unchanged: 0, failed: 0, pending: 0 }, unprocessedKnown: 0, discoveryComplete: true, scopeSummary: '', errors: [] }
 function face(): SyncFace {
@@ -67,15 +67,24 @@ describe('manual sync controls', () => {
     release({ runId: 'run1', existing: false })
     await screen.findByText('同步完成')
   })
-  it('remount reconnects to the Host run without executing sync', async () => {
+  it('entering the page shows no result, and only an explicit Sync queries a run', async () => {
     const api = face()
-    api.listSyncRuns = async () => ({ items: [completed], total: 1, page: 1, pageSize: 1 })
+    const listRuns = vi.fn(async () => ({ items: [completed], total: 1, page: 1, pageSize: 1 }))
+    api.listSyncRuns = listRuns
+    const getRun = vi.fn(async () => completed)
+    api.getSyncRun = getRun
     const start = vi.fn(api.startSync); api.startSync = start
     const first = render(<SyncHarness api={api} />)
-    await screen.findByText('同步完成'); first.unmount()
+    expect(screen.queryByText('同步完成')).toBeNull()
+    first.unmount()
     render(<SyncHarness api={api} />)
-    await screen.findByText('同步完成')
+    expect(screen.queryByText('同步完成')).toBeNull()
+    expect(listRuns).not.toHaveBeenCalled()
+    expect(getRun).not.toHaveBeenCalled()
     expect(start).not.toHaveBeenCalled()
+    await clickSyncRow()
+    await screen.findByText('同步完成')
+    expect(start).toHaveBeenCalledOnce()
   })
   it('an unconfigured click points at the settings page and never starts a run', async () => {
     const api = face(); api.listSyncConnections = async () => []
@@ -131,15 +140,16 @@ describe('manual sync controls', () => {
     await waitFor(() => expect(screen.queryByRole('menuitem', { name: '批量同步' })).toBeNull())
     expect(document.activeElement).toBe(handle)
   })
-  it('shows a compact summary without item IDs and keeps a dismissed run hidden across remounts', async () => {
+  it('a run summary is one-shot: dismissible in place and gone after a remount', async () => {
     const api = face()
     const imported = { ...completed, counts: { ...completed.counts, imported: 74 } }
-    api.listSyncRuns = async () => ({ items: [imported], total: 1, page: 1, pageSize: 1 })
-    const getRun = vi.fn(async (request: { id: string }) => request.id === 'run1' ? imported : { ...completed, id: 'run2' })
-    api.getSyncRun = getRun
+    const later = { ...completed, id: 'run2', counts: { ...completed.counts, imported: 1 } }
+    api.getSyncRun = async (request: { id: string }) => request.id === 'run1' ? imported : later
     const items = vi.fn(api.listSyncItemResults); api.listSyncItemResults = items
-    const start = vi.fn(async () => ({ runId: 'run2', existing: false })); api.startSync = start
+    let next = 'run1'
+    const start = vi.fn(async () => ({ runId: next, existing: false })); api.startSync = start
     const first = render(<SyncHarness api={api} />)
+    await clickSyncRow()
     await screen.findByText('导入：74')
     expect(screen.getByText('同步所有已启用规则，不受当前列表筛选影响。')).toBeDefined()
     expect(screen.queryByRole('button', { name: '下一页' })).toBeNull()
@@ -148,11 +158,11 @@ describe('manual sync controls', () => {
     expect(screen.queryByText('同步完成')).toBeNull()
     first.unmount()
     render(<SyncHarness api={api} />)
-    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('同步完成')).toBeNull()
+    next = 'run2'
     await clickSyncRow()
     await screen.findByText('导入：1')
-    expect(start).toHaveBeenCalledOnce()
+    expect(start).toHaveBeenCalledTimes(2)
   })
   it('structured credential errors are localized without displaying a secret or raw provider message', async () => {
     const api = face()
@@ -380,9 +390,9 @@ describe('manual sync controls', () => {
   it('results show pending as a subset of failures, never an invented percent', async () => {
     const api = face()
     const partial = { ...completed, status: 'partial' as const, counts: { ...completed.counts, failed: 2, pending: 1 }, discoveryComplete: false, unprocessedKnown: null }
-    api.listSyncRuns = async () => ({ items: [partial], total: 1, page: 1, pageSize: 1 })
     api.getSyncRun = async () => partial
     render(<SyncHarness api={api} />)
+    await clickSyncRow()
     await screen.findByText(/待确认：1/)
     expect(screen.getByText(/发现未完成/).textContent).not.toContain('%')
   })
