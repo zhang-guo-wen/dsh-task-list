@@ -12,14 +12,18 @@
 }
 /* The same content box as the built-in Automation tasks page: one centred
    960px column whose side padding shrinks with the panel, so moving between
-   the two pages does not change the width of the list. `border-box` is part of
+   the two pages does not change the width of the list. That page caps the
+   content box (`max-width: 960px` under the default `content-box`), so this
+   `border-box` cap adds both paddings; capping the border box at 960px would
+   leave 864px of content in a wide panel, 96px narrower than Automation,
+   while both already agree below 960px of container. `border-box` is part of
    the contract: the report and the work-item page already size their box that
    way, and without it here the list alone would be one padding wider (1056px
    against their 960px). The top offset belongs to this box rather than to one
    header, so the list, the report and the work-item page keep the title at the
    same height — and, because the box height is bounded, they keep the bottom
    controls inside the panel. */
-.inner { max-width: 960px; margin: 0 auto; box-sizing: border-box; padding: 28px clamp(24px, 4vw, 48px) 48px; }
+.inner { max-width: calc(960px + 2 * clamp(24px, 4vw, 48px)); margin: 0 auto; box-sizing: border-box; padding: 28px clamp(24px, 4vw, 48px) 48px; }
 /* The report owns the panel height so its grid can fit one screen instead of
    scrolling. Border-box matters here: without
    it the bottom padding pushed the panel exactly one padding past its height and
@@ -32,10 +36,24 @@
 /* The task list has three bounded zones: fixed controls, the only scrolling
    body (including sync/error/empty states), and the bottom paging bar. Keep
    the shared content width and side padding rather than fixing to the viewport. */
-.page[data-list='true'] { overflow: hidden; }
+/* The rail geometry of the built-in Automation tasks page, rebound on this
+   page's own scroll container: that page reserves a 9px rail carrying a 5px
+   thumb inset 2px in `.pageScroll`, and the reservation sits at the same level
+   of the box tree here. Matching it is what keeps the two content columns the
+   same width below the 960px cap, because the reserved rail is subtracted from
+   the column's available width. The list body inherits both values, so its own
+   rail compensation follows to 9px and the rows keep the column's right line.
+   Scoped to the list page: the report and the work-item page scroll in their
+   own regions and keep the theme's default rail. */
+.page[data-list='true'] { overflow: hidden; --dsh-scrollbar-width: 9px; --dsh-scrollbar-thumb-border: 2px; }
 .page[data-list='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
 .page[data-list='true'] .header, .page[data-list='true'] .toolbar { flex: none; }
-.listBody { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; margin-top: 18px; }
+/* The rail reserved by `scrollbar-gutter` comes out of the rows, because this
+   body scrolls inside the content column: every row ended one rail short of the
+   header and the toolbar above it. Widening the body by exactly that rail moves
+   the rail into the page padding and puts the rows back on the column's left
+   and right lines. The theme owns the rail width, so it is read, not guessed. */
+.listBody { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; margin-top: 18px; margin-right: calc(-1 * var(--dsh-scrollbar-width)); }
 .listBody .list { margin-top: 0; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .header h1 { flex: 1; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }

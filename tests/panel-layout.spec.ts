@@ -29,13 +29,26 @@ function at(source: string): number {
 describe('panel layout', () => {
   it('keeps the centred 960px content box used by the Automation tasks page', () => {
     const inner = rule('.inner')
-    expect(inner).toContain('max-width: 960px')
+    // Automation caps its content box (default `content-box`), so its
+    // `max-width: 960px` excludes the two paddings. This box keeps
+    // `border-box`, so the cap has to add both of them; capping the border box
+    // at 960px left 864px of content where Automation leaves 960px. The cap
+    // and the padding share one inset literal so they cannot drift apart.
+    const inset = 'clamp(24px, 4vw, 48px)'
+    expect(inner).toContain(`max-width: calc(960px + 2 * ${inset})`)
     expect(inner).toContain('margin: 0 auto')
-    // Border-box is what makes 960px the whole column: the report and the
+    // Border-box is what makes the cap the whole column: the report and the
     // work-item page size their box that way, so without it the list alone
     // renders one padding wider than every page the user switches to.
     expect(inner).toContain('box-sizing: border-box')
-    expect(inner).toContain('padding: 28px clamp(24px, 4vw, 48px) 48px')
+    expect(inner).toContain(`padding: 28px ${inset} 48px`)
+    // The column's available width is what is left after the reserved rail, so
+    // the page reserves Automation's 9px rail with its 5px thumb inset 2px
+    // instead of the theme's 5px/0px default; the list body inherits both and
+    // follows with its own -9px compensation.
+    const listPage = rule(".page[data-list='true']")
+    expect(listPage).toContain('--dsh-scrollbar-width: 9px')
+    expect(listPage).toContain('--dsh-scrollbar-thumb-border: 2px')
   })
 
   it('bounds the task list to the panel and scrolls only its middle body', () => {
@@ -51,6 +64,11 @@ describe('panel layout', () => {
     expect(body).toContain('flex: 1')
     expect(body).toContain('min-height: 0')
     expect(body).toContain('overflow: auto')
+    // The reserved rail sits inside the content column, so without this the
+    // rows end one rail short of the header and the toolbar. The width comes
+    // from the theme variable rather than a fallback literal.
+    expect(body).toContain('margin-right: calc(-1 * var(--dsh-scrollbar-width))')
+    expect(body).not.toContain('var(--dsh-scrollbar-width,')
     expect(rule(".page[data-list='true'] .header, .page[data-list='true'] .toolbar")).toContain('flex: none')
     const pager = rule('.pager')
     expect(pager).toContain('flex: none')

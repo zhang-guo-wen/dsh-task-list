@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -95,8 +95,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+// Building a formatter costs far more than using one, and the list formats a
+// timestamp for every synced row on every keystroke, so it is built once here.
+const timeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+
 function formattedTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
+  return timeFormat.format(timestamp)
 }
 
 function statusKey(status: TaskStatus): TaskKey {
@@ -171,7 +175,9 @@ export function TaskPanel({
     ? linkedSession : undefined
   const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
   const workspaces = workspaceState.items
-  const workspaceNames = new Map(workspaces.map(row => [row.workspaceId, row.title]))
+  // Memoised for identity, not for cost: the row list is keyed on this map, and
+  // rebuilding it every render would defeat that.
+  const workspaceNames = useMemo(() => new Map(workspaces.map(row => [row.workspaceId, row.title])), [workspaces])
   const defaultWorkspace = pickDefaultWorkspace(workspaces, t('defaultWorkspaceName'))
   const defaultWorkspaceId = defaultWorkspace?.workspaceId ?? null
   const defaultAgent = agents.find(row => row.isDefault && !row.broken)
@@ -332,7 +338,9 @@ export function TaskPanel({
     setComposerOpen(true)
   }
 
-  const openEdit = (task: TaskRecord) => {
+  // Stable identities: the row list below is memoised on them, so it only
+  // rebuilds when something it shows actually changed.
+  const openEdit = useCallback((task: TaskRecord) => {
     setEditing(task)
     setExternalTitle(task.title)
     setContent(taskDocument(task))
@@ -350,7 +358,7 @@ export function TaskPanel({
     setUseWorktree(task.useWorktree)
     setError('')
     setComposerOpen(true)
-  }
+  }, [defaultWorkspaceId])
 
   /**
    * Close the composer. The page keeps it inline; the overlay's copy is the
@@ -437,7 +445,7 @@ export function TaskPanel({
     finally { if (mounted.current) setBusy(false) }
   }
 
-  const deleteTask = async (task: TaskRecord) => {
+  const deleteTask = useCallback(async (task: TaskRecord) => {
     if (busy) return
     setBusy(true)
     setError('')
@@ -450,9 +458,9 @@ export function TaskPanel({
         if (mounted.current) setError(errorText(failure))
       }
     } finally { if (mounted.current) setBusy(false) }
-  }
+  }, [busy, remove, refresh])
 
-  const startTask = async (task: TaskRecord) => {
+  const startTask = useCallback(async (task: TaskRecord) => {
     if (busy) return
     setBusy(true)
     setError('')
@@ -471,7 +479,7 @@ export function TaskPanel({
       }
     }
     finally { if (mounted.current) setBusy(false) }
-  }
+  }, [busy, start, refresh])
 
   const initializeAndStart = async () => {
     const workspaceId = initializeTask?.task.workspaceId
@@ -495,7 +503,7 @@ export function TaskPanel({
     } finally { if (mounted.current) setBusy(false) }
   }
 
-  const finishTask = async (task: TaskRecord) => {
+  const finishTask = useCallback(async (task: TaskRecord) => {
     if (busy) return
     setBusy(true)
     setError('')
@@ -508,7 +516,7 @@ export function TaskPanel({
         if (mounted.current) setError(errorText(failure))
       }
     } finally { if (mounted.current) setBusy(false) }
-  }
+  }, [busy, update, refresh])
 
   const workspaceOptions = new Map(workspaceNames)
   for (const task of tasks) {
@@ -524,6 +532,44 @@ export function TaskPanel({
   const pageSummary = t('pageSummary')
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
   const filtered = query !== '' || filter !== 'all' || workspaceFilter !== 'all'
+
+  // Building the rows is the expensive part of a render, so they are built once
+  // per change to what they show. A session or workspace frame, a keystroke in
+  // the search box, or any other unrelated state then re-renders the panel
+  // around them: the same element objects come back, so React skips the rows.
+  const rows = useMemo(() => tasks.map(task => {
+    const linked = workspaceOf(task)
+    const ready = workspaceReady(linked)
+    const content = contentOf(task)
+    // Sanitised once per row: the anchor and its fallback share the result.
+    const source = task.source
+    const sourceUrl = source ? safeSourceUrl(source.url) : null
+    return <li className={css.row} data-priority={task.priority} data-status={task.status} key={task.id}>
+      <div className={css.rowLine}>
+        <button type="button" className={css.content} onClick={() => openEdit(task)} disabled={busy}
+          title={content} aria-label={`${t('edit')}: ${content}`}>{content}</button>
+        <span className={css.statusChip} data-status={task.status} title={t(statusKey(task.status))}>{t(statusKey(task.status))}</span>
+        <span className={css.workspaceMeta} title={workspaceLabel(linked)}>{workspaceLabel(linked)}</span>
+        <div className={css.rowActions}>
+          {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
+            type="button" className={css.start}
+            onClick={() => void (task.status === 'todo' ? startTask(task) : finishTask(task))}
+            disabled={busy || task.status === 'todo' && !ready}
+            aria-label={`${t(task.status === 'todo' ? 'start' : 'finish')}: ${content}`}
+            title={task.status === 'todo' && !ready ? linked === null ? t('startRequiresWorkspace') : t('startWorkspaceMissing') : undefined}>
+            {t(task.status === 'todo' ? 'start' : 'finish')}
+          </button>}
+          <button type="button" className={css.delete} onClick={() => void deleteTask(task)} disabled={busy}
+            aria-label={`${t('remove')}: ${content}`} title={t('remove')}>×</button>
+        </div>
+      </div>
+      {source && <div className={css.sourceLine}>
+        {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{source.platform} · {source.number || source.remoteId}</a> : <span>{source.platform} · {source.number || source.remoteId}</span>}
+        <span>{t('lastSync')}: {source.lastSuccess === null ? t('notStarted') : formattedTime(source.lastSuccess)}</span>
+        {source.error && <span role="status">{t('syncFailed')} · {source.error.code}</span>}
+      </div>}
+    </li>
+  }), [tasks, workspaceNames, defaultWorkspaceId, busy, t, openEdit, startTask, finishTask, deleteTask])
 
   // One composer serves both surfaces: the page renders these two blocks over
   // its list, and the frame overlay's dialog copy renders them alone, so the
@@ -713,36 +759,7 @@ export function TaskPanel({
       {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : tasks.length === 0 ? <div className={css.empty}>
         <strong>{filtered ? t('emptySearch') : t('empty')}</strong><span>{filtered ? t('emptySearchHint') : t('emptyHint')}</span>
       </div> : <ul className={css.list}>
-        {tasks.map(task => {
-          const linked = workspaceOf(task)
-          const ready = workspaceReady(linked)
-          const content = contentOf(task)
-          return <li className={css.row} data-priority={task.priority} data-status={task.status} key={task.id}>
-            <div className={css.rowLine}>
-              <button type="button" className={css.content} onClick={() => openEdit(task)} disabled={busy}
-                title={content} aria-label={`${t('edit')}: ${content}`}>{content}</button>
-              <span className={css.statusChip} data-status={task.status} title={t(statusKey(task.status))}>{t(statusKey(task.status))}</span>
-              <span className={css.workspaceMeta} title={workspaceLabel(linked)}>{workspaceLabel(linked)}</span>
-              <div className={css.rowActions}>
-                {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
-                  type="button" className={css.start}
-                  onClick={() => void (task.status === 'todo' ? startTask(task) : finishTask(task))}
-                  disabled={busy || task.status === 'todo' && !ready}
-                  aria-label={`${t(task.status === 'todo' ? 'start' : 'finish')}: ${content}`}
-                  title={task.status === 'todo' && !ready ? linked === null ? t('startRequiresWorkspace') : t('startWorkspaceMissing') : undefined}>
-                  {t(task.status === 'todo' ? 'start' : 'finish')}
-                </button>}
-                <button type="button" className={css.delete} onClick={() => void deleteTask(task)} disabled={busy}
-                  aria-label={`${t('remove')}: ${content}`} title={t('remove')}>×</button>
-              </div>
-            </div>
-            {task.source && <div className={css.sourceLine}>
-              {safeSourceUrl(task.source.url) ? <a href={safeSourceUrl(task.source.url)!} target="_blank" rel="noopener noreferrer">{task.source.platform} · {task.source.number || task.source.remoteId}</a> : <span>{task.source.platform} · {task.source.number || task.source.remoteId}</span>}
-              <span>{t('lastSync')}: {task.source.lastSuccess === null ? t('notStarted') : formattedTime(task.source.lastSuccess)}</span>
-              {task.source.error && <span role="status">{t('syncFailed')} · {task.source.error.code}</span>}
-            </div>}
-          </li>
-        })}
+        {rows}
       </ul>}
       </div>
 
