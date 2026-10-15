@@ -1,17 +1,17 @@
 [
   {
     "name": "1k-unchanged-linked",
-    "elapsedMs": 6338,
-    "heapUsedBefore": 25168832,
-    "heapUsedAfter": 19178528,
+    "elapsedMs": 6105,
+    "heapUsedBefore": 25218432,
+    "heapUsedAfter": 19265400,
     "reads": 1000,
     "writes": 0
   },
   {
     "name": "10k-detail-stream",
-    "elapsedMs": 67873,
-    "heapUsedBefore": 30478840,
-    "heapUsedAfter": 54656352,
+    "elapsedMs": 68372,
+    "heapUsedBefore": 30631376,
+    "heapUsedAfter": 54702672,
     "reads": 10000,
     "writes": 0,
     "discoverCalls": 1
