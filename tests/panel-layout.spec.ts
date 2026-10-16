@@ -49,14 +49,14 @@ describe('panel layout', () => {
     // the page reserves Automation's 9px rail with its 5px thumb inset 2px
     // instead of the theme's 5px/0px default; the list body inherits both and
     // follows with its own -9px compensation.
-    const listPage = rule(".page[data-list='true'], .page[data-graph='true']")
+    const listPage = rule(".page[data-list='true'], .page[data-graph='true'], .page[data-board='true']")
     expect(listPage).toContain('--dsh-scrollbar-width: 9px')
     expect(listPage).toContain('--dsh-scrollbar-thumb-border: 2px')
   })
 
   it('bounds the task list to the panel and scrolls only its middle body', () => {
     expect(panel).toContain('<main className={css.page} data-list="true">')
-    expect(rule(".page[data-list='true'], .page[data-graph='true']")).toContain('overflow: hidden')
+    expect(rule(".page[data-list='true'], .page[data-graph='true'], .page[data-board='true']")).toContain('overflow: hidden')
     const inner = rule(".page[data-list='true'] .inner")
     expect(inner).toContain('display: flex')
     expect(inner).toContain('flex-direction: column')
@@ -264,5 +264,24 @@ describe('panel layout', () => {
   it('leaves subtasks out of the panel and the composer', () => {
     expect(panel).not.toMatch(/subtasksSection|subtaskDraft|css\.subtasks/)
     expect(css).not.toMatch(/\.subtask/)
+  })
+
+  it('scrolls the card board as one surface and never draws a second status row', () => {
+    // Each surface marks its own page, so the board gets the scroll container
+    // rather than the canvas' fixed viewport.
+    expect(panel).toContain("data-graph={view === 'canvas' ? 'true' : undefined}")
+    expect(panel).toContain("data-board={view === 'board' ? 'true' : undefined}")
+    const board = rule(".page[data-board='true'] .graphSurface")
+    expect(board).toContain('overflow-y: auto')
+    expect(board).toContain('scrollbar-gutter: stable')
+    // The reserved rail is slid into the page padding, exactly as the list body
+    // does, so the cards keep the column's right line.
+    expect(board).toContain('margin-right: calc(-1 * var(--dsh-scrollbar-width))')
+    // The canvas keeps panning inside its own box instead of scrolling.
+    expect(rule(".page[data-graph='true'] .graphSurface")).toContain('overflow: hidden')
+    // The board counts and filters by status itself, so only the canvas page
+    // renders the panel's status tabs above a surface.
+    expect(panel).toContain("{view === 'canvas' ? canvasToolbar : null}")
+    expect(panel).not.toContain('relationToolbar')
   })
 })

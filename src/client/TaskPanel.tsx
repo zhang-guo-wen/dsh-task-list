@@ -859,16 +859,17 @@ export function TaskPanel({
       && <div className={css.empty}><strong>{t('canvasEmpty')}</strong><span>{t('canvasEmptyHint')}</span></div>}
   </div>
 
-  // The canvas draws its own header, counts, node summary, and view controls, so
-  // it gets the status tabs alone; the board has no header of its own and takes
-  // the whole toolbar.
-  const relationToolbar = <div className={css.graphToolbar}>
+  // The canvas carries its own header, status counts, node summary, and view
+  // controls, so only the status tabs are drawn above it. The board counts and
+  // filters by status itself, so it is given no toolbar at all: a second status
+  // row above it would be the same control twice.
+  const canvasToolbar = <div className={css.graphToolbar}>
     {statusFilters}
-    {view === 'canvas' ? null : <div className={css.graphMeta}>
+    <div className={css.graphMeta}>
       <span className={css.graphCount}>{nodeSummary}</span>
       {truncated && <span className={css.graphWarn} role="status">{t('canvasTruncated').replace('{count}', String(GRAPH_NODE_LIMIT))}</span>}
       <button type="button" className={css.textButton} onClick={() => void relations.load(true)} disabled={relations.loading}>{t('refresh')}</button>
-    </div>}
+    </div>
   </div>
 
   // The overlay's copy is the dialog itself: it renders the composer over
@@ -896,10 +897,12 @@ export function TaskPanel({
     </div>
   </main>
 
-  if (view !== 'list') return <main className={css.page} data-graph="true">
+  // Each surface is one page of the same panel: the canvas gets the status tabs
+  // and its own node summary, the card board owns its scrolling and its counts.
+  if (view !== 'list') return <main className={css.page} data-graph={view === 'canvas' ? 'true' : undefined} data-board={view === 'board' ? 'true' : undefined}>
     <div className={css.inner}>
       {header}
-      {relationToolbar}
+      {view === 'canvas' ? canvasToolbar : null}
       {relationSurface}
     </div>
     {composerDialog}

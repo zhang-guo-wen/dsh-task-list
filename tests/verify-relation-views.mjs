@@ -90,9 +90,54 @@ try {
   const execution = page.getByRole('region', { name: '执行情况' })
   assert.ok((await execution.textContent()).includes('当前中文会话'), 'the session is listed under execution')
   assert.equal(await page.locator('[data-session-id]').count(), 1, 'one session row')
+  // The board counts and filters by status itself, so the panel's own status row
+  // must not be drawn above it: exactly the board's four count tiles exist.
+  assert.equal(await page.locator('[data-count]').count(), 4, 'the board is the only status control')
   await page.screenshot({ path: resolve(root, 'relations-board.png') })
 
+  // A board taller than its panel scrolls as one surface instead of being cut off.
+  await page.evaluate(() => window.fixture.seedBoard(40))
+  await views.getByRole('button', { name: '拓扑图' }).click()
+  await canvas.waitFor()
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await views.getByRole('button', { name: '卡片' }).click()
+  await board.waitFor()
+  await board.locator('[data-count="done"]').filter({ hasText: '40' }).waitFor()
+  const scrollBox = await page.evaluate(() => {
+    const boardSection = document.querySelector('section[data-board="true"]')
+    for (let element = boardSection.parentElement; element !== null; element = element.parentElement) {
+      const style = getComputedStyle(element)
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        return { overflowY: style.overflowY, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }
+      }
+    }
+    return null
+  })
+  assert.notEqual(scrollBox, null, 'the board sits in a scrolling surface')
+  assert.ok(scrollBox.scrollHeight > scrollBox.clientHeight + 100,
+    `the board is taller than its panel (${scrollBox.scrollHeight} > ${scrollBox.clientHeight})`)
+  const scrolled = await page.evaluate(() => {
+    const boardSection = document.querySelector('section[data-board="true"]')
+    for (let element = boardSection.parentElement; element !== null; element = element.parentElement) {
+      const style = getComputedStyle(element)
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        element.scrollTop = 400
+        return element.scrollTop
+      }
+    }
+    return 0
+  })
+  assert.ok(scrolled > 0, 'the board surface actually scrolls')
+  await page.screenshot({ path: resolve(root, 'relations-board-scrolled.png') })
+
   // --- The composer writes the relations back --------------------------------
+  // Put the three related tasks back and re-read the graph, so the composer and
+  // the canvas below work from the relations this run started with.
+  await page.evaluate(() => window.fixture.seedRelations())
+  await views.getByRole('button', { name: '拓扑图' }).click()
+  await canvas.waitFor()
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await page.locator('path[data-edge="parent"]').waitFor()
   await views.getByRole('button', { name: '列表' }).click()
   await page.getByRole('button', { name: '编辑: 审批子任务', exact: true }).click()
   const relations = page.locator('[data-field="relations"]')
