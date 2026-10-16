@@ -8,6 +8,9 @@ import { describe, expect, it } from 'vitest'
 // in the component and its stylesheet.
 const css = readFileSync(new URL('../src/client/TaskPanel.module.css', import.meta.url), 'utf8')
 const panel = readFileSync(new URL('../src/client/TaskPanel.tsx', import.meta.url), 'utf8')
+// The row markup lives in its own memoised component: a frame that changes
+// nothing the row shows must not rebuild it, which is why the row moved out.
+const row = readFileSync(new URL('../src/client/TaskRow.tsx', import.meta.url), 'utf8')
 const calendarCss = readFileSync(new URL('../src/client/StatisticsCalendar.module.css', import.meta.url), 'utf8')
 const calendar = readFileSync(new URL('../src/client/StatisticsCalendar.tsx', import.meta.url), 'utf8')
 const moreCss = readFileSync(new URL('../src/client/MoreTasks.module.css', import.meta.url), 'utf8')
@@ -120,6 +123,7 @@ describe('panel layout', () => {
   it('shows content, status, workspace, and actions only in a task row', () => {
     expect(rule('.rowLine')).toContain('grid-template-columns: minmax(0, 1fr) 72px 128px auto')
     expect(panel).not.toMatch(/sessionMeta|createdMeta/)
+    expect(row).not.toMatch(/sessionMeta|createdMeta/)
     expect(css).not.toMatch(/sessionMeta|createdMeta/)
   })
 
@@ -150,7 +154,7 @@ describe('panel layout', () => {
 
   it('dims a completed card exactly like an ended row on the Automation tasks page', () => {
     // The row carries its status, so the stylesheet can reach a done card.
-    expect(panel).toMatch(/<li className=\{css\.row\} data-priority=\{task\.priority\} data-status=\{task\.status\}/)
+    expect(row).toMatch(/<li className=\{css\.row\} data-priority=\{task\.priority\} data-status=\{task\.status\}/)
     // Tertiary content over a caption workspace line, back to the usual steps
     // while the pointer is on the card or focus is inside it.
     expect(rule(".row[data-status='done'] .content")).toContain('color: var(--dsw-alias-label-tertiary')

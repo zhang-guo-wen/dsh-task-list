@@ -130,7 +130,11 @@ describe('connection editor usability', () => {
     // theme token while the button keeps the host geometry.
     expect(component).toMatch(/<Button variant="primary"[\s\S]*?\{t\('syncLoginCloud'\)\}<\/Button>/u)
     expect(component).toContain('className={armed ? css.dangerArmed : css.danger}')
-    expect(css).toMatch(/\.danger, \.dangerArmed \{[^}]*state-error-primary/u)
-    expect(css).toMatch(/\.dangerArmed \{[^}]*background: var\(--dsw-alias-state-error-primary/u)
+    // The destructive class is doubled so its ink beats the host's own
+    // `.button` colour by specificity rather than by `!important`.
+    expect(css).toMatch(/\.danger\.danger, \.dangerArmed\.dangerArmed \{[^}]*state-error-primary/u)
+    expect(css).toMatch(/\.dangerArmed\.dangerArmed \{[^}]*background: var\(--dsw-alias-state-error-primary/u)
+    // No declaration is forced: the doubled class is what carries the ink.
+    expect(css).not.toMatch(/:\s*[^;{}]*!important/u)
   })
 })

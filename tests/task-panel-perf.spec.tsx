@@ -77,12 +77,27 @@ describe('task list render contracts', () => {
   // The jsdom environment gives import.meta.url a non-file scheme, so the panel
   // source is read through the project root Vitest was started in.
   const panel = readFileSync(resolve(process.cwd(), 'src/client/TaskPanel.tsx'), 'utf8')
+  const row = readFileSync(resolve(process.cwd(), 'src/client/TaskRow.tsx'), 'utf8')
+  const clock = readFileSync(resolve(process.cwd(), 'src/client/format-time.ts'), 'utf8')
 
   it('keeps one formatter and one URL sanitiser call site on the render path', () => {
-    // One module-level formatter, never rebuilt inside the render.
-    expect(panel.match(/new Intl\.DateTimeFormat/g)).toHaveLength(1)
+    // One module-level formatter for the panel and its rows together, never
+    // rebuilt inside a render.
+    expect(clock.match(/new Intl\.DateTimeFormat/g)).toHaveLength(1)
+    expect(panel.match(/new Intl\.DateTimeFormat/g)).toBeNull()
+    expect(row.match(/new Intl\.DateTimeFormat/g)).toBeNull()
     // The anchor and its fallback share a single sanitised URL per row.
-    expect(panel.match(/safeSourceUrl\(/g)).toHaveLength(1)
+    expect(row.match(/safeSourceUrl\(/g)).toHaveLength(1)
+    expect(panel.match(/safeSourceUrl\(/g)).toBeNull()
+  })
+
+  it('keeps the row a memoised component of primitives and stable callbacks', () => {
+    // The measured cost of a frame that changes nothing visible is the row
+    // rebuild, so the row must be memoised and must receive no fresh object
+    // identity per render.
+    expect(row).toContain('export const TaskRow = memo(TaskRowView)')
+    expect(row).not.toContain('useMemo')
+    expect(panel).toContain('<TaskRow key={task.id} task={task} linked={linked} ready={workspaceReady(linked)} busy={busy}')
   })
 })
 

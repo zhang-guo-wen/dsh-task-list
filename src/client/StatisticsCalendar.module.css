@@ -15,24 +15,31 @@
 .periods { flex: none; }
 /* The step arrows flank the date so 上一/下一 reads as one control. */
 .stepper { display: inline-flex; align-items: center; gap: 4px; }
-.toolbar input { box-sizing: border-box; height: 32px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 8px; background: var(--dsw-alias-bg-base, #fff); color: inherit; font: inherit; }
+.toolbar input {
+  box-sizing: border-box; height: 32px; padding: 0 9px; border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-base); color: inherit; font: var(--dsw-font-xs-13);
+}
+.toolbar input:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
 /* The progress text sits in the toolbar and is always present, so a reload never
    changes the report's height. */
-.progress { flex: 1 1 96px; min-width: 0; margin-left: 4px; text-align: right; font-size: 12px; line-height: 1.4; color: var(--dsw-alias-label-tertiary, #81858c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.error { flex: none; margin: 0 0 8px; color: var(--dsw-alias-state-error-primary, #ef4444); overflow-wrap: anywhere; }
+.progress { flex: 1 1 96px; min-width: 0; margin-left: 4px; text-align: right; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.error { flex: none; margin: 0 0 8px; font: var(--dsw-font-xs-13); color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
 
 /* The metric totals are a read-only legend: they carry no pointer affordance and
    never change what the grid draws. A cell's hover card holds every metric. */
 .totals { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
-.total { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 11px; background: var(--dsw-alias-bg-base, #fff); }
-.totalLabel { font-size: 11px; line-height: 1.3; color: var(--dsw-alias-label-tertiary, #81858c); }
-.totalValue { font-size: 20px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.total { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-base); }
+.totalLabel { font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.totalValue { font-size: 20px; line-height: 24px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 
 /* The grid keeps its content height and the panel simply ends after it, so a tall
    window never inflates the cells and a short one never overflows. */
 .calendar { display: flex; flex-direction: column; min-height: 0; }
 .weekdays { flex: none; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-bottom: 5px; }
-.weekdays span { font-size: 11px; line-height: 1.3; color: var(--dsw-alias-label-tertiary, #81858c); text-align: center; }
+.weekdays span { font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); text-align: center; }
 /* Rows hug their content: a leftover minimum left a visible gap under the text
    in every day card. */
 .grid { flex: none; display: grid; gap: 6px; align-content: start; }
@@ -40,70 +47,86 @@
 .grid[data-period='month'] { grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: auto; }
 .grid[data-period='year'] { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-rows: auto; gap: 10px; }
 
-.cell { display: flex; flex-direction: column; gap: 3px; padding: 8px 11px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 10px; background: var(--dsw-alias-bg-base, #fff); text-align: left; font-variant-numeric: tabular-nums; font-size: 12px; }
-.cell:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; }
-.cellHead { display: flex; align-items: baseline; justify-content: space-between; font-size: 11px; line-height: 1.35; color: var(--dsw-alias-label-tertiary, #81858c); }
-.cellHead b { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #0f1115); }
+.cell { display: flex; flex-direction: column; gap: 3px; padding: 8px 11px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-base); text-align: left; font-variant-numeric: tabular-nums; font: var(--dsw-font-xxs-12); }
+.cell:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+.cellHead { display: flex; align-items: baseline; justify-content: space-between; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.cellHead b { font: var(--dsw-font-xxs-12); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .cellBody { display: grid; gap: 3px; }
 /* Label on the left edge, number on the right edge, with the numbers lined up
    across rows inside one card. */
 .group { display: grid; grid-template-columns: minmax(0, 1fr) max-content; column-gap: 8px; row-gap: 1px; align-items: baseline; }
-.group + .group { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--dsw-alias-border-l3, #eceef2); }
+.group + .group { margin-top: 3px; padding-top: 4px; border-top: 0.5px solid var(--dsw-alias-border-l3); }
 /* The label/value pair are the grid items themselves, so each row is a real
    two-column line rather than one stretched cell. */
 .stat { display: contents; }
-.statLabel { font-style: normal; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 1.35; }
-.statValue { font-weight: 600; color: var(--dsw-alias-label-primary, #0f1115); font-size: 15px; line-height: 1.35; text-align: right; }
-.blank { border-radius: 10px; }
+.statLabel { font-style: normal; color: var(--dsw-alias-label-tertiary); font: var(--dsw-font-xxs-12); }
+.statValue { font-weight: 600; color: var(--dsw-alias-label-primary); font-size: 15px; line-height: 20px; text-align: right; }
+.blank { border-radius: var(--dsw-radius-md); }
 .grid[data-period='year'] .cell { padding: 9px 12px; gap: 3px; }
-.grid[data-period='year'] .cellHead b { font-size: 14px; }
+.grid[data-period='year'] .cellHead b { font-size: 14px; line-height: 20px; }
 .grid[data-period='year'] .group { column-gap: 10px; }
-.grid[data-period='year'] .statLabel { font-size: 12px; }
-.grid[data-period='year'] .statValue { font-size: 15px; }
+.grid[data-period='year'] .statLabel { font: var(--dsw-font-xxs-12); }
+.grid[data-period='year'] .statValue { font-size: 15px; line-height: 20px; }
 /* The month grid packs five or six weeks, so its cards run a step smaller. */
 .grid[data-period='month'] .cell { padding: 5px 9px; gap: 2px; }
-.grid[data-period='month'] .cellHead { font-size: 10.5px; line-height: 1.3; }
-.grid[data-period='month'] .cellHead b { font-size: 12px; }
+.grid[data-period='month'] .cellHead { font-size: 11px; line-height: 15px; }
+.grid[data-period='month'] .cellHead b { font-size: 12px; line-height: 16px; }
 .grid[data-period='month'] .group { column-gap: 7px; }
 .grid[data-period='month'] .group + .group { margin-top: 1px; padding-top: 2px; }
-.grid[data-period='month'] .statLabel { font-size: 10.5px; line-height: 1.3; }
-.grid[data-period='month'] .statValue { font-size: 13px; line-height: 1.3; }
+.grid[data-period='month'] .statLabel { font-size: 11px; line-height: 15px; }
+.grid[data-period='month'] .statValue { font-size: 13px; line-height: 18px; }
 .cell[data-excluded] { background: transparent; border-style: dashed; }
 .cell[data-excluded] .cellHead b,
 .cell[data-excluded] .statLabel,
-.cell[data-excluded] .statValue { color: var(--dsw-alias-label-tertiary, #81858c); }
+.cell[data-excluded] .statValue { color: var(--dsw-alias-label-tertiary); }
 
-.cell[data-level='1'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 12%, var(--dsw-alias-bg-base, #fff)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 22%, var(--dsw-alias-border-l3, #ddd)); }
-.cell[data-level='2'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 26%, var(--dsw-alias-bg-base, #fff)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 34%, var(--dsw-alias-border-l3, #ddd)); }
-.cell[data-level='3'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 46%, var(--dsw-alias-bg-base, #fff)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 52%, var(--dsw-alias-border-l3, #ddd)); }
-.cell[data-level='4'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 72%, var(--dsw-alias-bg-base, #fff)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 76%, var(--dsw-alias-border-l3, #ddd)); }
+.cell[data-level='1'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, var(--dsw-alias-bg-base)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 22%, var(--dsw-alias-border-l3)); }
+.cell[data-level='2'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 26%, var(--dsw-alias-bg-base)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 34%, var(--dsw-alias-border-l3)); }
+.cell[data-level='3'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 46%, var(--dsw-alias-bg-base)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 52%, var(--dsw-alias-border-l3)); }
+.cell[data-level='4'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 72%, var(--dsw-alias-bg-base)); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 76%, var(--dsw-alias-border-l3)); }
 .cell[data-level='4'] .cellHead,
 .cell[data-level='4'] .cellHead b,
 .cell[data-level='4'] .statLabel,
-.cell[data-level='4'] .statValue { color: var(--dsw-alias-label-primary-foreground, #fff); }
-.cell[data-level='4'] .group + .group { border-top-color: color-mix(in srgb, var(--dsw-alias-label-primary-foreground, #fff) 32%, transparent); }
+.cell[data-level='4'] .statValue { color: var(--dsw-alias-label-primary-foreground); }
+.cell[data-level='4'] .group + .group { border-top-color: color-mix(in srgb, var(--dsw-alias-label-primary-foreground) 32%, transparent); }
 
-.legend { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; font-size: 11px; line-height: 1.3; color: var(--dsw-alias-label-tertiary, #81858c); }
-.swatch { display: block; width: 13px; height: 13px; border-radius: 4px; border: 1px solid var(--dsw-alias-border-l3, #ddd); }
-.swatch[data-level='0'] { background: var(--dsw-alias-bg-base, #fff); }
-.swatch[data-level='1'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 12%, var(--dsw-alias-bg-base, #fff)); }
-.swatch[data-level='2'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 26%, var(--dsw-alias-bg-base, #fff)); }
-.swatch[data-level='3'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 46%, var(--dsw-alias-bg-base, #fff)); }
-.swatch[data-level='4'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2c9b54) 72%, var(--dsw-alias-bg-base, #fff)); }
+.legend { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.swatch { display: block; width: 13px; height: 13px; border-radius: var(--dsw-radius-xs); border: 0.5px solid var(--dsw-alias-border-l3); }
+.swatch[data-level='0'] { background: var(--dsw-alias-bg-base); }
+.swatch[data-level='1'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, var(--dsw-alias-bg-base)); }
+.swatch[data-level='2'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 26%, var(--dsw-alias-bg-base)); }
+.swatch[data-level='3'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 46%, var(--dsw-alias-bg-base)); }
+.swatch[data-level='4'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 72%, var(--dsw-alias-bg-base)); }
 .swatch[data-excluded] { background: transparent; border-style: dashed; }
 
 /* The hover card explains any bucket with every metric, including the ones the
-   grid is not drawing right now. */
-.tip { position: fixed; z-index: 30; min-width: 158px; padding: 9px 11px; border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 10px; background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 8px 24px #1018281a; font-size: 12px; pointer-events: none; }
-.tipHead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.tipHead b { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #0f1115); }
+   grid is not drawing right now. It floats above the page, so it takes the
+   theme's elevated surface (no border stroke beside the elevation shadow). */
+.tip {
+  position: fixed; z-index: 30; min-width: 158px; padding: 9px 11px;
+  border: 0; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-elevation-panel);
+  font: var(--dsw-font-xxs-12); pointer-events: none;
+}
+.tipHead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.tipHead b { font: var(--dsw-font-xxs-12); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .tipGroup { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 2px; }
-.tipGroup + .tipGroup { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--dsw-alias-border-l3, #eceef2); }
-.tipLabel { font-style: normal; color: var(--dsw-alias-label-tertiary, #81858c); }
+.tipGroup + .tipGroup { margin-top: 5px; padding-top: 5px; border-top: 0.5px solid var(--dsw-alias-border-l3); }
+.tipLabel { font-style: normal; color: var(--dsw-alias-label-tertiary); }
 .tipValue { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 
 @media (max-width: 900px) {
   .totals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .grid[data-period='day'] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .grid[data-period='year'] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* The step arrows and the date are the only pointer targets of the report; on a
+   touch screen they grow to the 44px minimum and the date input takes the 16px
+   text size that keeps iOS from zooming the page on focus. */
+@media (pointer: coarse) {
+  .toolbar input { min-height: 44px; font-size: 16px; line-height: 22px; }
+  .stepper button { min-height: 44px; min-width: 44px; }
 }

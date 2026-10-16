@@ -5,42 +5,54 @@
    list and the report. */
 .header { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
 .header h1 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
-.header h1:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 4px; border-radius: 4px; }
+.header h1:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 4px; border-radius: var(--dsw-radius-xs);
+}
 
 .controls { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px 16px; }
-.field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }
 .field select {
-  height: 32px; min-width: 140px; max-width: 260px; padding: 0 10px; border-radius: 10px;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); background: var(--dsw-alias-bg-base, #fff);
-  color: var(--dsw-alias-label-primary, #0f1115); font: inherit; font-size: 13px;
+  height: 32px; min-width: 140px; max-width: 260px; padding: 0 10px; border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; line-height: 20px;
 }
-.field select:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2, #b8bbc0); }
-.field select:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
+.field select:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2); }
+.field select:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
 /* An icon-only control keeps the square footprint of its glyph. */
 .iconButton { flex: none; width: 32px; min-width: 32px; padding: 0; justify-content: center; }
 
-.hint { flex: none; margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #81858c); }
-.error { flex: none; margin: 0; color: var(--dsw-alias-state-error-primary, #c10002); }
+.hint { flex: none; margin: 0; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.error { flex: none; margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }
 
 /* Filter bar: one title search plus at most two conditions. */
 .filters { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .filterSearch { display: flex; align-items: center; gap: 6px; }
 .filterSearch input {
-  height: 32px; width: clamp(150px, 22vw, 260px); padding: 0 10px; border-radius: 10px; font: inherit; font-size: 13px;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); background: var(--dsw-alias-bg-base, #fff); color: inherit;
+  height: 32px; width: clamp(150px, 22vw, 260px); padding: 0 10px; border-radius: var(--dsw-radius-md);
+  font: inherit; font-size: 13px; line-height: 20px;
+  border: 0.5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); color: inherit;
 }
 .condition { display: inline-flex; align-items: center; gap: 6px; }
 .condition select, .filterValue {
-  height: 32px; min-width: 110px; max-width: 200px; padding: 0 8px; border-radius: 10px; font: inherit; font-size: 13px;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); background: var(--dsw-alias-bg-base, #fff); color: inherit;
+  height: 32px; min-width: 110px; max-width: 200px; padding: 0 8px; border-radius: var(--dsw-radius-md);
+  font: inherit; font-size: 13px; line-height: 20px;
+  border: 0.5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); color: inherit;
 }
 .filterValue[type='date'] { min-width: 140px; }
-.condition select:focus-visible, .filterValue:focus-visible, .filterSearch input:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
+.condition select:focus-visible, .filterValue:focus-visible, .filterSearch input:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+/* The compact icon button of the row: 28px like every other icon button. */
 .filterRemove {
-  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--dsw-radius-sm); background: transparent;
   color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
 }
-.filterRemove:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
+.filterRemove:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
 /* The middle owns the leftover height: the table scrolls, paging stays put.
    `overflow-y: scroll` keeps the vertical gutter reserved at all times. With
@@ -50,21 +62,21 @@
 .body { display: flex; flex: 1 1 auto; min-height: 0; gap: 12px; }
 .tableBox {
   flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: scroll; overflow-x: auto; scrollbar-gutter: stable;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px; background: var(--dsw-alias-bg-base, #fff);
+  border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-base);
 }
 /* `separate` + zero spacing: Chromium ignores position: sticky on table cells
    while `border-collapse: collapse`, which would silently unfreeze every pinned
    column. Row separators are drawn with borders instead of collapsed edges. */
-.table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; line-height: 20px; }
 .table th, .table td { padding: 8px 12px; text-align: left; vertical-align: top; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table thead th {
   position: sticky; top: 0; z-index: 1; white-space: nowrap; font-weight: 500;
-  color: var(--dsw-alias-label-tertiary, #81858c); background: var(--dsw-alias-bg-base, #fff);
-  border-bottom: 1px solid var(--dsw-alias-border-l3, #ddd);
+  color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-base);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
-.table tbody tr + tr td { border-top: 1px solid var(--dsw-alias-border-l4, #eee); }
-.table tbody tr:hover td { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
-.table td { color: var(--dsw-alias-label-primary, #0f1115); }
+.table tbody tr + tr td { border-top: 0.5px solid var(--dsw-alias-border-l4); }
+.table tbody tr:hover td { background: var(--dsw-alias-interactive-bg-hover); }
+.table td { color: var(--dsw-alias-label-primary); }
 
 /* Frozen columns: the title stays pinned on the left and the row action on the
    right while the middle scrolls sideways. Both need an opaque background, or
@@ -72,12 +84,12 @@
    sit above every scrolling header cell (z-index 3 vs 1). */
 .subject { min-width: 220px; }
 .frozenLeft {
-  position: sticky; left: 0; z-index: 2; background: var(--dsw-alias-bg-base, #fff);
-  box-shadow: 1px 0 0 var(--dsw-alias-border-l3, #ddd);
+  position: sticky; left: 0; z-index: 2; background: var(--dsw-alias-bg-base);
+  box-shadow: 0.5px 0 0 var(--dsw-alias-border-l3);
 }
 .frozenRight {
-  position: sticky; right: 0; z-index: 2; background: var(--dsw-alias-bg-base, #fff);
-  box-shadow: -1px 0 0 var(--dsw-alias-border-l3, #ddd);
+  position: sticky; right: 0; z-index: 2; background: var(--dsw-alias-bg-base);
+  box-shadow: -0.5px 0 0 var(--dsw-alias-border-l3);
 }
 .table thead .frozenLeft, .table thead .frozenRight { z-index: 3; }
 /* The action head carries the column-settings icon next to its label; the row
@@ -90,66 +102,103 @@
   font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
 }
 .subjectButton:hover { text-decoration: underline; }
-.subjectButton:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; border-radius: 4px; }
+.subjectButton:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px; border-radius: var(--dsw-radius-xs);
+}
 /* Keep the frozen cells' hover tint over their own opaque background. */
 .table tbody tr:hover .frozenLeft, .table tbody tr:hover .frozenRight {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 5%, var(--dsw-alias-bg-base, #fff));
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--dsw-alias-bg-base));
 }
 
-.empty { margin: 0; padding: 28px 12px; text-align: center; color: var(--dsw-alias-label-tertiary, #81858c); }
+.empty { margin: 0; padding: 28px 12px; text-align: center; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }
 
 /* Header settings: a right-hand drawer listing the shown and hidden columns. */
 .picker {
   flex: 0 0 280px; display: flex; flex-direction: column; min-height: 0;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
-  background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 2px 8px #0000000a;
+  border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-base);
 }
-.pickerHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l4, #eee); font-size: 13px; }
-.pickerClose { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
-.pickerClose:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
+.pickerHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 0.5px solid var(--dsw-alias-border-l4); font-size: 13px; line-height: 20px; }
+.pickerClose { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+.pickerClose:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.pickerClose:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
 .pickerSearch {
-  margin: 10px 12px; height: 32px; padding: 0 10px; border-radius: 10px; font: inherit; font-size: 13px;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); background: var(--dsw-alias-bg-base, #fff); color: inherit;
+  margin: 10px 12px; height: 32px; padding: 0 10px; border-radius: var(--dsw-radius-md);
+  font: inherit; font-size: 13px; line-height: 20px;
+  border: 0.5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); color: inherit;
 }
-.pickerSearch:focus-visible { outline-color: var(--dsw-alias-state-business-primary, #326dca); }
+.pickerSearch:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
 .pickerScroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 12px 12px; }
-.pickerHeading { margin: 10px 0 4px; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #81858c); }
-.pickerRow { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
-.pickerGrip { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 11px; letter-spacing: -2px; user-select: none; }
+.pickerHeading { margin: 10px 0 4px; font: var(--dsw-font-xxs-12); font-weight: 500; color: var(--dsw-alias-label-tertiary); }
+.pickerRow { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; line-height: 20px; }
+.pickerGrip { color: var(--dsw-alias-label-tertiary); font: var(--dsw-font-xxs-12); letter-spacing: -2px; user-select: none; }
 .pickerLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pickerNote { margin: 6px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.pickerNote { margin: 6px 0; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-tertiary); }
 
 /* Detail drawer: the row's own fields plus the work item body. */
 .detail {
   flex: 0 0 360px; display: flex; flex-direction: column; min-height: 0;
-  border: 1px solid var(--dsw-alias-border-l3, #ddd); border-radius: 12px;
-  background: var(--dsw-alias-bg-base, #fff); box-shadow: 0 2px 8px #0000000a;
+  border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-base);
 }
 .detailTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detailScroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; }
-.detailMeta { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; font-size: 13px; }
+.detailMeta { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; font-size: 13px; line-height: 20px; }
 .detailMetaRow { display: flex; gap: 8px; }
-.detailMetaRow dt { flex: 0 0 84px; margin: 0; color: var(--dsw-alias-label-tertiary, #81858c); }
+.detailMetaRow dt { flex: 0 0 84px; margin: 0; color: var(--dsw-alias-label-tertiary); }
 .detailMetaRow dd { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 /* The body comes from the plugin's own encoder, so only its own vocabulary shows up. */
 .detailBody { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .detailBody p { margin: 0 0 8px; }
-.detailBody h1, .detailBody h2, .detailBody h3, .detailBody h4, .detailBody h5, .detailBody h6 { margin: 12px 0 6px; font-size: 14px; }
+.detailBody h1, .detailBody h2, .detailBody h3, .detailBody h4, .detailBody h5, .detailBody h6 { margin: 12px 0 6px; font-size: 14px; line-height: 22px; }
 .detailBody ul, .detailBody ol { margin: 0 0 8px; padding-left: 20px; }
-.detailBody blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l3, #ddd); color: var(--dsw-alias-label-secondary, #4b4f56); }
-.detailBody pre { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover, #2631480f); overflow: auto; }
+.detailBody blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 1px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }
+.detailBody pre { margin: 0 0 8px; padding: 8px 10px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-interactive-bg-hover); overflow: auto; }
 .detailBody table { width: 100%; margin: 0 0 8px; border-collapse: collapse; }
-.detailBody th, .detailBody td { padding: 4px 8px; border: 1px solid var(--dsw-alias-border-l3, #ddd); text-align: left; vertical-align: top; }
+.detailBody th, .detailBody td { padding: 4px 8px; border: 0.5px solid var(--dsw-alias-border-l3); text-align: left; vertical-align: top; }
 .detailPlain { margin: 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.switchOn, .switchOff { flex: none; width: 34px; height: 20px; padding: 2px; border: 0; border-radius: 10px; cursor: pointer; transition: background .16s ease; }
-.switchOn { background: var(--dsw-alias-state-business-primary, #326dca); }
-.switchOff { background: var(--dsw-alias-border-l2, #b8bbc0); }
-.switchKnob { display: block; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .16s ease; }
+/* The column picker's own switch: a 34x20 capsule whose knob is the theme's
+   switch thumb, so it reads like the Host Switch on both themes. */
+.switchOn, .switchOff {
+  flex: none; width: 34px; height: 20px; padding: 2px; border: 0; border-radius: 999px; corner-shape: round; cursor: pointer;
+  transition: background var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+.switchOn { background: var(--dsw-alias-state-business-primary); }
+.switchOff { background: var(--dsw-alias-border-l2); }
+.switchKnob {
+  display: block; width: 16px; height: 16px; border-radius: 50%; corner-shape: round;
+  background: var(--dsw-alias-switch-thumb);
+  transition: transform var(--ds-transition-duration) var(--ds-ease-in-out);
+}
 .switchOn .switchKnob { transform: translateX(14px); }
-.switchOn:focus-visible, .switchOff:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #326dca); outline-offset: 2px; }
+.switchOn:focus-visible, .switchOff:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
 
 .footer { display: flex; flex: none; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; }
-.footer > span:first-child { font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.footer > span:first-child { font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }
 .pager { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-.pageNow { min-width: 44px; text-align: center; font-size: 13px; color: var(--dsw-alias-label-secondary, #4b4f56); }
+.pageNow { min-width: 44px; text-align: center; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+
+/* A touch screen gets the 44px target for the two row-level controls and the
+   16px field text that keeps iOS from zooming the page on focus. */
+@media (pointer: coarse) {
+  .filterRemove, .pickerClose { width: 44px; height: 44px; }
+  .pickerRow { min-height: 44px; }
+  .table td .rowActions button { min-height: 44px; }
+  .filterSearch input, .condition select, .filterValue, .pickerSearch, .field select { min-height: 44px; font-size: 16px; line-height: 22px; }
+}
+/* The switch and the picker rows animate; a reduced-motion preference turns
+   both off in place. */
+@media (prefers-reduced-motion: reduce) {
+  .switchOn, .switchOff, .switchKnob { transition: none; }
+}

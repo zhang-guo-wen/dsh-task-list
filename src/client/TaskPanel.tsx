@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT, TASK_STATUSES,
@@ -10,26 +10,38 @@ import {
 } from '../types.ts'
 import type { TaskKey } from './locales.ts'
 import { deriveTaskTitle } from './task-title.ts'
-import { safeSourceUrl, taskDocument, retainTaskSource } from './task-content.ts'
+import { retainTaskSource, taskDocument } from './task-content.ts'
+import { formattedTime } from './format-time.ts'
+import { statusKey } from './task-status.ts'
 import { pickDefaultWorkspace } from './workspaces.ts'
 import css from './TaskPanel.module.css'
 import { contentText, textContent } from '../content.ts'
 import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
-import { TaskContentEditor } from './TaskContentEditor.tsx'
 import type { SyncFace } from './sync/face.ts'
 import type { ListWorkitemFieldsRequest, ListWorkitemsRequest, SafeWorkitemDescription, SafeWorkitemDescriptionResult, SafeWorkitemField, SafeWorkitemPage, WorkitemFillField } from '../sync/dto.ts'
 import { buildWorkitemBody } from './workitem-fill.ts'
 import { SyncActions, SyncStatus } from './sync/SyncControls.tsx'
 import { useSyncPanel } from './sync/use-sync-panel.ts'
 
-import { StatisticsCalendar } from './StatisticsCalendar.tsx'
 import type { StatisticsRequest, StatisticsRunOptions, StatisticsSnapshot } from '../statistics.ts'
-import { MoreTasks } from './MoreTasks.tsx'
 import { markQuickAddSaved, quickAddState, subscribeQuickAdd } from './quick-add.ts'
+import { MoreTasks } from './MoreTasks.tsx'
+import { TaskContentEditor } from './TaskContentEditor.tsx'
 import { TaskCanvas, type TaskExecutionInfo } from './TaskCanvas.tsx'
 import { TaskBoard } from './TaskBoard.tsx'
 import { TaskRelationsField } from './TaskRelationsField.tsx'
+import { TaskRow } from './TaskRow.tsx'
 import { GRAPH_NODE_LIMIT, useTaskRelations } from './use-task-relations.ts'
+
+// The report is the one heavy surface that shares no module with the panel
+// itself, so it is the one surface fetched on demand through the host module
+// loader's asynchronous chunk operation, as `client.StatisticsCalendar.js`.
+// The Lexical editor, the work-item page, and the two graph surfaces all share
+// modules with the entry bundle (`rich-text.ts`, `types.ts`); a shared module
+// becomes its own chunk, and its consumers could then only reach it through a
+// synchronous relative require — a URL the loader's module table cannot answer —
+// so they stay in the entry bundle rather than ship an unloadable chunk.
+const StatisticsCalendar = lazy(() => import('./StatisticsCalendar.tsx').then(module => ({ default: module.StatisticsCalendar })))
 
 interface WorkspaceSnapshot {
   items: readonly { workspaceId: string; title: string }[]
@@ -116,29 +128,15 @@ const pageSizes: number[] = [10, 20, 50, MAX_PAGE_SIZE]
 const EMPTY_OVERVIEW: TaskOverview = {
   counts: { todo: 0, in_progress: 0, approving: 0, done: 0 }, total: 0, blocked: 0, sessionIds: [],
 }
+/** Rows the first-load skeleton stands in for. */
+const SKELETON_ROWS = [0, 1, 2, 3, 4]
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-// Building a formatter costs far more than using one, and the list formats a
-// timestamp for every synced row on every keystroke, so it is built once here.
-const timeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-
-function formattedTime(timestamp: number): string {
-  return timeFormat.format(timestamp)
-}
-
-function statusKey(status: TaskStatus): TaskKey {
-  if (status === 'in_progress') return 'inProgress'
-  if (status === 'approving') return 'approving'
-  return status
-}
-
-/** The stored title is derived from the content, so legacy rows without content fall back to it. */
-function contentOf(task: TaskRecord): string {
-  return task.source ? task.title : task.notes.trim() || task.title
-}
+/** Progress of the composer's own write, shown in its footer. */
+type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
 
 export function TaskPanel({
   list, create, update, remove, readAttachments,
@@ -163,6 +161,7 @@ export function TaskPanel({
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<TaskRecord | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
@@ -197,16 +196,19 @@ export function TaskPanel({
   const agentPrefilled = useRef(false)
   const quickAdd = useSyncExternalStore(subscribeQuickAdd, quickAddState)
   const sessionState = useSyncExternalStore(subscribeSessions, sessionSnapshot)
-  const sessionNames = new Map(sessionState.items.map(row => [row.id, row.title]))
+  const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
+  const workspaces = workspaceState.items
+  // Both projections walk the whole Session catalog, and the host pushes a fresh
+  // snapshot on every stream frame; they are derived once per snapshot instead of
+  // once per render.
+  const sessionNames = useMemo(() => new Map(sessionState.items.map(row => [row.id, row.title])), [sessionState])
   // Mirror the Host sidebar's own visibility rule for the picker: internal
   // subagent runs, retired blank entries, and archived Sessions are not offered.
   // A Session already linked to this task is still echoed even when hidden.
-  const selectableSessions = sessionState.items.filter(row => !row.archived && !row.subagent && !row.blank)
+  const selectableSessions = useMemo(() => sessionState.items.filter(row => !row.archived && !row.subagent && !row.blank), [sessionState])
   const linkedSession = sessionState.items.find(row => row.id === sessionId)
   const echoedLinkedSession = linkedSession !== undefined && (linkedSession.archived || linkedSession.subagent || linkedSession.blank)
     ? linkedSession : undefined
-  const workspaceState = useSyncExternalStore(subscribeWorkspaces, workspaceSnapshot)
-  const workspaces = workspaceState.items
   // Memoised for identity, not for cost: the row list is keyed on this map, and
   // rebuilding it every render would defeat that.
   const workspaceNames = useMemo(() => new Map(workspaces.map(row => [row.workspaceId, row.title])), [workspaces])
@@ -234,6 +236,8 @@ export function TaskPanel({
         setError('')
       }
     } catch (failure) {
+      // The rows already on screen stay where they are: a failed reload reports
+      // itself and leaves the last successful page in place.
       if (mounted.current && generation.current === current) setError(errorText(failure))
     } finally {
       if (mounted.current && generation.current === current) setLoading(false)
@@ -347,6 +351,7 @@ export function TaskPanel({
     setBlockingIds([])
     setUseWorktree(false)
     setError('')
+    setSaveState('idle')
     setComposerOpen(true)
   }
 
@@ -379,12 +384,13 @@ export function TaskPanel({
     setBlockingIds([])
     setUseWorktree(false)
     setError('')
+    setSaveState('idle')
     setMoreOpen(false)
     setComposerOpen(true)
   }
 
-  // Stable identities: the row list below is memoised on them, so it only
-  // rebuilds when something it shows actually changed.
+  // Stable identities: each row is memoised on them, so it only re-renders when
+  // something it shows actually changed.
   const openEdit = useCallback((task: TaskRecord) => {
     setEditing(task)
     setExternalTitle(task.title)
@@ -406,6 +412,7 @@ export function TaskPanel({
     setBlockingIds([...task.blockingIds])
     setUseWorktree(task.useWorktree)
     setError('')
+    setSaveState('idle')
     setComposerOpen(true)
   }, [defaultWorkspaceId])
 
@@ -448,10 +455,12 @@ export function TaskPanel({
     event.preventDefault()
     if (busy || attachmentBusy || !contentValid || !derivedTitle) return
     setBusy(true)
+    setSaveState('saving')
     setError('')
     try {
       await persist()
       if (!mounted.current) return
+      setSaveState('saved')
       setEditing(null)
       closeComposer()
       // A saved relation (parent or dependency) changes the graph the canvas
@@ -461,7 +470,9 @@ export function TaskPanel({
       // list reloads through the request store instead.
       if (dialogMode) markQuickAddSaved()
       else await refresh()
-    } catch (failure) { if (mounted.current) setError(errorText(failure)) }
+    } catch (failure) {
+      if (mounted.current) { setSaveState('failed'); setError(errorText(failure)) }
+    }
     finally { if (mounted.current) setBusy(false) }
   }
 
@@ -475,6 +486,7 @@ export function TaskPanel({
     if (busy || attachmentBusy || !contentValid || !derivedTitle || editing === null) return
     let saved: TaskRecord | null = null
     setBusy(true)
+    setSaveState('saving')
     setError('')
     try {
       saved = retainTaskSource(editing, await persist())
@@ -485,9 +497,10 @@ export function TaskPanel({
       if (!mounted.current) return
       if (finish) await update({ id: saved.id, version: saved.version, status: 'done' })
       else await start(saved)
-      if (mounted.current) await refresh()
+      if (mounted.current) { setSaveState('saved'); await refresh() }
     } catch (failure) {
       if (!mounted.current) return
+      setSaveState('failed')
       // A non-Git workspace is resolved with the initialization dialog, exactly as in the list.
       if (failure instanceof WorktreeNotGitError && saved !== null) {
         setInitializeTask({ task: saved, workspaceTitle: failure.workspaceTitle, workspacePath: failure.workspacePath })
@@ -572,7 +585,7 @@ export function TaskPanel({
         if (mounted.current) setError(errorText(failure))
       }
     } finally { if (mounted.current) setBusy(false) }
-  }, [busy, update, refresh, relationsLoad])
+  }, [busy, update, refresh])
 
   const workspaceOptions = new Map(workspaceNames)
   for (const task of tasks) {
@@ -589,43 +602,16 @@ export function TaskPanel({
     .replace('{page}', String(page)).replace('{pages}', String(pageCount)).replace('{total}', String(total))
   const filtered = query !== '' || filter !== 'all' || workspaceFilter !== 'all'
 
-  // Building the rows is the expensive part of a render, so they are built once
-  // per change to what they show. A session or workspace frame, a keystroke in
-  // the search box, or any other unrelated state then re-renders the panel
-  // around them: the same element objects come back, so React skips the rows.
-  const rows = useMemo(() => tasks.map(task => {
+  // Each row is memoised on primitives and the stable callbacks above, so a
+  // frame that changes nothing a row shows — a workspace snapshot with the same
+  // membership, a keystroke in the search box — does not rebuild its timestamp,
+  // its sanitised URL, or its element tree.
+  const rows = tasks.map(task => {
     const linked = workspaceOf(task)
-    const ready = workspaceReady(linked)
-    const content = contentOf(task)
-    // Sanitised once per row: the anchor and its fallback share the result.
-    const source = task.source
-    const sourceUrl = source ? safeSourceUrl(source.url) : null
-    return <li className={css.row} data-priority={task.priority} data-status={task.status} key={task.id}>
-      <div className={css.rowLine}>
-        <button type="button" className={css.content} onClick={() => openEdit(task)} disabled={busy}
-          title={content} aria-label={`${t('edit')}: ${content}`}>{content}</button>
-        <span className={css.statusChip} data-status={task.status} title={t(statusKey(task.status))}>{t(statusKey(task.status))}</span>
-        <span className={css.workspaceMeta} title={workspaceLabel(linked)}>{workspaceLabel(linked)}</span>
-        <div className={css.rowActions}>
-          {task.status === 'done' ? <span className={css.doneState}>{t('done')}</span> : <button
-            type="button" className={css.start}
-            onClick={() => void (task.status === 'todo' ? startTask(task) : finishTask(task))}
-            disabled={busy || task.status === 'todo' && !ready}
-            aria-label={`${t(task.status === 'todo' ? 'start' : 'finish')}: ${content}`}
-            title={task.status === 'todo' && !ready ? linked === null ? t('startRequiresWorkspace') : t('startWorkspaceMissing') : undefined}>
-            {t(task.status === 'todo' ? 'start' : 'finish')}
-          </button>}
-          <button type="button" className={css.delete} onClick={() => void deleteTask(task)} disabled={busy}
-            aria-label={`${t('remove')}: ${content}`} title={t('remove')}>×</button>
-        </div>
-      </div>
-      {source && <div className={css.sourceLine}>
-        {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{source.platform} · {source.number || source.remoteId}</a> : <span>{source.platform} · {source.number || source.remoteId}</span>}
-        <span>{t('lastSync')}: {source.lastSuccess === null ? t('notStarted') : formattedTime(source.lastSuccess)}</span>
-        {source.error && <span role="status">{t('syncFailed')} · {source.error.code}</span>}
-      </div>}
-    </li>
-  }), [tasks, workspaceNames, defaultWorkspaceId, busy, t, openEdit, startTask, finishTask, deleteTask])
+    return <TaskRow key={task.id} task={task} linked={linked} ready={workspaceReady(linked)} busy={busy}
+      workspaceLabel={workspaceLabel(linked)} t={t}
+      onOpen={openEdit} onStart={startTask} onFinish={finishTask} onDelete={deleteTask} />
+  })
 
   // Everything below derives from the rows above, so the row memo is not
   // invalidated by a change to any of these elements.
@@ -655,7 +641,8 @@ export function TaskPanel({
         <option value="all">{t('allWorkspaces')}</option>
         {[...workspaceOptions].map(([id, name]) => <option key={id} value={`ws:${id}`}>{name}</option>)}
       </select>
-      <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}>{t('refresh')}</button>
+      <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}
+        aria-busy={loading || undefined}>{t('refresh')}</button>
     </div>
   </div>
 
@@ -668,7 +655,18 @@ export function TaskPanel({
   {/* With the composer open its own copy is the visible one, so the banner
       stays quiet to avoid announcing the same failure twice. */}
   {error && !composerOpen && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
-  {loading && tasks.length === 0 ? <p className={css.placeholder}>{t('loading')}</p> : tasks.length === 0 ? <div className={css.empty}>
+  {/* The saved state of the last write. It is the success half of the save
+      feedback: the composer reports saving and failure in place, and this line
+      reports the outcome once the write landed and the list re-read. */}
+  {saveState === 'saved' && !composerOpen && <div className={css.notice} role="status">{t('saved')}</div>}
+  {/* A reload keeps the rows and the scroll position: only this local quiet
+      notice says a read is in flight. */}
+  {loading && tasks.length > 0 && <p className={css.placeholder} role="status">{t('refreshing')}</p>}
+  {/* The first load draws the rows' own box so the page does not jump when the
+      page itself lands. */}
+  {loading && tasks.length === 0 ? <div className={css.listSkeleton} role="status" aria-label={t('loading')}>
+    {SKELETON_ROWS.map(index => <span key={index} />)}
+  </div> : tasks.length === 0 ? <div className={css.empty}>
     <strong>{filtered ? t('emptySearch') : t('empty')}</strong><span>{filtered ? t('emptySearchHint') : t('emptyHint')}</span>
   </div> : <ul className={css.list}>
     {rows}
@@ -690,125 +688,127 @@ export function TaskPanel({
     </div>
   </div>
 
-  // One composer serves both surfaces: the page renders these two blocks over
-  // its list, and the frame overlay's dialog copy renders them alone, so the
-  // New task form has exactly one definition and one behavior.
-  const composerDialog = composerOpen && <div className={css.backdrop} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !attachmentBusy) closeComposer() }}>
-    <div className={css.dialog + ' ' + css.dialogFixed} role="dialog" aria-modal="true" aria-labelledby="task-list-dialog-title">
-      <div className={css.dialogHeader}>
-        <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
-        {editing !== null && <div className={css.headerActions}>
-          {/* Start is offered at every status: a running or finished task can be started
-              again, which opens a fresh session and rebinds the task to it. */}
-          <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(false)}
-            disabled={busy || !canSave}>{t('start')}</button>
-          {/* Nothing left to complete once the composer already reads Done. */}
-          <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(true)}
-            disabled={busy || !canSave || status === 'done'}>{t('finish')}</button>
-        </div>}
-      </div>
-      <div className={css.dialogBody}>
-        {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
-        <form id="task-list-form" onSubmit={event => void save(event)}>
-          {editing?.source && <label className={css.fullRow}>{t('externalTitle')}<input value={externalTitle} maxLength={200} required onChange={event => setExternalTitle(event.target.value)} /></label>}
-          <div className={css.fullRow}>{t('notesLabel')}{editing?.source && <span> · {t('externalDescription')}</span>}<TaskContentEditor value={content} uploads={uploads}
-            onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
-            readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
-            disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>
-          <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
-            {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
-            {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
-            {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-          </select></label>
-          <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
-            <option value="">{t('defaultAgent')}</option>
-            {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
-            {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
-          </select></label>
-          <div className={css.toggleRow + ' ' + css.fullRow}>
-            <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
-            <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
+  // One composer serves both surfaces: the page renders it over its list, and
+  // the frame overlay's copy renders it alone. The surface, the mask, the focus
+  // lifetime, and Escape belong to the host Modal; the classes below own only
+  // the three-row layout and the field grid.
+  const composerDialog = composerOpen && <Modal open onClose={closeComposer}
+    title={editing ? t('edit') : t('add')}
+    headless className={css.dialog + ' ' + css.dialogFixed}>
+    <div className={css.dialogHeader}>
+      <h2 id="task-list-dialog-title">{editing ? t('edit') : t('add')}</h2>
+      {editing !== null && <div className={css.headerActions}>
+        {/* Start is offered at every status: a running or finished task can be started
+            again, which opens a fresh session and rebinds the task to it. */}
+        <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(false)}
+          disabled={busy || !canSave}>{t('start')}</button>
+        {/* Nothing left to complete once the composer already reads Done. */}
+        <button type="button" className={css.headerAction} onClick={() => void saveAndLaunch(true)}
+          disabled={busy || !canSave || status === 'done'}>{t('finish')}</button>
+      </div>}
+    </div>
+    <div className={css.dialogBody}>
+      {error && <div className={css.dialogError} role="alert">{t('error')}: {error}</div>}
+      <form id="task-list-form" onSubmit={event => void save(event)}>
+        {editing?.source && <label className={css.fullRow}>{t('externalTitle')}<input value={externalTitle} maxLength={200} required onChange={event => setExternalTitle(event.target.value)} /></label>}
+        <div className={css.fullRow}>{t('notesLabel')}{editing?.source && <span> · {t('externalDescription')}</span>}<TaskContentEditor value={content} uploads={uploads}
+          onChange={(content, uploads) => { setContent(content); setUploads(uploads) }}
+          readAttachments={() => editing ? readAttachments({ id: editing.id, version: editing.version }) : Promise.resolve([])}
+          disabled={busy} onBusy={setAttachmentBusy} onValid={setContentValid} t={t} /></div>
+        <label>{t('workspace')}<select value={workspaceId} onChange={event => setWorkspaceId(event.target.value)}>
+          {workspaces.length === 0 && <option value="">{t('noWorkspace')}</option>}
+          {workspaceId && !workspaceOptions.has(workspaceId) && <option value={workspaceId}>{workspaceId}</option>}
+          {[...workspaceOptions].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        </select></label>
+        <label>{t('agent')}<select value={agent} onChange={event => setAgent(event.target.value)}>
+          <option value="">{t('defaultAgent')}</option>
+          {agent && !agents.some(row => row.id === agent) && <option value={agent}>{agent}</option>}
+          {agents.map(row => <option key={row.id} value={row.id} disabled={Boolean(row.broken)}>{row.name ?? row.id}{row.isDefault ? ` · ${t('defaultAgent')}` : ''}</option>)}
+        </select></label>
+        <div className={css.toggleRow + ' ' + css.fullRow}>
+          <label className={css.toggle}><input type="checkbox" checked={sendImmediately} onChange={event => setSendImmediately(event.target.checked)} />{t('sendImmediately')}</label>
+          <label className={css.toggle}><input type="checkbox" checked={useWorktree} onChange={event => setUseWorktree(event.target.checked)} />{t('useWorktree')}</label>
+        </div>
+        {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
+          {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
+            : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
+        </p>}
+        <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
+          {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
+        </select></label>
+        <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
+          {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
+        </select></label>
+        <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
+        <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
+        <section className={css.metaSection + ' ' + css.fullRow}>
+          <div className={css.fieldBlock}>
+            <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
+              <option value="">{t('noSession')}</option>
+              {echoedLinkedSession && <option value={echoedLinkedSession.id}>{echoedLinkedSession.title}{echoedLinkedSession.archived ? ` · ${t('sessionArchived')}` : ''}</option>}
+              {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
+              {selectableSessions.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
+            </select></label>
+            <p className={css.fieldHint}>{t('sessionIdHint')}</p>
           </div>
-          {useWorktree && <p className={css.worktreeHint + ' ' + css.fullRow + ' ' + (worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? css.worktreeError : '')} role={worktreeProbe?.workspaceId === workspaceId && worktreeProbe.error ? 'alert' : undefined}>
-            {!workspaceId ? t('startRequiresWorkspace') : worktreeProbe?.workspaceId !== workspaceId || worktreeProbe.checking ? t('worktreeChecking')
-              : worktreeProbe.needsInit ? t('worktreeNeedsInit') : worktreeProbe.error || t('worktreeAvailable')}
-          </p>}
-          <label>{t('priorityLabel')}<select value={priority} onChange={event => setPriority(event.target.value as TaskPriority)}>
-            {priorityKeys.map(item => <option key={item} value={item}>{t(item)}</option>)}
-          </select></label>
-          <label>{t('status')}<select value={status} onChange={event => setStatus(event.target.value as TaskStatus)}>
-            {statusKeys.map(item => <option key={item} value={item}>{t(statusKey(item))}</option>)}
-          </select></label>
-          <label>{t('tags')}<input value={tagsInput} onChange={event => setTagsInput(event.target.value)} placeholder={t('tagsHint')} /></label>
-          <label>{t('storyPoints')}<input type="number" min="0" max="1000" step="1" value={storyPoints} onChange={event => setStoryPoints(event.target.value)} /></label>
-          <section className={css.metaSection + ' ' + css.fullRow}>
-            <div className={css.fieldBlock}>
-              <label>{t('sessionId')}<select value={sessionId} disabled={busy} onChange={event => setSessionId(event.target.value)}>
-                <option value="">{t('noSession')}</option>
-                {echoedLinkedSession && <option value={echoedLinkedSession.id}>{echoedLinkedSession.title}{echoedLinkedSession.archived ? ` · ${t('sessionArchived')}` : ''}</option>}
-                {sessionId && !sessionNames.has(sessionId) && <option value={sessionId}>{t('sessionUnavailable')}</option>}
-                {selectableSessions.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
-              </select></label>
-              <p className={css.fieldHint}>{t('sessionIdHint')}</p>
-            </div>
-            {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
-            {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
-            {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
-          </section>
-          <TaskRelationsField t={t} options={relations.optionsFor(editing?.id)} parentId={parentId} blockingIds={blockingIds}
-            selfId={editing?.id} disabled={busy} onChange={next => { setParentId(next.parentId); setBlockingIds(next.blockingIds) }} />
-        </form>
-      </div>
-      <div className={css.dialogFooter}>
-        {/* The chord is what opens this composer on any page, so the New task form names it.
-            The edit dialog keeps the row to its own actions. */}
-        {editing === null && <span className={css.shortcutHint}>{t('shortcutHint')}</span>}
-        <button type="button" onClick={closeComposer} disabled={busy || attachmentBusy}>{t('cancel')}</button>
-        <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave}>{t('save')}</button>
-      </div>
+          {editing && <label>{t('createdAt')}<span className={css.fixedValue}>{formattedTime(editing.createdAt)}</span></label>}
+          {editing && <label>{t('startedAt')}<span className={css.fixedValue}>{editing.startedAt === null ? t('notStarted') : formattedTime(editing.startedAt)}</span></label>}
+          {editing && <label>{t('completedAt')}<span className={css.fixedValue}>{editing.completedAt === null ? t('notCompleted') : formattedTime(editing.completedAt)}</span></label>}
+        </section>
+        <TaskRelationsField t={t} options={relations.optionsFor(editing?.id)} parentId={parentId} blockingIds={blockingIds}
+          selfId={editing?.id} disabled={busy} onChange={next => { setParentId(next.parentId); setBlockingIds(next.blockingIds) }} />
+      </form>
     </div>
-  </div>
+    <div className={css.dialogFooter}>
+      {/* The chord is what opens this composer on any page, so the New task form names it.
+          The edit dialog keeps the row to its own actions. */}
+      {editing === null && <span className={css.shortcutHint}>{t('shortcutHint')}</span>}
+      {/* The write's own progress: saving and refusal are reported here, and the
+          saved outcome stays in the list's notice after the dialog closes. */}
+      {saveState !== 'idle' && <span className={css.saveState} data-state={saveState} role="status">{t(saveState === 'saving' ? 'saving' : saveState === 'saved' ? 'saved' : 'saveFailed')}</span>}
+      <button type="button" onClick={closeComposer} disabled={busy || attachmentBusy}>{t('cancel')}</button>
+      <button type="submit" form="task-list-form" className={css.primary} disabled={busy || !canSave} aria-busy={busy || undefined}>{t('save')}</button>
+    </div>
+  </Modal>
 
-  const initializationDialog = initializeTask && <div className={css.backdrop} role="presentation">
-    <div className={css.dialog} role="dialog" aria-modal="true" aria-labelledby="task-list-init-title">
-      <h2 id="task-list-init-title">{t('initializeGitTitle')}</h2>
-      <p>{t('initializeGitIntro')} <strong>{initializeTask.workspaceTitle}</strong></p>
-      <p className={css.initPath}>{initializeTask.workspacePath}</p>
-      <div className={css.initToolbar}>
-        <strong>{t('initialCommitEntries')}</strong>
-        <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
-          onClick={() => setSelectedEntries(selectableInitialEntries.map(entry => entry.name))}>{t('selectAll')}</button>
-        <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
-          onClick={() => setSelectedEntries([])}>{t('selectNone')}</button>
-      </div>
-      {initialEntriesLoading ? <p className={css.initLoading}>{t('initialEntriesLoading')}</p>
-        : initialEntriesError ? <p className={css.initError} role="alert">{initialEntriesError} <button type="button"
-          onClick={() => setInitialEntriesRevision(value => value + 1)}>{t('retry')}</button></p>
-          : initialEntries.length === 0 ? <p className={css.initLoading}>{t('initialEntriesEmpty')}</p>
-            : <ul className={css.initEntries}>
-              {initialEntries.map(entry => <li key={entry.name}>
-                <label>
-                  <input type="checkbox" checked={selectedEntries.includes(entry.name)}
-                    disabled={busy || entry.kind === 'nested_repository'}
-                    onChange={event => {
-                      const checked = event.target.checked
-                      setSelectedEntries(current => checked
-                        ? [...current, entry.name] : current.filter(name => name !== entry.name))
-                    }} />
-                  <span className={css.initEntryName} title={entry.name}>{entry.name}</span>
-                  <small>{t(entry.kind === 'directory' ? 'initialDirectory' : entry.kind === 'nested_repository' ? 'initialNestedRepository' : 'initialFile')}</small>
-                </label>
-              </li>)}
-            </ul>}
-      <p className={css.initWarning}>{t('initializeGitWarning')}</p>
-      <div className={css.dialogActions}>
-        <button type="button" onClick={() => setInitializeTask(null)} disabled={busy}>{t('cancel')}</button>
-        <button type="button" onClick={() => { const task = initializeTask.task; setInitializeTask(null); openEdit(task) }} disabled={busy}>{t('changeWorkspace')}</button>
-        <button type="button" className={css.primary} onClick={() => void initializeAndStart()}
-          disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}>{t('initializeAndStart')}</button>
-      </div>
+  const initializationDialog = initializeTask && <Modal open onClose={() => setInitializeTask(null)}
+    title={t('initializeGitTitle')} closeLabel={t('cancel')}
+    footer={<div className={css.dialogActions}>
+      <button type="button" onClick={() => setInitializeTask(null)} disabled={busy}>{t('cancel')}</button>
+      <button type="button" onClick={() => { const task = initializeTask.task; setInitializeTask(null); openEdit(task) }} disabled={busy}>{t('changeWorkspace')}</button>
+      <button type="button" className={css.primary} onClick={() => void initializeAndStart()}
+        disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}>{t('initializeAndStart')}</button>
+    </div>}>
+    <p>{t('initializeGitIntro')} <strong>{initializeTask.workspaceTitle}</strong></p>
+    <p className={css.initPath}>{initializeTask.workspacePath}</p>
+    <div className={css.initToolbar}>
+      <strong>{t('initialCommitEntries')}</strong>
+      <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
+        onClick={() => setSelectedEntries(selectableInitialEntries.map(entry => entry.name))}>{t('selectAll')}</button>
+      <button type="button" disabled={busy || initialEntriesLoading || Boolean(initialEntriesError)}
+        onClick={() => setSelectedEntries([])}>{t('selectNone')}</button>
     </div>
-  </div>
+    {initialEntriesLoading ? <p className={css.initLoading} role="status">{t('initialEntriesLoading')}</p>
+      : initialEntriesError ? <p className={css.initError} role="alert">{initialEntriesError} <button type="button"
+        onClick={() => setInitialEntriesRevision(value => value + 1)}>{t('retry')}</button></p>
+        : initialEntries.length === 0 ? <p className={css.initLoading}>{t('initialEntriesEmpty')}</p>
+          : <ul className={css.initEntries}>
+            {initialEntries.map(entry => <li key={entry.name}>
+              <label>
+                <input type="checkbox" checked={selectedEntries.includes(entry.name)}
+                  disabled={busy || entry.kind === 'nested_repository'}
+                  onChange={event => {
+                    const checked = event.target.checked
+                    setSelectedEntries(current => checked
+                      ? [...current, entry.name] : current.filter(name => name !== entry.name))
+                  }} />
+                <span className={css.initEntryName} title={entry.name}>{entry.name}</span>
+                <small>{t(entry.kind === 'directory' ? 'initialDirectory' : entry.kind === 'nested_repository' ? 'initialNestedRepository' : 'initialFile')}</small>
+              </label>
+            </li>)}
+          </ul>}
+    <p className={css.initWarning}>{t('initializeGitWarning')}</p>
+  </Modal>
 
   // The view switch belongs to the header, beside the page title, and holds for
   // every surface that is not a full-page dialog. It is the panel's own pressed
@@ -877,10 +877,12 @@ export function TaskPanel({
 
   if (reportsOpen) return <main className={css.page} data-report="true">
     <div className={css.inner}>
-      <StatisticsCalendar calculate={calculateStatistics} t={t} close={() => {
-        setReportsOpen(false)
-        requestAnimationFrame(() => reportButton.current?.focus())
-      }} />
+      <Suspense fallback={<div className={css.skeleton} aria-hidden="true" />}>
+        <StatisticsCalendar calculate={calculateStatistics} t={t} close={() => {
+          setReportsOpen(false)
+          requestAnimationFrame(() => reportButton.current?.focus())
+        }} />
+      </Suspense>
     </div>
   </main>
 

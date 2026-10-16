@@ -3,7 +3,7 @@ import type { TaskAttachmentUpload, TaskContent } from '../types.ts'
 import { ATTACHMENT_BYTE_LIMIT, ATTACHMENT_COUNT_LIMIT, ATTACHMENT_TOTAL_LIMIT, contentAttachments, contentText, validateContent } from '../content.ts'
 import type { TaskKey } from './locales.ts'
 import { attachmentFile, contentHtml, fileUpload, sanitizeClipboardHtml } from './rich-text.ts'
-import { createEditor, $getRoot, $getSelection, $isRangeSelection, $createParagraphNode, $insertNodes, FORMAT_TEXT_COMMAND, PASTE_COMMAND, COMMAND_PRIORITY_HIGH, UNDO_COMMAND, REDO_COMMAND, type LexicalEditor, type TextFormatType } from 'lexical'
+import { createEditor, $getRoot, $getSelection, $isRangeSelection, $createParagraphNode, $insertNodes, FORMAT_TEXT_COMMAND, PASTE_COMMAND, COMMAND_PRIORITY_HIGH, UNDO_COMMAND, REDO_COMMAND, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalEditor, type TextFormatType } from 'lexical'
 import { registerRichText, HeadingNode, QuoteNode, $createHeadingNode } from '@lexical/rich-text'
 import { registerHistory, createEmptyHistoryState } from '@lexical/history'
 import { ListNode, ListItemNode, registerList, INSERT_UNORDERED_LIST_COMMAND, INSERT_ORDERED_LIST_COMMAND } from '@lexical/list'
@@ -82,7 +82,10 @@ export function TaskContentEditor({ value, uploads, onChange, readAttachments, o
       const nodes = $generateNodesFromDOM(instance, parsed)
       root.append(...(nodes.length ? nodes : [$createParagraphNode()]))
       root.selectEnd()
-    }, { discrete: true })
+      // Loading the stored body is not a caret move the user asked for: the
+      // editor is inside a dialog that is already in view, so the update must
+      // not scroll it into view.
+    }, { discrete: true, tag: SKIP_SCROLL_INTO_VIEW_TAG })
     cleanups.push(registerHistory(instance, createEmptyHistoryState(), 300, undefined, undefined, 100))
     cleanups.push(instance.registerCommand(CAN_UNDO_COMMAND, enabled => { setHistory(current => ({ ...current, undo: enabled })); return false }, COMMAND_PRIORITY_LOW))
     cleanups.push(instance.registerCommand(CAN_REDO_COMMAND, enabled => { setHistory(current => ({ ...current, redo: enabled })); return false }, COMMAND_PRIORITY_LOW))
@@ -202,7 +205,12 @@ export function TaskContentEditor({ value, uploads, onChange, readAttachments, o
       onChange={event => { void addFiles([...event.target.files ?? []]); event.target.value = '' }} />
     <div className={css.canvas}>
     {empty && <div className={css.placeholder}>{t('editorPlaceholder')}</div>}
+    {/* `data-modal-autofocus` is the host Modal's initial-focus marker: the
+        editor is where the composer's focus belongs, and naming it keeps that
+        focus off the toolbar's Tooltip triggers, which would otherwise open a
+        tooltip nobody asked for. */}
     <div ref={editor} className={css.editor} contentEditable={!disabled && !reading} suppressContentEditableWarning role="textbox"
+      data-modal-autofocus={true}
       aria-multiline="true" aria-required="true" aria-label={t('notesLabel')} data-placeholder={t('notesHint')}
       onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true) } }}
       onDragLeave={() => setDragging(false)}

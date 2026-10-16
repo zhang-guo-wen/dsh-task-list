@@ -10,11 +10,11 @@
   min-height: 0;
   height: 100%;
   padding: 16px;
-  border: 1px solid var(--dsw-alias-border-l3);
+  border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-family, system-ui, sans-serif);
+  font-family: var(--dsw-font-family);
 }
 
 .header {
@@ -48,7 +48,7 @@
   align-items: baseline;
   gap: 6px;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: 999px; corner-shape: round;
   background: var(--dsw-alias-interactive-bg-hover);
   font-size: 12px;
   line-height: 18px;
@@ -86,7 +86,7 @@
   height: 28px;
   min-width: 28px;
   padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-l3);
+  border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-secondary);
@@ -95,7 +95,7 @@
   line-height: 18px;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out), border-color var(--ds-transition-duration) var(--ds-ease-in-out), color var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
 .viewControls button:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
@@ -107,7 +107,7 @@
   flex: 1;
   min-height: 240px;
   overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l3);
+  border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-base);
   cursor: grab;
@@ -162,22 +162,24 @@
   width: 236px;
   height: 118px;
   padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0;
   border-left: 4px solid var(--dsw-alias-border-l4);
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-elevation-soft);
   overflow: hidden;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out), box-shadow var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
 .card:hover { box-shadow: var(--dsw-elevation-panel); }
 .card[data-status='done'] { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); }
 
-/* A blocked task reads as a warning surface: amber border, amber-tinted fill. */
+/* A blocked task reads as a warning surface: amber border, amber-tinted fill.
+   The status colour keeps a real stroke beside the card's elevation. */
 .card[data-blocked='true'] {
-  border-color: var(--dsw-alias-state-warn-primary);
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-left-width: 4px;
   border-left-color: var(--dsw-alias-state-warn-primary);
   background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, var(--dsw-alias-bg-base));
 }
@@ -196,7 +198,7 @@
   align-items: center;
   height: 20px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: 999px; corner-shape: round;
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
