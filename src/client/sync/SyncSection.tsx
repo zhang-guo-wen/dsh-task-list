@@ -57,8 +57,8 @@ export function SyncSection({ sync: face, listWorkitemFields, t }: SyncSectionPr
   /** Leaving after a removal: the roster is the only place left to be. */
   const removed = async () => { await refresh(); setView('list') }
   const back = () => setView('list')
-  return <section className={css.settings} aria-label={t('syncSettings')}>
-    <SegmentedTabs value={tab} label={t('syncSettings')} className={css.settingsTabs} items={[
+  return <section className={css.settings} aria-label={t('syncSection')}>
+    <SegmentedTabs value={tab} label={t('syncSection')} className={css.settingsTabs} items={[
       { value: 'connections', label: `${t('syncConnectionsTab')} ${connections.length}`, id: 'sync-connections-tab', panelId: 'sync-connections-panel' },
       { value: 'rules', label: `${t('syncRulesTab')} ${rules.length}`, id: 'sync-rules-tab', panelId: 'sync-rules-panel' },
     ]} onChange={next => { setTab(next); setView('list'); setNotice('') }} />

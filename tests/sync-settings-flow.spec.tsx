@@ -33,6 +33,8 @@ describe('compact native sync settings', () => {
   it('starts with connection cards instead of exposing all rule fields', async () => {
     render(section(api()))
     await screen.findByText('云效 · 研发组织')
+    // The page carries its own name: the host settings list labels it 任务管理.
+    expect(screen.getByRole('region', { name: zh.syncSection })).toBeDefined()
     expect(screen.queryByRole('button', { name: '项目' })).toBeNull()
     expect(screen.getByRole('tab', { name: /连接/ }).getAttribute('aria-selected')).toBe('true')
   })

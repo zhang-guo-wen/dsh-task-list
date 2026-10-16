@@ -1,5 +1,16 @@
 # 云效 / TAPD 同步代码交付
 
+## 当前状态更新（2026-10-16 设置页改名为「任务管理」）
+
+用户要求把插件里名为「任务同步」的设置页改名。改的是**这一页的名字**，不是功能范围：宿主设置面板里该页仍只放连接与规则，任务页仍只有「批量同步」这一个执行动作。
+
+- 文案：`src/client/locales.ts` 的键 `syncSettings` 改为 `syncSection`，中文值「任务同步」→「任务管理」，英文值 `Task sync` → `Task management`；提示语里的路径一并改为「设置 → 任务管理」／`Settings → Task management`（`syncNoConnection`、`syncNoEnabledRule`、`syncNoScope`、`moreTasksNoConnection`）。
+- 引用点：`src/client/index.tsx` 的 `settings.section` 注册标签、`src/client/sync/SyncSection.tsx` 的 `aria-label` 与 `SegmentedTabs` 名称，都改用新键。
+- 测试与文档：`tests/sync-ui.spec.tsx`、`tests/sync-browser.mjs` 的断言、两份 README 与本文档同步更新；`tests/sync-settings-flow.spec.tsx` 增加一条正向断言（该页 region 的可访问名为「任务管理」），改名前只有反向断言，新名字没有覆盖。
+- 验证：`npm run typecheck` 通过；`npm test` 731/731（61 文件）通过；`npm run build` 已更新 `lib/client.js`（构建产物中已是 `syncSection`，无 `syncSettings` 残留）；真实浏览器 fixture（Edge headless，`tests/sync-browser.mjs`）跑到 `#settings-root` 的 region 名为「任务管理」、连接编辑器内文案读取正常。
+- 未通过项（与本次改名无关的既有测试漂移）：同一浏览器脚本在第 66 行 `getByRole('textbox', { name: '公司 ID' })` 超时——当前连接编辑器已没有「公司 ID」输入框（改成了组织下拉，见 2026-10-08 记录），这段断言在改名前就已过期；`node tests/sync-browser.mjs` 因此在改名前后都会中断，需要单独修脚本，不能当作本次改名的回归证据。另：`tests/more-tasks-stability.spec.tsx` 首次整套运行时偶发一次失败，单跑与重跑整套均通过，与本次改动无关。
+- 未改：section id 仍是 `task-list-sync`，RPC、数据库、按钮「批量同步」、任务列表名称与一切同步行为都不动；`dsh-arcuchi-it-plugins` 里的嵌入副本是旧构建产物，本轮未刷新。
+
 ## 当前状态更新（2026-10-08 凭据直填与组织下拉）
 
 连接编辑页按反馈重做：① 去掉「返回列表」按钮，表单改为一张带边框的卡片，底部是「取消 / 保存连接」（左侧保留只读测试）；② 去掉连接名称字段（按「平台 · 组织/公司」自动生成），组织/公司 ID 不再需要手记——云效新增 `listSyncOrganizations` RPC，用官方 `GET https://openapi-rdc.aliyuncs.com/users/joinedOrgs` 列出当前令牌加入的组织并做下拉，调用失败时同一格保留手填/粘贴；TAPD 支持粘贴工作台地址自动取出公司 ID；③ 凭据改为在页面直接手写，由 `HostManualSecretStore` 存入宿主凭据存储（记录键 `task-list/connection-<id>-secret`），不写任务数据库、不回显、不再要求配环境变量，环境变量仍作为兼容回退。
@@ -10,7 +21,7 @@
 
 ## 旧状态更新（2026-10-08 同步入口与设置位置调整）
 
-用户要求的三处界面调整已实现：① 任务页头部右侧只剩一块合并按钮——左半「新建任务」、右侧箭头下拉里的「同步」；② 未配置连接时点击「同步」不启动运行，只提示到设置页添加连接，任务页不再常显同步说明文字；③ 同步设置从任务列表的方案内弹窗改为宿主设置面板里的一页「任务同步」（`settings.section`，id `task-list-sync`）。
+用户要求的三处界面调整已实现：① 任务页头部右侧只剩一块合并按钮——左半「新建任务」、右侧箭头下拉里的「同步」；② 未配置连接时点击「同步」不启动运行，只提示到设置页添加连接，任务页不再常显同步说明文字；③ 同步设置从任务列表的方案内弹窗改为宿主设置面板里的一页「任务管理」（`settings.section`，id `task-list-sync`；当时该页名为「任务同步」，2026-10-16 按用户要求改名）。
 
 实现：新增 `src/client/sync/use-sync-panel.ts`（头部菜单与结果区共享状态，点击时才读取连接/规则范围）、`src/client/sync/SyncSection.tsx`（内联设置页，替代原 `SyncSettings.tsx` 弹窗）；`SyncControls.tsx` 改为导出 `SyncActions` 与 `SyncStatus`。新增运行时依赖声明 `@deepseek-ai/dsh-client-ui-settings`（dev + peer + `dsh.client.inject`，仅类型导入，产物中无运行时 require）。
 

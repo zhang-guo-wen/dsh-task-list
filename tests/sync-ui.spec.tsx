@@ -93,7 +93,7 @@ describe('manual sync controls', () => {
     expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
     expect(screen.queryByText(/双方都改动时/)).toBeNull()
     await clickSyncRow()
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
+    await screen.findByText('还没有同步连接。请在「设置 → 任务管理」中添加连接，再新建并启用规则。')
     expect(start).not.toHaveBeenCalled()
   })
   it('without any rules, bulk sync asks to create and enable one without starting', async () => {
@@ -101,7 +101,7 @@ describe('manual sync controls', () => {
     const start = vi.fn(api.startSync); api.startSync = start
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('没有已启用的规则。请在「设置 → 任务同步 → 规则」中新建并启用规则。')
+    await screen.findByText('没有已启用的规则。请在「设置 → 任务管理 → 规则」中新建并启用规则。')
     expect(start).not.toHaveBeenCalled()
   })
   it('without an enabled rule, bulk sync points at rule creation and does not start', async () => {
@@ -110,7 +110,7 @@ describe('manual sync controls', () => {
     const start = vi.fn(api.startSync); api.startSync = start
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('没有已启用的规则。请在「设置 → 任务同步 → 规则」中新建并启用规则。')
+    await screen.findByText('没有已启用的规则。请在「设置 → 任务管理 → 规则」中新建并启用规则。')
     expect(start).not.toHaveBeenCalled()
   })
   it('with an enabled rule but unusable connection, bulk sync points at connection setup', async () => {
@@ -119,14 +119,14 @@ describe('manual sync controls', () => {
     const start = vi.fn(api.startSync); api.startSync = start
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('请在「设置 → 任务同步」中启用连接并确认凭据可用。')
+    await screen.findByText('请在「设置 → 任务管理」中启用连接并确认凭据可用。')
     expect(start).not.toHaveBeenCalled()
   })
   it('the refused prompt can be dismissed and leaves the page clean again', async () => {
     const api = face(); api.listSyncConnections = async () => []
     render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
+    await screen.findByText('还没有同步连接。请在「设置 → 任务管理」中添加连接，再新建并启用规则。')
     fireEvent.click(screen.getByRole('button', { name: '知道了' }))
     expect(screen.queryByText(/还没有同步连接/)).toBeNull()
   })
@@ -309,12 +309,12 @@ describe('manual sync controls', () => {
     await screen.findByRole('dialog', { name: '新建任务' })
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
     // No standing explanation of sync, and no settings entry, on the list page.
-    expect(screen.queryByRole('button', { name: '任务同步' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '任务管理' })).toBeNull()
     expect(screen.queryByText(/同步所有已启用规则/)).toBeNull()
     expect(screen.queryByText(/双方都改动时/)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: '批量同步' }))
-    await screen.findByText('还没有同步连接。请在「设置 → 任务同步」中添加连接，再新建并启用规则。')
+    await screen.findByText('还没有同步连接。请在「设置 → 任务管理」中添加连接，再新建并启用规则。')
   })
   it('the settings page is an inline section, not a modal, and keeps its two tabs', async () => {
     render(section(face()))

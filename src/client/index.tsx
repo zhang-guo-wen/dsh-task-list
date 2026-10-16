@@ -369,7 +369,7 @@ export async function apply(ctx: Context): Promise<void> {
   // of the task list: the same face, rendered inline. A rule no longer carries a
   // workspace, so the section does not need the workspace roster.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'task-list-sync', order: 26, label: () => t('syncSettings'), locale: NS,
+    name: 'settings.section', id: 'task-list-sync', order: 26, label: () => t('syncSection'), locale: NS,
     inject: () => ({ sync: face.sync, listWorkitemFields: face.listWorkitemFields }),
   }, SyncSection))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

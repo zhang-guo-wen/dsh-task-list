@@ -19,14 +19,14 @@ try {
   const listPage = page.locator('#root')
   const create = listPage.getByRole('button', { name: '新建任务', exact: true })
   await create.waitFor()
-  assert.equal(await listPage.getByRole('button', { name: '任务同步', exact: true }).count(), 0)
+  assert.equal(await listPage.getByRole('button', { name: '任务管理', exact: true }).count(), 0)
   assert.equal(await listPage.getByText(/同步所有已启用规则/).count(), 0)
   assert.equal(await listPage.getByText(/双方都改动时/).count(), 0)
 
   // An unconfigured Sync points at the settings page instead of starting a run.
   const handle = page.getByRole('button', { name: '更多操作', exact: true })
   await handle.click()
-  const menuRow = page.getByRole('menuitem', { name: '同步', exact: true })
+  const menuRow = page.getByRole('menuitem', { name: '批量同步', exact: true })
   await menuRow.waitFor()
   // The dropdown card covers the block exactly: its edges coincide with the
   // button above it, so it is never longer than that button.
@@ -54,7 +54,7 @@ try {
   // ── the settings page: the same connection editor, inline ──────────────────
   const settings = page.locator('#settings-root')
   await settings.scrollIntoViewIfNeeded()
-  const section = settings.getByRole('region', { name: '任务同步' })
+  const section = settings.getByRole('region', { name: '任务管理' })
   await section.getByRole('tab', { name: /连接/ }).waitFor()
   assert.equal(await section.getByRole('dialog').count(), 0)
   await section.getByRole('button', { name: '新增连接', exact: true }).click()
@@ -83,7 +83,7 @@ try {
   await page.locator('#root').scrollIntoViewIfNeeded()
   await handle.click()
   await menuRow.click()
-  await page.getByText(/请在「设置 → 任务同步」中启用连接和规则/).waitFor()
+  await page.getByText(/请在「设置 → 任务管理」中启用连接和规则/).waitFor()
   await page.getByRole('button', { name: '知道了', exact: true }).click()
 
   // ── dark and narrow ────────────────────────────────────────────────────────
