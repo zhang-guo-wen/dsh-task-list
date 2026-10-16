@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   ListWorkitemFieldsRequest, SafeConnection, SafeWorkitemField, StatusWriteStates, SyncMetadata, SyncRule,
   WorkitemConditionGroups, WorkitemFilterCondition,
@@ -7,7 +7,7 @@ import type {
 import type { SyncFace } from './face.ts'
 import { Choice, projectStatuses, StatusWriteMap } from './RuleFields.tsx'
 import { ConditionBuilder, EMPTY_CONDITION_OPTIONS, RULE_CONDITION_FIELDS, type ConditionOptions } from './RuleConditions.tsx'
-import { SyncFailure, type SyncTranslate } from './SyncResults.tsx'
+import { FAILURE_TOAST_HOLD_MS, SyncFailure, syncFailureText, type SyncTranslate } from './SyncResults.tsx'
 import css from './Sync.module.css'
 
 /**
@@ -53,6 +53,13 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
   const [busy, setBusy] = useState(false)
   const [armed, setArmed] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  /** One action result on the host's top banner: the sequence restarts a repeated message. */
+  const [toast, setToast] = useState<{ text: string; seq: number; kind: 'success' | 'error' } | null>(null)
+  const toastSeq = useRef(0)
+  /** The failure also stays on the page as a fixed line with the retry entry; the banner bubbles it up. */
+  const reportFailure = (failure: unknown) => setToast({ text: syncFailureText(failure, t), seq: ++toastSeq.current, kind: 'error' })
+  /** A repeated result remounts the banner; only the sequence this render owns may clear it. */
+  const dismiss = (seq: number) => setToast(current => current?.seq === seq ? null : current)
   const generation = useRef(0)
   const mounted = useRef(true)
   const saving = useRef(false)
@@ -95,9 +102,9 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
           setPriorities(fields.find(field => field.id === 'priority')?.options ?? [])
         }
       } catch (failure) {
-        if (mounted.current && revision === generation.current) setError(failure)
+        if (mounted.current && revision === generation.current) { setError(failure); reportFailure(failure) }
       }
-    } catch (failure) { if (mounted.current && revision === generation.current) setError(failure) }
+    } catch (failure) { if (mounted.current && revision === generation.current) { setError(failure); reportFailure(failure) } }
     finally { if (mounted.current && revision === generation.current) setLoading(false) }
   }
   useEffect(() => {
@@ -135,7 +142,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
       if (rule) await face.updateSyncRule({ id: rule.id, revision: rule.revision, ...values })
       else await face.createSyncRule({ connectionId, ...values, enabled: false })
       await onSaved(); if (mounted.current) onBack()
-    } catch (failure) { if (mounted.current) setError(failure) }
+    } catch (failure) { if (mounted.current) { setError(failure); reportFailure(failure) } }
     finally { saving.current = false; if (mounted.current) setBusy(false) }
   }
   /** Two-step removal: the button arms on the first click, deletes on the second. */
@@ -146,7 +153,7 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
     try {
       await face.deleteSyncRule({ id: rule.id, revision: rule.revision })
       await onDeleted()
-    } catch (failure) { setError(failure) }
+    } catch (failure) { setError(failure); reportFailure(failure) }
     finally { if (mounted.current) setBusy(false) }
   }
   // The summary names each condition's field in the reader's own language, using
@@ -202,10 +209,14 @@ export function RuleSettings({ rule, connections, face, listWorkitemFields, t, o
       <div className={css.editorButtons}>
         <Button disabled={busy} onClick={() => (step === 1 ? onBack() : setStep(step - 1))}>{t(step === 1 ? 'cancel' : 'syncPrevious')}</Button>
         {step < 3
-          ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !scopeReady} onClick={() => { setError(null); setStep(step + 1) }}>{t('syncNext')}</Button>
+          ? <Button variant="primary" disabled={step === 1 ? !scopeReady : !scopeReady} onClick={() => { setError(null); setToast(null); setStep(step + 1) }}>{t('syncNext')}</Button>
           : <Button variant="primary" disabled={busy || !ready} onClick={() => void save()}>{t('syncSaveRule')}</Button>}
       </div>
     </div>
     </div>
+    {/* The host Toast portals into document.body: the same sentence also bubbles above the page. */}
+    {toast !== null && (toast.kind === 'success'
+      ? <Toast key={toast.seq} text={toast.text} tone="success" onDone={() => dismiss(toast.seq)} />
+      : <Toast key={toast.seq} text={toast.text} holdMs={FAILURE_TOAST_HOLD_MS} onDone={() => dismiss(toast.seq)} />)}
   </section>
 }

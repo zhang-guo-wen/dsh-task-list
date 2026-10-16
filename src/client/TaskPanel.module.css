@@ -232,13 +232,6 @@
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
 }
 .error button { height: 28px; padding: 0 10px; border: 0; border-radius: var(--dsw-radius-sm); background: transparent; text-decoration: underline; cursor: pointer; color: inherit; font: inherit; font-size: 13px; line-height: 20px; }
-/* The landed counterpart of `.error`: the last write's success, held until the
-   next action so it is readable rather than a frame that closes with a dialog. */
-.notice {
-  display: flex; align-items: center; gap: 8px; margin-top: 16px; padding: 12px; border-radius: var(--dsw-radius-sm);
-  color: var(--dsw-alias-state-success-primary);
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
-}
 /* The composer is the host Modal's card; the classes below only restate the
    composer's own size and three-row layout. Both are applied to the same
    element, and the doubled selector wins over the host card's own geometry

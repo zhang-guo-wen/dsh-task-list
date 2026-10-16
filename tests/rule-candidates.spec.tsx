@@ -78,7 +78,10 @@ describe('default project candidates', () => {
       return metadata(request.projectId)
     })
     mount(read)
-    await screen.findByRole('alert')
+    // The failure is named in the form and repeated once on the floating banner.
+    const alerts = await screen.findAllByRole('alert')
+    expect(alerts.some(node => node.closest('section') !== null)).toBe(true)
+    expect(alerts.some(node => node.parentElement === document.body)).toBe(true)
     expect((screen.getByRole('button', { name: zh.syncNext }) as HTMLButtonElement).disabled).toBe(true)
     failed = false
     fireEvent.click(screen.getByRole('button', { name: zh.retry }))

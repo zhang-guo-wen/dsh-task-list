@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConnectionSecret, OrganizationChoice, WorkitemFillField, SafeConnection } from '../../sync/dto.ts'
 import type { SafeAuthState } from '../../sync/oauth-types.ts'
 import type { SyncFace } from './face.ts'
 import { ConnectionAuthorization } from './ConnectionAuthorization.tsx'
 import { Choice } from './RuleFields.tsx'
-import { SyncFailure, type SyncTranslate } from './SyncResults.tsx'
+import { FAILURE_TOAST_HOLD_MS, SyncFailure, syncFailureText, type SyncTranslate } from './SyncResults.tsx'
 import { fillFieldsFor, normalizeFillFields } from '../workitem-fill.ts'
 import { DEFAULT_WORKITEM_FILL_FIELDS } from '../../sync/dto.ts'
 import css from './Sync.module.css'
@@ -47,8 +47,11 @@ export function ConnectionSettings({ connection, face, t, onSaved, onBack, onDel
   const [organizations, setOrganizations] = useState<OrganizationChoice[] | null>(null)
   const [auth, setAuth] = useState<SafeAuthState | null>(null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<unknown>(null)
-  const [notice, setNotice] = useState('')
+  /** The failure keeps a fixed line in the form, with its own retry; the banner bubbles it up. */
+  const [failure, setFailure] = useState<{ error: unknown; retry: () => Promise<void> } | null>(null)
+  /** One action result on the host's top banner: the sequence restarts a repeated message. */
+  const [toast, setToast] = useState<{ text: string; seq: number; kind: 'success' | 'error' } | null>(null)
+  const toastSeq = useRef(0)
   const gate = useRef(false)
   const autoRead = useRef(false)
   const [armed, setArmed] = useState(false)
@@ -67,14 +70,19 @@ export function ConnectionSettings({ connection, face, t, onSaved, onBack, onDel
     if (connection || busy || next === platform) return
     const target = next as SafeConnection['platform']
     setPlatform(target); setAuthMode(target === 'tapd' ? 'manual' : 'oauth')
-    setResource(''); setToken(''); setOrganizations(null); setAuth(null); setError(null)
+    setResource(''); setToken(''); setOrganizations(null); setAuth(null); setFailure(null)
     autoRead.current = false
     setFillFields(current => normalizeFillFields(target, current))
   }
+  /** One action result through the host's floating banner, never a line the form can scroll away. */
+  const report = (text: string, kind: 'success' | 'error') => setToast({ text, seq: ++toastSeq.current, kind })
+  const reportFailure = (failure: unknown) => report(syncFailureText(failure, t), 'error')
+  /** A repeated result remounts the banner; only the sequence this render owns may clear it. */
+  const dismiss = (seq: number) => setToast(current => current?.seq === seq ? null : current)
   const act = async (operation: () => Promise<void>) => {
     if (gate.current) return
-    gate.current = true; setBusy(true); setError(null); setNotice('')
-    try { await operation() } catch (failure) { setError(failure) }
+    gate.current = true; setBusy(true); setToast(null); setFailure(null)
+    try { await operation() } catch (error) { setFailure({ error, retry: operation }); reportFailure(error) }
     finally { gate.current = false; setBusy(false) }
   }
   /** Authorization state, plus the one automatic organization read it unlocks. */
@@ -159,8 +167,10 @@ export function ConnectionSettings({ connection, face, t, onSaved, onBack, onDel
   })
   return <section className={css.editor}>
     <h3 className={css.editorTitle}>{t(connection ? 'syncConfigure' : 'syncNewConnection')}</h3>
-    {error !== null && <SyncFailure error={error} t={t} />}
-    {notice && <p role="status">{notice}</p>}
+    {/* The failure keeps a fixed line here and its own retry, so the reason stays
+        readable after the banner fades and the failed action can be repeated. */}
+    {failure !== null && <><SyncFailure error={failure.error} t={t} />
+      <Button disabled={busy} onClick={() => void act(failure.retry)}>{t('retry')}</Button></>}
     <div className={css.editorBox}>
       <div className={css.formGrid}>
         <Choice label={t('syncPlatform')} value={platform} options={[{ id: 'yunxiao', label: t('syncYunxiao') }, { id: 'tapd', label: t('syncTapd') }]} disabled={busy || connection !== null} onChange={changePlatform} />
@@ -215,5 +225,9 @@ export function ConnectionSettings({ connection, face, t, onSaved, onBack, onDel
         </div>
       </div>
     </div>
+    {/* The host Toast portals into document.body: the same sentence also bubbles above the page. */}
+    {toast !== null && (toast.kind === 'success'
+      ? <Toast key={toast.seq} text={toast.text} tone="success" onDone={() => dismiss(toast.seq)} />
+      : <Toast key={toast.seq} text={toast.text} holdMs={FAILURE_TOAST_HOLD_MS} onDone={() => dismiss(toast.seq)} />)}
   </section>
 }

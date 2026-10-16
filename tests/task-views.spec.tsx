@@ -136,3 +136,36 @@ describe('task views', () => {
     expect(screen.getAllByText(zh.executionRunning).length).toBeGreaterThan(0)
   })
 })
+
+describe('write results on the list page', () => {
+  it('reports a landed write in the floating banner instead of a band above the list', async () => {
+    const { update } = open()
+    fireEvent.click(await screen.findByRole('button', { name: '编辑: 子任务' }))
+    fireEvent.change(await screen.findByLabelText(zh.storyPoints), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.save }))
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    const banner = await screen.findByRole('alert')
+    expect(banner.textContent).toBe(zh.saved)
+    // The host Toast portals to the body: the outcome is not a line the list can
+    // scroll away, and the composer's own footer copy is gone with the dialog.
+    expect(banner.parentElement).toBe(document.body)
+    expect(screen.queryByText(zh.saveFailed)).toBeNull()
+  })
+
+  it('reports a refused write in the banner and keeps the retry inside it', async () => {
+    const { update } = open()
+    update.mockRejectedValueOnce(new Error('写入被拒测试'))
+    fireEvent.click(await screen.findByRole('button', { name: '编辑: 子任务' }))
+    fireEvent.change(await screen.findByLabelText(zh.storyPoints), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.save }))
+    // A failed write leaves the composer open on the reason it already shows in
+    // its own body, so this one copy is not announced twice.
+    expect((await screen.findByText(/写入被拒测试/u)).closest('[role="alert"]')).toBeTruthy()
+    // Closing it hands the same outcome to the banner, which is where the reason
+    // and its retry survive the dialog that produced them.
+    fireEvent.click(screen.getByRole('button', { name: zh.cancel }))
+    const banner = await screen.findByRole('alert')
+    expect(banner.textContent).toContain('写入被拒测试')
+    expect(within(banner).getByRole('button', { name: zh.retry })).toBeTruthy()
+  })
+})

@@ -242,8 +242,9 @@ describe('panel layout', () => {
     expect(panel).toContain("disabled={busy || !canSave || status === 'done'}>{t('finish')}")
     // Neither button runs the plain save on its own.
     expect(panel).not.toContain('onClick={() => void saveAndLaunch()}')
-    // One composer error means one alert region: the banner yields to the dialog.
-    expect(panel).toContain('{error && !composerOpen && <div className={css.error} role="alert">')
+    // One composer error means one alert region: the floating banner withholds
+    // exactly the copy the dialog's own body is already showing.
+    expect(panel).toContain("const resultToast = report === null || (composerOpen && report.text === `${t('error')}: ${error}`) ? null : <Toast")
   })
 
   it('names the Ctrl+S shortcut at the New task footer, clear of the actions', () => {

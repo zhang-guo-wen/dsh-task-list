@@ -67,7 +67,11 @@ try {
   await settings.getByRole('textbox', { name: '个人访问令牌' }).fill('tapd-personal-token')
   await page.screenshot({ path: resolve(root, 'sync-connection-editor-light.png') })
   await settings.getByRole('button', { name: '保存连接', exact: true }).click()
-  await settings.getByText('设置已保存，不会自动同步。', { exact: true }).waitFor()
+  // The save result is the host's top banner: portaled out of the settings panel,
+  // so it cannot be scrolled away or buried under the rest of the page.
+  const savedBanner = page.getByRole('alert').filter({ hasText: '设置已保存，不会自动同步。' })
+  await savedBanner.waitFor()
+  assert.equal(await savedBanner.evaluate(element => element.parentElement === document.body), true)
   await settings.getByText('TAPD · 2001', { exact: true }).waitFor()
   // The rule editor draws the same field rhythm: label line, full-width control.
   await section.getByRole('tab', { name: /规则/ }).click()

@@ -26,25 +26,18 @@
    start at the same inset as the button's own label (4px card + 8px row). */
 .split > .splitAnchor { display: inline-flex; position: static; }
 .split > .splitAnchor > .splitMenu { left: 0; right: 0; min-width: 0; max-width: none; }
-/* Sync output under the toolbar: the notice, the failures, and the run card. */
-.status { margin-top: 16px; color: var(--dsw-alias-label-primary); }
+/* Sync output under the toolbar: the refused click's prompt. A run's outcome and
+   the failures around it render in the host's floating banner, which portals out
+   of this column, so this section collapses to nothing while none is showing. */
+.status:empty { display: none; }
 .notice {
-  display: flex; align-items: center; gap: 12px; margin: 0;
+  display: flex; align-items: center; gap: 12px; margin: 16px 0 0;
   padding: 10px 12px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px;
 }
 .noticeClose { margin-left: auto; flex: none; padding: 2px 6px; border: 0; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }
 .noticeClose:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .controls p, .settings p { margin: 8px 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
-.results { padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); }
-.resultHeading, .statusError { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.resultHeading strong { line-height: 24px; }
-.resultSummary, .resultHint { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
-.resultErrors { margin-top: 8px; font-size: 13px; line-height: 20px; }
-.resultErrors > div { max-height: 160px; overflow: auto; }
-.resultErrors p { margin: 6px 0; }
-.statusError { padding: 10px 12px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-interactive-bg-hover); }
-.statusError p { margin: 0 0 6px; font-size: 13px; line-height: 20px; }
 /* The host Button owns the geometry; the plugin only repaints the destructive
    row. The class is doubled so the error ink beats the host's own `.button`
    colour by specificity instead of by `!important`. */

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, SegmentedTabs, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, SegmentedTabs, Switch, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ListWorkitemFieldsRequest, SafeWorkitemField, SyncRule, SafeConnection } from '../../sync/dto.ts'
 import type { SyncFace } from './face.ts'
-import { SyncFailure } from './SyncResults.tsx'
+import { FAILURE_TOAST_HOLD_MS, SyncFailure, syncFailureText } from './SyncResults.tsx'
 import { ConnectionSettings } from './ConnectionSettings.tsx'
 import { RuleSettings } from './RuleSettings.tsx'
 import css from './Sync.module.css'
@@ -29,67 +29,87 @@ export function SyncSection({ sync: face, listWorkitemFields, t }: SyncSectionPr
   const [rules, setRules] = useState<SyncRule[]>([])
   const [editingConnection, setEditingConnection] = useState<SafeConnection | null>(null)
   const [editingRule, setEditingRule] = useState<SyncRule | null>(null)
-  const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
-  const [notice, setNotice] = useState('')
+  /** A failed roster read or switch write keeps its reason and a retry on the page. */
+  const [error, setError] = useState<unknown>(null)
+  /** The same result bubbles once on the host's top banner, where scrolling cannot hide it. */
+  const [toast, setToast] = useState<{ text: string; seq: number; kind: 'success' | 'error' } | null>(null)
+  const toastSeq = useRef(0)
+  const report = useCallback((text: string, kind: 'success' | 'error') => setToast({ text, seq: ++toastSeq.current, kind }), [])
+  /** A repeated result remounts the banner; only the sequence this render owns may clear it. */
+  const dismiss = (seq: number) => setToast(current => current?.seq === seq ? null : current)
+  // The memoized refresh reports in the active locale without refetching on a
+  // translate-identity change.
+  const translate = useRef(t)
+  translate.current = t
   const generation = useRef(0)
-  const refresh = useCallback(async () => {
+  /** Re-read both rosters; `false` means the read failed, which the page and banner both report. */
+  const refresh = useCallback(async (): Promise<boolean> => {
     const revision = ++generation.current
     try {
       const [nextConnections, nextRules] = await Promise.all([face.listSyncConnections(), face.listSyncRules()])
-      if (revision !== generation.current) return
+      if (revision !== generation.current) return false
       setConnections(nextConnections); setRules(nextRules); setError(null)
-    } catch (failure) { if (revision === generation.current) setError(failure) }
-    finally { if (revision === generation.current) setLoading(false) }
-  }, [face])
+      return true
+    } catch (failure) {
+      if (revision === generation.current) { setError(failure); report(syncFailureText(failure, translate.current), 'error') }
+      return false
+    } finally { if (revision === generation.current) setLoading(false) }
+  }, [face, report])
   useEffect(() => { void refresh(); return () => { generation.current++ } }, [refresh])
-  const saved = async () => { await refresh(); setNotice(t('syncSaved')) }
+  const saved = async () => { if (await refresh()) report(t('syncSaved'), 'success') }
   /** Enable or disable from the roster itself: the switch belongs with the row it governs. */
   const toggleEnabled = async (connection: SafeConnection, next: boolean) => {
     try { await face.updateSyncConnection({ id: connection.id, revision: connection.revision, enabled: next }); await refresh() }
-    catch (failure) { setError(failure) }
+    catch (failure) { setError(failure); report(syncFailureText(failure, t), 'error') }
   }
   /** The rule row owns its own switch for the same reason the connection row does. */
   const toggleRuleEnabled = async (rule: SyncRule, next: boolean) => {
     try { await face.updateSyncRule({ id: rule.id, revision: rule.revision, enabled: next }); await refresh() }
-    catch (failure) { setError(failure) }
+    catch (failure) { setError(failure); report(syncFailureText(failure, t), 'error') }
   }
   /** Leaving after a removal: the roster is the only place left to be. */
-  const removed = async () => { await refresh(); setView('list') }
+  const removed = async () => { if (await refresh()) report(t('syncDeleted'), 'success'); setView('list') }
   const back = () => setView('list')
   return <section className={css.settings} aria-label={t('syncSection')}>
     <SegmentedTabs value={tab} label={t('syncSection')} className={css.settingsTabs} items={[
       { value: 'connections', label: `${t('syncConnectionsTab')} ${connections.length}`, id: 'sync-connections-tab', panelId: 'sync-connections-panel' },
       { value: 'rules', label: `${t('syncRulesTab')} ${rules.length}`, id: 'sync-rules-tab', panelId: 'sync-rules-panel' },
-    ]} onChange={next => { setTab(next); setView('list'); setNotice('') }} />
-    {error !== null && <SyncFailure error={error} t={t} />}
-    {notice && <p role="status">{notice}</p>}
+    ]} onChange={next => { setTab(next); setView('list') }} />
+    {/* A failed read shows its reason and a retry here, so the roster never
+        degrades into an empty list with nothing to act on. */}
+    {error !== null && <><SyncFailure error={error} t={t} />
+      <Button disabled={loading} onClick={() => void refresh()}>{t('retry')}</Button></>}
     <div role="tabpanel" id={tab === 'connections' ? 'sync-connections-panel' : 'sync-rules-panel'} aria-labelledby={tab === 'connections' ? 'sync-connections-tab' : 'sync-rules-tab'}>
       {loading ? <p>{t('loading')}</p> : tab === 'connections' ? view === 'edit'
         ? <ConnectionSettings key={editingConnection?.id ?? 'new'} connection={editingConnection} face={face} t={t} onSaved={async next => { setEditingConnection(next); await saved() }} onBack={back} onDeleted={removed} />
         : <>
-          <div className={css.sectionHeading}><h3>{t('syncConnectionsTab')}</h3><Button variant="primary" onClick={() => { setEditingConnection(null); setView('edit'); setNotice('') }}>{t('syncNewConnection')}</Button></div>
-          {connections.length === 0 && <p className={css.hint}>{t('syncNoConnections')}</p>}
+          <div className={css.sectionHeading}><h3>{t('syncConnectionsTab')}</h3><Button variant="primary" onClick={() => { setEditingConnection(null); setView('edit') }}>{t('syncNewConnection')}</Button></div>
+          {connections.length === 0 && error === null && <p className={css.hint}>{t('syncNoConnections')}</p>}
           <ul className={css.cards}>{connections.map(connection => <li className={css.connectionCard} key={connection.id}>
             <span className={css.platformBadge} data-platform={connection.platform}>{t(connection.platform === 'tapd' ? 'syncTapdBadge' : 'syncYunxiaoBadge')}</span>
             <div className={css.cardText}><strong>{connection.name}</strong><small>{t(connection.platform === 'tapd' ? 'syncTapd' : 'syncYunxiao')} · {rules.filter(rule => rule.connectionId === connection.id).length} {t('syncRule')}</small></div>
             <Switch label={t('syncEnableConnection')} checked={connection.enabled} disabled={!connection.credentialPresent}
               onChange={next => void toggleEnabled(connection, next)} />
-            <Button size="sm" aria-label={`${t('syncConfigure')}: ${connection.name}`} onClick={() => { setEditingConnection(connection); setView('edit'); setNotice('') }}>{t('syncConfigure')} ›</Button>
+            <Button size="sm" aria-label={`${t('syncConfigure')}: ${connection.name}`} onClick={() => { setEditingConnection(connection); setView('edit') }}>{t('syncConfigure')} ›</Button>
           </li>)}</ul>
         </>
         : view === 'edit'
           ? <RuleSettings key={editingRule?.id ?? 'new'} rule={editingRule} connections={connections} face={face}
             listWorkitemFields={listWorkitemFields} t={t} onSaved={saved} onBack={back} onDeleted={removed} />
           : <>
-            <div className={css.sectionHeading}><h3>{t('syncRule')}</h3><Button variant="primary" disabled={connections.length === 0} onClick={() => { setEditingRule(null); setView('edit'); setNotice('') }}>{t('syncNewRule')}</Button></div>
-            {rules.length === 0 && <p className={css.hint}>{t('syncNoRules')}</p>}
+            <div className={css.sectionHeading}><h3>{t('syncRule')}</h3><Button variant="primary" disabled={connections.length === 0} onClick={() => { setEditingRule(null); setView('edit') }}>{t('syncNewRule')}</Button></div>
+            {rules.length === 0 && error === null && <p className={css.hint}>{t('syncNoRules')}</p>}
             <ul className={css.cards}>{rules.map(rule => <li key={rule.id} className={css.connectionCard}>
               <div className={css.cardText}><strong>{rule.projectName ?? rule.projectId}</strong><small>{connections.find(item => item.id === rule.connectionId)?.name} · {t('syncConditionCount').replace('{count}', String(rule.conditions.length))}</small></div>
               <Switch label={t('syncEnableRule')} checked={rule.enabled} onChange={next => void toggleRuleEnabled(rule, next)} />
-              <Button size="sm" aria-label={`${t('edit')}: ${rule.projectId}`} onClick={() => { setEditingRule(rule); setView('edit'); setNotice('') }}>{t('edit')}</Button>
+              <Button size="sm" aria-label={`${t('edit')}: ${rule.projectId}`} onClick={() => { setEditingRule(rule); setView('edit') }}>{t('edit')}</Button>
             </li>)}</ul>
           </>}
     </div>
+    {/* The host Toast portals into document.body: the same result also bubbles above the page. */}
+    {toast !== null && (toast.kind === 'success'
+      ? <Toast key={toast.seq} text={toast.text} tone="success" onDone={() => dismiss(toast.seq)} />
+      : <Toast key={toast.seq} text={toast.text} holdMs={FAILURE_TOAST_HOLD_MS} onDone={() => dismiss(toast.seq)} />)}
   </section>
 }

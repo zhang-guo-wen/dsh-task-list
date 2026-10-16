@@ -65,7 +65,9 @@ describe('manual sync controls', () => {
     fireEvent.click(row)
     expect(calls).toBe(1)
     release({ runId: 'run1', existing: false })
-    await screen.findByText('同步完成')
+    // The outcome is one sentence in the host's banner: this run's counts are
+    // empty, so the status word and the scope note are its whole text.
+    await screen.findByText(/同步完成/u)
   })
   it('entering the page shows no result, and only an explicit Sync queries a run', async () => {
     const api = face()
@@ -75,15 +77,15 @@ describe('manual sync controls', () => {
     api.getSyncRun = getRun
     const start = vi.fn(api.startSync); api.startSync = start
     const first = render(<SyncHarness api={api} />)
-    expect(screen.queryByText('同步完成')).toBeNull()
+    expect(screen.queryByText(/同步完成/u)).toBeNull()
     first.unmount()
     render(<SyncHarness api={api} />)
-    expect(screen.queryByText('同步完成')).toBeNull()
+    expect(screen.queryByText(/同步完成/u)).toBeNull()
     expect(listRuns).not.toHaveBeenCalled()
     expect(getRun).not.toHaveBeenCalled()
     expect(start).not.toHaveBeenCalled()
     await clickSyncRow()
-    await screen.findByText('同步完成')
+    await screen.findByText(/^同步完成/u)
     expect(start).toHaveBeenCalledOnce()
   })
   it('an unconfigured click points at the settings page and never starts a run', async () => {
@@ -150,18 +152,19 @@ describe('manual sync controls', () => {
     const start = vi.fn(async () => ({ runId: next, existing: false })); api.startSync = start
     const first = render(<SyncHarness api={api} />)
     await clickSyncRow()
-    await screen.findByText('导入：74')
-    expect(screen.getByText('同步所有已启用规则，不受当前列表筛选影响。')).toBeDefined()
+    // One sentence carries the status, the counts, and the scope note.
+    await screen.findByText(/导入：74/u)
+    expect(screen.getByText(/同步所有已启用规则，不受当前列表筛选影响。/u)).toBeDefined()
     expect(screen.queryByRole('button', { name: '下一页' })).toBeNull()
     expect(items).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
-    expect(screen.queryByText('同步完成')).toBeNull()
+    expect(screen.queryByText(/同步完成/u)).toBeNull()
     first.unmount()
     render(<SyncHarness api={api} />)
-    expect(screen.queryByText('同步完成')).toBeNull()
+    expect(screen.queryByText(/同步完成/u)).toBeNull()
     next = 'run2'
     await clickSyncRow()
-    await screen.findByText('导入：1')
+    await screen.findByText(/导入：1/u)
     expect(start).toHaveBeenCalledTimes(2)
   })
   it('structured credential errors are localized without displaying a secret or raw provider message', async () => {
@@ -350,6 +353,46 @@ describe('manual sync controls', () => {
       secret: { platform: 'yunxiao', token: 'yunxiao-pat' },
     }))
     expect(start).not.toHaveBeenCalled()
+    // The save result is the host's floating banner, portaled above the panel.
+    const savedNotice = await screen.findByRole('alert')
+    expect(savedNotice.textContent).toContain(zh.syncSaved)
+    expect(savedNotice.parentElement).toBe(document.body)
+  })
+  it('a removed connection reports its result through the same banner', async () => {
+    const api = face()
+    const deleted: unknown[] = []
+    api.deleteSyncConnection = async request => { deleted.push(request); return { id: request.id } as any }
+    render(section(api))
+    fireEvent.click(await screen.findByRole('button', { name: '配置: 云效 · 示例组织' }))
+    await screen.findByRole('button', { name: '登录并授权云效' })
+    // Two-step removal: the first click only arms the button.
+    fireEvent.click(screen.getByRole('button', { name: '删除连接' }))
+    const confirm = screen.getByRole('button', { name: '确认删除' }) as HTMLButtonElement
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    fireEvent.click(confirm)
+    await waitFor(() => expect(deleted).toEqual([{ id: 'c1', revision: 1 }]))
+    const removed = await screen.findByRole('alert')
+    expect(removed.textContent).toContain(zh.syncDeleted)
+    expect(removed.parentElement).toBe(document.body)
+  })
+  it('a failed roster read keeps its reason and a retry instead of an empty roster', async () => {
+    const api = face()
+    let refused = true
+    api.listSyncConnections = async () => {
+      if (refused) throw { code: 'task-list/sync', message: 'x', details: { code: 'AuthDenied', docKey: 'permissions' } }
+      return [{ id: 'c1', revision: 1, name: '云效 · 示例组织', platform: 'yunxiao', mode: 'center', organizationId: '1', regionHost: null, tokenEnv: 'USER', instance: 'org-1', enabled: true, credentialPresent: true }]
+    }
+    api.listSyncRules = async () => []
+    render(section(api))
+    // The reason stays on the page and the same sentence bubbles on the banner.
+    const alerts = await screen.findAllByRole('alert')
+    expect(alerts.some(node => node.closest('section') !== null)).toBe(true)
+    expect(alerts.some(node => node.parentElement === document.body)).toBe(true)
+    // A failed read never reads as "no connections yet".
+    expect(screen.queryByText(zh.syncNoConnections)).toBeNull()
+    refused = false
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    await screen.findByText('云效 · 示例组织')
   })
   it('a typed token lists organizations and the picked id is saved with the credential', async () => {
     const api = face(); api.listSyncConnections = async () => []; api.listSyncRules = async () => []
@@ -384,7 +427,9 @@ describe('manual sync controls', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: '手动填写（个人访问令牌）' }))
     fireEvent.change(screen.getByLabelText('个人访问令牌'), { target: { value: 'bad' } })
     fireEvent.click(screen.getByRole('button', { name: '组织' }))
-    await screen.findByText(/AuthDenied/)
+    // The refusal is named in the form and on the banner; both keep the field usable.
+    const alerts = await screen.findAllByRole('alert')
+    expect(alerts.some(node => node.textContent?.includes('AuthDenied'))).toBe(true)
     expect(screen.getByRole('button', { name: '组织' })).toBeDefined()
   })
   it('results show pending as a subset of failures, never an invented percent', async () => {

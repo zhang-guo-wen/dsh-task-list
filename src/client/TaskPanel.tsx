@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Modal, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT, TASK_STATUSES,
@@ -163,6 +163,27 @@ export function TaskPanel({
   const [busy, setBusy] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState('')
+  /**
+   * The page-level write result. It floats above the page instead of occupying a
+   * band above the list: the band moved the rows whenever a save settled, and a
+   * refusal or an outcome reported there sat at the top of a scrolling surface.
+   * The dialog keeps its own copy of the same two states in its footer.
+   */
+  const [report, setReport] = useState<{ text: string; seq: number; kind: 'success' | 'error' } | null>(null)
+  const reportSeq = useRef(0)
+  const reportWrite = useCallback((text: string, kind: 'success' | 'error') => {
+    reportSeq.current += 1
+    setReport({ text, seq: reportSeq.current, kind })
+  }, [])
+  /**
+   * Report a page-level failure in both places it is needed: the state keeps the
+   * dialog's own copy, and the banner says why the last action did not land.
+   */
+  const reportFailure = useCallback((failure: unknown) => {
+    const text = errorText(failure)
+    setError(text)
+    reportWrite(`${t('error')}: ${text}`, 'error')
+  }, [reportWrite, t])
   const [editing, setEditing] = useState<TaskRecord | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
   const [externalTitle, setExternalTitle] = useState('')
@@ -238,7 +259,7 @@ export function TaskPanel({
     } catch (failure) {
       // The rows already on screen stay where they are: a failed reload reports
       // itself and leaves the last successful page in place.
-      if (mounted.current && generation.current === current) setError(errorText(failure))
+      if (mounted.current && generation.current === current) reportFailure(failure)
     } finally {
       if (mounted.current && generation.current === current) setLoading(false)
     }
@@ -280,7 +301,7 @@ export function TaskPanel({
   useEffect(() => {
     if (!composerOpen) return
     let active = true
-    void listAgents().then(rows => { if (active) setAgents(rows) }).catch(failure => { if (active) setError(errorText(failure)) })
+    void listAgents().then(rows => { if (active) setAgents(rows) }).catch(failure => { if (active) reportFailure(failure) })
     return () => { active = false }
   }, [composerOpen, listAgents])
 
@@ -461,6 +482,7 @@ export function TaskPanel({
       await persist()
       if (!mounted.current) return
       setSaveState('saved')
+      reportWrite(t('saved'), 'success')
       setEditing(null)
       closeComposer()
       // A saved relation (parent or dependency) changes the graph the canvas
@@ -471,7 +493,7 @@ export function TaskPanel({
       if (dialogMode) markQuickAddSaved()
       else await refresh()
     } catch (failure) {
-      if (mounted.current) { setSaveState('failed'); setError(errorText(failure)) }
+      if (mounted.current) { setSaveState('failed'); reportFailure(failure) }
     }
     finally { if (mounted.current) setBusy(false) }
   }
@@ -497,7 +519,7 @@ export function TaskPanel({
       if (!mounted.current) return
       if (finish) await update({ id: saved.id, version: saved.version, status: 'done' })
       else await start(saved)
-      if (mounted.current) { setSaveState('saved'); await refresh() }
+      if (mounted.current) { setSaveState('saved'); reportWrite(t('saved'), 'success'); await refresh() }
     } catch (failure) {
       if (!mounted.current) return
       setSaveState('failed')
@@ -506,7 +528,7 @@ export function TaskPanel({
         setInitializeTask({ task: saved, workspaceTitle: failure.workspaceTitle, workspacePath: failure.workspacePath })
         return
       }
-      setError(errorText(failure))
+      reportFailure(failure)
     }
     finally { if (mounted.current) setBusy(false) }
   }
@@ -524,7 +546,7 @@ export function TaskPanel({
     } catch (failure) {
       if (mounted.current) {
         await refresh()
-        if (mounted.current) setError(errorText(failure))
+        if (mounted.current) reportFailure(failure)
       }
     } finally { if (mounted.current) setBusy(false) }
   }, [busy, remove, refresh, relationsLoad])
@@ -544,7 +566,7 @@ export function TaskPanel({
           return
         }
         await refresh()
-        if (mounted.current) setError(errorText(failure))
+        if (mounted.current) reportFailure(failure)
       }
     }
     finally { if (mounted.current) setBusy(false) }
@@ -567,7 +589,7 @@ export function TaskPanel({
       if (mounted.current) {
         setInitializeTask(null)
         await refresh()
-        if (mounted.current) setError(errorText(failure))
+        if (mounted.current) reportFailure(failure)
       }
     } finally { if (mounted.current) setBusy(false) }
   }
@@ -582,7 +604,7 @@ export function TaskPanel({
     } catch (failure) {
       if (mounted.current) {
         await refresh()
-        if (mounted.current) setError(errorText(failure))
+        if (mounted.current) reportFailure(failure)
       }
     } finally { if (mounted.current) setBusy(false) }
   }, [busy, update, refresh])
@@ -651,14 +673,6 @@ export function TaskPanel({
       results. Idle, it renders nothing — the standing description of what
       sync does lives on its settings page. */}
   <SyncStatus panel={syncPanel} t={t} />
-
-  {/* With the composer open its own copy is the visible one, so the banner
-      stays quiet to avoid announcing the same failure twice. */}
-  {error && !composerOpen && <div className={css.error} role="alert">{t('error')}: {error} <button type="button" onClick={() => void refresh()}>{t('retry')}</button></div>}
-  {/* The saved state of the last write. It is the success half of the save
-      feedback: the composer reports saving and failure in place, and this line
-      reports the outcome once the write landed and the list re-read. */}
-  {saveState === 'saved' && !composerOpen && <div className={css.notice} role="status">{t('saved')}</div>}
   {/* A reload keeps the rows and the scroll position: only this local quiet
       notice says a read is in flight. */}
   {loading && tasks.length > 0 && <p className={css.placeholder} role="status">{t('refreshing')}</p>}
@@ -872,9 +886,28 @@ export function TaskPanel({
     </div>
   </div>
 
+  /**
+   * The page-level write result as the host's floating banner: the same surface
+   * the archive report uses. A failed action carries the retry as its own inline
+   * action, because the band that held that button moved the rows when it came
+   * and went, and a long list could scroll it away.
+   *
+   * The composer's own footer already shows the write it just made, so only that
+   * copy is withheld: a failure the dialog is not currently showing still
+   * announces itself, and the banner outlives the dialog either way.
+   */
+  const resultToast = report === null || (composerOpen && report.text === `${t('error')}: ${error}`) ? null : <Toast
+    key={report.seq}
+    text={report.text}
+    {...(report.kind === 'success'
+      ? { tone: 'success' as const }
+      : { holdMs: 6000, actions: [{ label: t('retry'), onClick: () => { setReport(null); void refresh() } }] })}
+    onDone={() => { setReport(current => current?.seq === report.seq ? null : current) }}
+  />
+
   // The overlay's copy is the dialog itself: it renders the composer over
   // whatever page is on screen and never draws the task page.
-  if (dialog !== undefined) return <>{composerDialog}{initializationDialog}</>
+  if (dialog !== undefined) return <>{composerDialog}{initializationDialog}{resultToast}</>
 
   if (reportsOpen) return <main className={css.page} data-report="true">
     <div className={css.inner}>
@@ -885,6 +918,7 @@ export function TaskPanel({
         }} />
       </Suspense>
     </div>
+    {resultToast}
   </main>
 
   if (moreOpen) return <main className={css.page} data-more="true">
@@ -895,6 +929,7 @@ export function TaskPanel({
         requestAnimationFrame(() => moreButton.current?.focus())
       }} />
     </div>
+    {resultToast}
   </main>
 
   // Each surface is one page of the same panel: the canvas gets the status tabs
@@ -907,6 +942,7 @@ export function TaskPanel({
     </div>
     {composerDialog}
     {initializationDialog}
+    {resultToast}
   </main>
 
   return <main className={css.page} data-list="true">
@@ -919,5 +955,6 @@ export function TaskPanel({
 
     {composerDialog}
     {initializationDialog}
+    {resultToast}
   </main>
 }

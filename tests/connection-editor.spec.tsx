@@ -119,10 +119,43 @@ describe('connection editor usability', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: zh.syncManualToken }))
     fireEvent.change(screen.getByLabelText(zh.syncToken), { target: { value: 'short' } })
     fireEvent.click(screen.getByRole('button', { name: zh.syncOrganization }))
-    const alert = await screen.findByRole('alert')
-    // The platform's refusal is named, so a truncated paste is not mistaken for a bug.
-    expect(alert.textContent).toContain(zh.syncSafeError)
-    expect(alert.textContent).toContain('AuthDenied')
+    // The refusal is named both in the form and on the floating banner.
+    const alerts = await screen.findAllByRole('alert')
+    const inForm = alerts.find(node => node.closest('section') !== null)
+    expect(inForm?.textContent).toContain(zh.syncSafeError)
+    expect(inForm?.textContent).toContain('AuthDenied')
+  })
+
+  it('keeps a failed action in the form with its own retry, and repeats it on the banner', async () => {
+    let refused = true
+    const reads: unknown[] = []
+    editor({
+      connection: null,
+      face: {
+        listSyncOrganizations: async request => {
+          reads.push(request)
+          if (refused) throw Object.assign(new Error('refused'), { code: 'task-list/sync', details: { code: 'AuthDenied', docKey: 'permissions' } })
+          return [{ id: 'org-9', name: '重试成功组织' }]
+        },
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: zh.syncAuthMethod }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: zh.syncManualToken }))
+    fireEvent.change(screen.getByLabelText(zh.syncToken), { target: { value: 'short' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.syncOrganization }))
+    const alerts = await screen.findAllByRole('alert')
+    // The reason stays in the form after the banner fades...
+    const inForm = alerts.filter(node => node.closest('section') !== null)
+    expect(inForm).toHaveLength(1)
+    expect(inForm[0]!.textContent).toContain(zh.syncSafeError)
+    // ...and the same sentence bubbles once on the host banner, portaled to the body.
+    const banner = alerts.find(node => node.parentElement === document.body)
+    expect(banner?.textContent).toContain(zh.syncSafeError)
+    // The form's own retry repeats the failed read instead of leaving a dead end.
+    refused = false
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    await waitFor(() => expect(screen.getByRole('button', { name: zh.syncOrganization }).textContent).toContain('重试成功组织'))
+    expect(reads).toHaveLength(2)
   })
 
   it('paints sign-in as the primary action and deletion as destructive', () => {
