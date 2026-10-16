@@ -161,6 +161,36 @@ Object.assign(window, { fixture: {
   },
   addExternal: () => { tasks = [{ id: 'external', title: '独立远端标题', notes: '', content: { version: 1, blocks: [] }, status: 'todo', priority: 'medium', storyPoints: null, tags: [], workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false, startedAt: null, completedAt: null, parentId: null, blockingIds: [], version: 1, createdAt: Date.now(), updatedAt: Date.now(), subtasks: [], source: { platform: 'tapd', projectId: 'p', typeId: 'task', remoteId: '123', number: 'TASK-123', url: 'https://www.tapd.cn/2001/prong/tasks/view/123', lastSuccess: null, error: null } }, ...tasks] },
   /**
+   * Seed enough rows to make the card board taller than its panel, so the scroll
+   * contract is checked against real content rather than a three-card page.
+   */
+  seedBoard: (doneCount: number) => {
+    const now = Date.now()
+    tasks = Array.from({ length: doneCount }, (_, index) => ({
+      id: `board-done-${index}`,
+      title: `已完成任务 ${index}`,
+      notes: `已完成任务 ${index}`,
+      content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: `已完成任务 ${index}` }] }] },
+      status: 'done' as const, priority: 'medium' as const, storyPoints: null, tags: [],
+      workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false,
+      startedAt: null, completedAt: now, parentId: null, blockingIds: [], version: 1, createdAt: now, updatedAt: now, subtasks: [],
+    }))
+  },
+  /** Append finished rows to whatever is already seeded, so every status has content. */
+  seedDone: (count: number) => {
+    const now = Date.now()
+    const appended = Array.from({ length: count }, (_, index) => ({
+      id: `extra-done-${index}`,
+      title: `补充已完成 ${index}`,
+      notes: `补充已完成 ${index}`,
+      content: { version: 1, blocks: [{ type: 'paragraph', children: [{ text: `补充已完成 ${index}` }] }] },
+      status: 'done' as const, priority: 'medium' as const, storyPoints: null, tags: [],
+      workspaceId: 'ws-test', sendImmediately: false, sessionId: null, agent: null, useWorktree: false,
+      startedAt: null, completedAt: now, parentId: null, blockingIds: [], version: 1, createdAt: now, updatedAt: now, subtasks: [],
+    }))
+    tasks = [...tasks, ...appended]
+  },
+  /**
    * Seed one three-task hierarchy: `审批父任务` carries the running session,
    * `审批子任务` sits under it and waits on `前置依赖`, so the canvas has one
    * solid parent edge, one dashed wait edge, and a blocked card to draw.

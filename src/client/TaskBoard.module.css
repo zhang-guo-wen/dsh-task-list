@@ -85,10 +85,13 @@
 .total[data-total='blocked'] strong { color: var(--dsw-alias-state-warn-label); }
 
 /* One column per status, wrapping into as many columns as the panel affords:
-   the board never introduces a horizontal scrollbar of its own. */
+   the board never introduces a horizontal scrollbar of its own. The 200px floor
+   is what lets all four statuses share one row in a 960px content column: a
+   floor above ~220px wraps the last status onto a second row, which leaves most
+   of that row empty next to an already tall column. */
 .groups {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   align-items: start;
 }

@@ -48,17 +48,36 @@
 /* Task list, topology canvas, and card board share one frame: a fixed header
    and toolbar above a body that fills the remaining panel height, so the canvas
    can pan inside its own box instead of growing the page. */
-.page[data-list='true'], .page[data-graph='true'] { overflow: hidden; --dsh-scrollbar-width: 9px; --dsh-scrollbar-thumb-border: 2px; }
+.page[data-list='true'], .page[data-graph='true'], .page[data-board='true'] {
+  overflow: hidden;
+  --dsh-scrollbar-width: 9px;
+  --dsh-scrollbar-thumb-border: 2px;
+}
 .page[data-list='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
 .page[data-list='true'] .header, .page[data-list='true'] .toolbar { flex: none; }
-.page[data-graph='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
+.page[data-graph='true'] .inner, .page[data-board='true'] .inner { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; }
 .page[data-graph='true'] .header, .page[data-graph='true'] .graphToolbar { flex: none; }
+.page[data-board='true'] .header { flex: none; margin-bottom: 0; }
 .graphToolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
 .graphMeta { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .graphCount, .graphWarn { font-size: 12px; line-height: 18px; }
 .graphCount { color: var(--dsw-alias-label-tertiary); }
 .graphWarn { color: var(--dsw-alias-state-warn-label); }
 .graphSurface { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 18px; }
+/* The canvas pans inside its own box, so the surface only hosts it. The board
+   is taller than the panel by nature (one column per status plus the execution
+   list), so the surface is the board's single scroll container: the header stays
+   put and every card, group, and session scrolls together. */
+.page[data-graph='true'] .graphSurface { overflow: hidden; }
+.page[data-board='true'] .graphSurface {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  /* The reserved rail is slid into the page padding, exactly as the list body
+     does with its own scrolling box, so the cards keep the column's right line. */
+  margin-right: calc(-1 * var(--dsh-scrollbar-width));
+  padding-right: var(--dsh-scrollbar-width);
+}
 /* Placeholder shown while the first graph read is in flight. */
 .skeleton { flex: 1; min-height: 0; border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-skeleton); }
 /* The view switch keeps the title row on one line and yields before the page
