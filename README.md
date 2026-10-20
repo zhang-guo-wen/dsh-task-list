@@ -134,7 +134,7 @@ Click **Statistics report** next to **New task** to open a separate report page.
 - Uses the browser's local time zone. The current hour and future hours are excluded, not shown as zero. The snapshot displays its calculation time and exclusive cutoff.
 - Statistics cover the host's complete available session corpus, independently of task filters and session links. New sessions include subagent sessions. User sends count admitted human messages, not queued/rejected drafts, injected context, automatic goal rounds, or initial agent delegations.
 - Tokens use reported model usage, including input, output, cache, retries, subagent calls, and recorded compaction usage. Reasoning tokens are not added twice, and fork-inherited history is not counted again. Missing usage is indicated; background calls without session usage records are outside the scope. Deleted/unavailable logs cannot be reconstructed.
-- Requires the host's `sessionQuery` service (`listSessions` / `readSession`). Read failures are surfaced rather than silently producing partial zero totals. Host code changes require plugin reload or host restart.
+- Requires the host's `sessionQuery` service (`listSessions` / `readSession`). A stored log the host cannot read — for example a legacy artifact it refuses to migrate, or a corrupt file — is skipped: the readable sessions are still counted and nothing extra is shown. Only when no session can be read at all does the report surface the read error instead of an empty result. **Refresh** retries skipped logs. Host code changes require plugin reload or host restart.
 
 ### Local development installation
 

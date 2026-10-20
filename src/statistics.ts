@@ -303,6 +303,7 @@ function foldProjection(projection: SessionProjection, bucket: Bucket, end: numb
  * @param entries - projected sessions, newest-first order is irrelevant.
  * @param request - the validated request that fixes the range.
  * @param now - reference instant that fixes the cutoff.
+ * @param completions - task completions to bucket beside the session activity.
  * @returns the hour rows, totals, and missing-usage count.
  */
 export function aggregateStatistics(
@@ -351,7 +352,16 @@ export function aggregateStatistics(
   }
 }
 
-/** Read and fold every session on demand; the uncached reference path. */
+/**
+ * Read and fold every session on demand; the uncached reference path.
+ * A log that cannot be read is skipped; only a corpus with nothing readable
+ * fails, because that is a read failure rather than an empty result.
+ * @param query - the session read surface.
+ * @param request - the range to fold.
+ * @param now - reference instant that fixes the cutoff.
+ * @param completions - task completions to bucket beside the session activity.
+ * @returns the folded snapshot.
+ */
 export async function calculateStatistics(
   query: StatisticsQuery,
   request: StatisticsRequest,
@@ -362,12 +372,22 @@ export async function calculateStatistics(
   const records = await query.listSessions()
   const entries: StatisticsEntry[] = []
   const seen = new Set<string>()
+  let failure: { error: unknown } | undefined
+  let failed = 0
+  let eligible = 0
   for (const { header } of records) {
     if (seen.has(header.id) || header.createdAt >= end) continue
     seen.add(header.id)
-    const log = await query.readSession(header.id)
-    entries.push({ id: header.id, createdAt: header.createdAt, projection: projectSession(log, header.origin) })
+    eligible++
+    try {
+      const log = await query.readSession(header.id)
+      entries.push({ id: header.id, createdAt: header.createdAt, projection: projectSession(log, header.origin) })
+    } catch (error) {
+      failure ??= { error }
+      failed++
+    }
   }
+  if (entries.length === 0 && eligible > 0 && failed === eligible) throw failure?.error
   return aggregateStatistics(entries, request, now, completions)
 }
 

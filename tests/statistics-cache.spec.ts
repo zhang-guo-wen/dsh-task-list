@@ -146,6 +146,38 @@ describe('per-session statistics cache', () => {
     // Delivery rows land beside the session rows in the same hour buckets.
     expect(snapshot.hours.filter(row => row.completedTasks > 0)).toHaveLength(2)
   })
+
+  it('skips a log it cannot read and keeps the rest of the report', async () => {
+    const reads: string[] = []
+    const source: StatisticsSource = {
+      list: async () => records,
+      read: async record => {
+        reads.push(record.id)
+        if (record.id === 'b') throw Object.assign(new Error('unsupported descriptor version 2'), { name: 'SessionFormatUnsupportedError' })
+        return logAt(now - 2 * hour)
+      },
+    }
+    const statistics = service(source)
+    const first = await statistics.calculate(request)
+    expect(first.totals.prompts).toBe(1)
+
+    // The skipped log is not cached away: the next sweep retries it, so a host
+    // upgrade that can migrate it starts counting without a manual cache reset.
+    reads.length = 0
+    const second = await statistics.calculate(request)
+    expect(reads).toEqual(['b'])
+    expect(second.totals.prompts).toBe(1)
+  })
+
+  it('fails the sweep when nothing in the corpus could be read', async () => {
+    const source: StatisticsSource = {
+      list: async () => records,
+      read: async () => { throw new Error('stored log is corrupt') },
+    }
+    // Every figure would be zero, which reads as "no activity" rather than as a
+    // failed read, so this case still surfaces the host's error.
+    await expect(service(source).calculate(request)).rejects.toThrow('stored log is corrupt')
+  })
 })
 
 describe('background statistics runs', () => {
@@ -177,6 +209,46 @@ describe('background statistics runs', () => {
     const jobId = statistics.start(request)
     expect(statistics.cancel(jobId)).toBe(true)
     release()
+    const settled = await waitFor(statistics, jobId)
+    expect(settled.status).toBe('cancelled')
+    expect(settled.snapshot).toBeUndefined()
+  })
+
+  it('completes a run that had to skip an unreadable log', async () => {
+    const records: StatisticsSourceRecord[] = [
+      { id: 'a', createdAt: created, revision: 'r1' },
+      { id: 'b', createdAt: created, revision: 'r1' },
+    ]
+    const source: StatisticsSource = {
+      list: async () => records,
+      read: async record => {
+        if (record.id === 'b') throw new Error('stored log is corrupt')
+        return logAt(now - 3 * hour)
+      },
+    }
+    const statistics = service(source)
+    const jobId = statistics.start(request)
+    const settled = await waitFor(statistics, jobId)
+    expect(settled.status).toBe('completed')
+    expect(settled.processed).toBe(2)
+    expect(settled.snapshot?.totals.prompts).toBe(1)
+  })
+
+  it('treats a read that fails because of cancellation as a cancellation', async () => {
+    const records: StatisticsSourceRecord[] = [{ id: 'a', createdAt: created, revision: 'r1' }]
+    const source: StatisticsSource = {
+      list: async () => records,
+      read: async (_record, signal) => {
+        await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })))
+        })
+        return logAt(now - 2 * hour)
+      },
+    }
+    const statistics = service(source)
+    const jobId = statistics.start(request)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(statistics.cancel(jobId)).toBe(true)
     const settled = await waitFor(statistics, jobId)
     expect(settled.status).toBe('cancelled')
     expect(settled.snapshot).toBeUndefined()

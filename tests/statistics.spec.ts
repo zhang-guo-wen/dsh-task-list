@@ -76,10 +76,24 @@ describe('on-demand hourly statistics', () => {
     expect((await calculateStatistics(service, request, time(11))).totals).toMatchObject({ sessions: 0, prompts: 0, tokens: 10 })
     expect(service.readSession).toHaveBeenCalledOnce()
   })
-  it('shows missing usage and rejects read failures instead of inventing zero results', async () => {
+  it('shows missing usage and skips a session it cannot read', async () => {
     const service = query([event(0, 10, 'assistant/message', { turn: 1, step: 1 })])
     expect((await calculateStatistics(service, request, time(11))).missingUsageCalls).toBe(1)
+    // A legacy log the host refuses to serve is skipped, not reported: the rest
+    // of the corpus still counts and the report shows no failure.
+    const mixed: StatisticsQuery = {
+      listSessions: async () => [{ header: { id: 'good', createdAt: time(9) } }, { header: { id: 'broken', createdAt: time(9) } }],
+      readSession: async (id: string) => {
+        if (id === 'broken') throw new Error('unreadable session')
+        return { inheritedEventCount: 0, events: [event(0, 9, 'user/message', { id: 'u1', source: { kind: 'user' } })] }
+      },
+    }
+    expect((await calculateStatistics(mixed, request, time(11))).totals.prompts).toBe(1)
+  })
+  it('rejects a corpus where no session log can be read', async () => {
+    const service = query([event(0, 10, 'assistant/message', { turn: 1, step: 1 })])
     service.readSession = async () => { throw new Error('unreadable session') }
+    // An empty result would claim "no activity"; nothing readable is a failure.
     await expect(calculateStatistics(service, request, time(11))).rejects.toThrow('unreadable session')
   })
   it('handles fractional-offset time zones and validates bounded requests', async () => {

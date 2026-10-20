@@ -15,6 +15,7 @@ const SOURCE_SEGMENTS = ['packages', 'client', 'ui-primitives', 'src']
 // absolute paths, so no machine-specific path is hardcoded in the bridge.
 const SPECIFIERS: Record<string, string> = {
   '@dsh-host-primitives/Button': 'Button.tsx',
+  '@dsh-host-primitives/Pill': 'Pill.tsx',
   '@dsh-host-primitives/Modal': 'Modal.tsx',
   '@dsh-host-primitives/Input': 'Input.tsx',
   '@dsh-host-primitives/Checkbox': 'Checkbox.tsx',

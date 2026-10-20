@@ -162,6 +162,8 @@ export class StatisticsService {
     const reused = entries.length
     onProgress({ processed: 0, total: pending.length, reused })
     const batch: StatisticsCacheRow[] = []
+    let readFailure: { error: unknown } | undefined
+    let skipped = 0
     let processed = 0
     let cursor = 0
     const readNext = async (): Promise<void> => {
@@ -172,7 +174,19 @@ export class StatisticsService {
         const record = pending[index]!
         // Read outside any transaction and fold immediately, so at most
         // READ_CONCURRENCY decoded logs are alive at once.
-        const log = await source.read(record, signal)
+        let log: Awaited<ReturnType<StatisticsSource['read']>>
+        try {
+          log = await source.read(record, signal)
+        } catch (error) {
+          // A log the Host refuses to serve — a legacy artifact it cannot migrate,
+          // or a corrupt file — is skipped so the rest of the corpus still counts.
+          signal.throwIfAborted()
+          readFailure ??= { error }
+          skipped++
+          processed++
+          onProgress({ processed, total: pending.length, reused })
+          continue
+        }
         const projection = projectSession(log, record.origin)
         entries.push({ id: record.id, createdAt: record.createdAt, projection })
         batch.push({ sessionId: record.id, createdAt: record.createdAt, revision: record.revision ?? null, sealed: record.live === false, projection })
@@ -186,6 +200,10 @@ export class StatisticsService {
     )
     const failure = settled.find(result => result.status === 'rejected')
     if (failure) throw failure.reason
+    // A corpus with nothing readable is a read failure, not an empty report;
+    // otherwise a skipped log never surfaces, so a single broken artifact cannot
+    // hide the sessions that could be read.
+    if (entries.length === 0 && skipped > 0 && skipped === pending.length && readFailure !== undefined) throw readFailure.error
     this.cache.write(batch)
     if (signal.aborted) throw abortError()
     // Delivery figures are a cheap indexed read from the plugin's own database,

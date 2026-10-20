@@ -91,6 +91,12 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.getByRole('tab', { name: '月', exact: true }).click()
   await page.locator('[data-period="month"]').waitFor()
+  // The Host dark theme itself, not a four-token stand-in: every token the report
+  // reads comes from the fixture's copy of the Host sheets.
+  const theme = mode => page.evaluate(dark => {
+    if (dark) document.body.dataset.dsDarkTheme = 'true'
+    else delete document.body.dataset.dsDarkTheme
+  }, mode === 'dark')
   // A read failure surfaces as an alert; the next successful load clears it.
   await page.evaluate(() => window.fixture.failStatistics(true))
   await page.locator('input[type="month"]').fill('2026-09')
@@ -98,23 +104,19 @@ try {
   await page.evaluate(() => window.fixture.failStatistics(false))
   await page.locator('input[type="month"]').fill('2026-10')
   await page.waitForFunction(() => !document.querySelector('[role="alert"]'))
-  // The Host dark theme itself, not a four-token stand-in: every token the report
-  // reads comes from the fixture's copy of the Host sheets.
-  const theme = mode => page.evaluate(dark => {
-    if (dark) document.body.dataset.dsDarkTheme = 'true'
-    else delete document.body.dataset.dsDarkTheme
-  }, mode === 'dark')
-  /** The control eases between themes, so read a label colour only once it settled. */
-  const settleSwitch = () => page.getByRole('tablist', { name: '统计周期' }).evaluate(async element => {
-    const read = () => [...element.querySelectorAll('[role="tab"]')].map(tab => getComputedStyle(tab).color).join('|')
-    let previous = read()
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 25))
-      const current = read()
-      if (current === previous) return current
-      previous = current
-    }
-    return previous
+  // The switch, its surfaces and the page behind them all ease between themes.
+  // Sampling colours until two consecutive reads happen to match measured labels
+  // mid-fade (an integer rgb repeats across a slow transition), so wait for the
+  // transitions themselves to finish instead.
+  const settleSwitch = () => page.evaluate(async () => {
+    const report = document.querySelector('[data-report="true"]')
+    const animations = [...document.getAnimations(), ...report.getAnimations({ subtree: true })]
+      .filter(animation => animation.effect?.getTiming?.().iterations !== Infinity)
+    await Promise.race([
+      Promise.all(animations.map(animation => animation.finished.catch(() => {}))),
+      new Promise(resolve => setTimeout(resolve, 3000)),
+    ])
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
   })
   /** Contrast of every period label against the surface it is actually drawn on. */
   const switchContrast = () => page.getByRole('tablist', { name: '统计周期' }).evaluate(element => {
@@ -257,16 +259,17 @@ try {
   assert.ok((await editor.innerText()).includes('撤销测试'))
   await page.getByRole('button', { name: '取消', exact: true }).click()
   // A new task never offers an archived session, and archiving one while the
-  // dialog is open drops it without reopening the form.
+  // dialog is open drops it without reopening the form. The picker reads live
+  // session titles, so the rename from the edit flow above is still in effect.
   await page.getByRole('button', { name: '新建任务', exact: true }).click()
   const createPicker = page.getByRole('combobox', { name: '关联会话', exact: true })
-  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '当前中文会话', '另一个中文会话'])
+  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '当前中文会话', '更新后的中文标题'])
   await page.evaluate(() => window.fixture.setArchived('session-current', true))
   await page.waitForFunction(() => {
     const label = [...document.querySelectorAll('label')].find(node => node.textContent?.startsWith('关联会话'))
     return [...(label?.querySelector('select')?.options ?? [])].every(option => !option.textContent?.includes('当前中文会话'))
   })
-  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '另一个中文会话'])
+  assert.deepEqual(await createPicker.locator('option').allTextContents(), ['不关联会话', '更新后的中文标题'])
   await page.evaluate(() => window.fixture.setArchived('session-current', false))
   await page.waitForFunction(() => {
     const label = [...document.querySelectorAll('label')].find(node => node.textContent?.startsWith('关联会话'))
@@ -291,7 +294,9 @@ try {
   assert.equal(Buffer.from(captured.attachments[0].data, 'base64').toString(), 'document bytes')
   assert.deepEqual([...Buffer.from(captured.attachments[1].data, 'base64')], [137, 80, 78, 71])
   assert.equal(await page.evaluate(() => window.fixture.input().draft), '')
-  const notice = page.getByRole('alert')
+  // A Host toast lives for a few seconds, so the previous outcome may still be
+  // on screen; every check below is about the newest one.
+  const notice = page.getByRole('alert').last()
   await notice.filter({ hasText: '已创建任务：' }).waitFor()
   assert.equal(await page.getByTestId('capture-slot').innerHTML(), '', 'feedback must not occupy the composer slot')
   assert.equal(await notice.evaluate(element => element.parentElement === document.body), true, 'host Toast must portal outside the composer')

@@ -33,6 +33,28 @@ async function body() {
 }
 
 describe('task list paging layout', () => {
+  it('selects a workspace from the themed menu and resets paging', async () => {
+    const { list } = open()
+    await body()
+    fireEvent.click(screen.getByRole('button', { name: zh.nextPage }))
+    await screen.findByRole('button', { name: '编辑: Page 2' })
+    const trigger = screen.getByRole('button', { name: zh.workspace })
+    expect(trigger.textContent).toContain(zh.allWorkspaces)
+    fireEvent.click(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Workspace' }))
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, workspaceId: 'ws' })))
+    expect(trigger.textContent).toContain('Workspace')
+    expect(screen.queryByRole('menu')).toBeNull()
+    fireEvent.click(trigger)
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: zh.allWorkspaces }))
+    await waitFor(() => expect(list.mock.calls.at(-1)?.[0]).not.toHaveProperty('workspaceId'))
+    expect(trigger.textContent).toContain(zh.allWorkspaces)
+  })
+
   it('keeps the paging controls outside the scrolling body and starts a new page at the top', async () => {
     const { list } = open()
     const scroll = await body()

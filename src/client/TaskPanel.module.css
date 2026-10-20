@@ -86,8 +86,8 @@
 .listSkeleton span { display: block; height: 64px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-skeleton); }
 /* The view switch keeps the title row on one line and yields before the page
    actions wrap; it shares the filter chips' pressed-button shape. */
-.viewSwitch { flex: none; margin: 0 4px; }
-.selectedView { composes: selected; }
+.viewSwitch { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 4px; }
+.viewButton.viewButton { height: 28px; padding: 0 10px; font-size: 14px; line-height: 22px; }
 @media (max-width: 900px) { .viewSwitch { margin: 0; } }
 /* The rail reserved by `scrollbar-gutter` comes out of the rows, because this
    body scrolls inside the content column: every row ended one rail short of the
@@ -116,14 +116,17 @@
 /* The right group yields width to the status tabs instead of wrapping below
    them. The search input, not the whole group, absorbs the remaining space. */
 .toolbarRight { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; margin-left: auto; }
-.toolbar select, .dialog select {
+.dialog select {
   font: inherit; height: 36px; padding: 0 10px; border-radius: var(--dsw-radius-md); border: 0.5px solid var(--dsw-alias-border-l3);
   color: inherit; background: var(--dsw-alias-bg-base);
 }
-.toolbar select { flex: none; width: clamp(120px, 16vw, 180px); min-width: 120px; max-width: 180px; }
+.workspaceMenu { flex: none; width: clamp(120px, 16vw, 180px); min-width: 120px; max-width: 180px; }
+.workspaceTrigger.workspaceTrigger { width: 100%; justify-content: space-between; gap: 8px; }
+.workspaceName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceTrigger > svg { flex: none; }
 .toolbarRight > .textButton { flex: none; }
-.toolbar select:hover, .dialog select:hover { border-color: var(--dsw-alias-border-l2); }
-.toolbar select:focus-visible, .dialog select:focus-visible {
+.workspaceTrigger:hover, .dialog select:hover { border-color: var(--dsw-alias-border-l2); }
+.workspaceTrigger:focus-visible, .dialog select:focus-visible {
   outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;
 }
@@ -343,7 +346,7 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
   .reportButton { display: none; }
   .toolbar { flex-wrap: wrap; }
   .toolbarRight { flex: none; flex-wrap: wrap; width: 100%; margin-left: 0; }
-  .toolbar select { flex: 1; max-width: none; }
+  .workspaceMenu { flex: 1; max-width: none; }
   .searchBox { flex: none; width: 100%; }
   .searchBox input { width: 100%; flex: 1; }
 }
@@ -360,9 +363,9 @@ button:disabled, select:disabled, input:disabled { opacity: .5; cursor: default;
    without a second rule. */
 @media (pointer: coarse) {
   .filter, .selected, .searchClear, .searchButton, .delete, .doneState { min-height: 44px; }
-  .filter, .selected, .searchButton { height: 44px; }
+  .filter, .selected, .searchButton, .viewButton.viewButton { height: 44px; }
   .delete { width: 44px; height: 44px; }
-  .rowActions .start, .textButton, .pageSize select, .toolbar select, .dialogActions button, .dialogFooter button { min-height: 44px; }
+  .rowActions .start, .textButton, .pageSize select, .workspaceTrigger, .dialogActions button, .dialogFooter button { min-height: 44px; }
   .row { min-height: 44px; }
   .searchBox { height: 44px; }
   .searchBox input, .dialog input, .dialog textarea, .dialog select { font-size: 16px; line-height: 22px; }

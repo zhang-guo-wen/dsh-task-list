@@ -42,7 +42,10 @@ const face = {
   },
   list: async () => ({ items: tasks, total: tasks.length, page: 1, pageSize: 20 }),
   create: async (request: any) => {
-    const row = { ...request, notes: contentText(request.content), id: crypto.randomUUID(), version: 1, subtasks: [], createdAt: Date.now(), startedAt: null, completedAt: null }
+    // A create request carries no relations, so the stored row supplies the empty
+    // ones the Host always returns; the relationship views iterate them.
+    const row = { parentId: null, blockingIds: [], useWorktree: false, startedAt: null, completedAt: null, updatedAt: Date.now(),
+      ...request, notes: contentText(request.content), id: crypto.randomUUID(), version: 1, subtasks: [], createdAt: Date.now() }
     tasks = [row, ...tasks]
     attachments.set(row.id, request.attachments)
     return row

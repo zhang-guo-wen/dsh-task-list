@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, Modal, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, Menu, Modal, Pill, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, SEARCH_LIMIT, TASK_STATUSES,
@@ -157,6 +157,7 @@ export function TaskPanel({
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [searchText, setSearchText] = useState('')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
@@ -659,10 +660,19 @@ export function TaskPanel({
           aria-label={t('clearSearch')} onClick={clearSearch}>×</button>}
         <button type="submit" className={css.searchButton} disabled={loading}>{t('search')}</button>
       </form>
-      <select aria-label={t('workspace')} value={workspaceFilter} onChange={event => changeWorkspaceFilter(event.target.value)}>
-        <option value="all">{t('allWorkspaces')}</option>
-        {[...workspaceOptions].map(([id, name]) => <option key={id} value={`ws:${id}`}>{name}</option>)}
-      </select>
+      <Menu open={workspaceMenuOpen} portal className={css.workspaceMenu}
+        selectedId={workspaceFilter}
+        items={[{ id: 'all', label: t('allWorkspaces') },
+          ...[...workspaceOptions].map(([id, name]) => ({ id: `ws:${id}`, label: name }))]}
+        onClose={() => setWorkspaceMenuOpen(false)}
+        onSelect={id => { setWorkspaceMenuOpen(false); changeWorkspaceFilter(id) }}
+        anchor={<Button variant="outline" className={css.workspaceTrigger}
+          aria-label={t('workspace')} aria-haspopup="menu" aria-expanded={workspaceMenuOpen}
+          onClick={() => setWorkspaceMenuOpen(value => !value)}>
+          <span className={css.workspaceName}>{workspaceFilter === 'all'
+            ? t('allWorkspaces') : workspaceOptions.get(workspaceFilter.slice(3))}</span>
+          <IconChevronDownOutlineRegular size={16} />
+        </Button>} />
       <button type="button" className={css.textButton} onClick={() => void refresh()} disabled={loading}
         aria-busy={loading || undefined}>{t('refresh')}</button>
     </div>
@@ -824,16 +834,13 @@ export function TaskPanel({
     <p className={css.initWarning}>{t('initializeGitWarning')}</p>
   </Modal>
 
-  // The view switch belongs to the header, beside the page title, and holds for
-  // every surface that is not a full-page dialog. It is the panel's own pressed
-  // button group, the same control shape as the status filters below it: the
-  // three surfaces are one page's modes, not three pages to navigate to.
-  const viewSwitcher = <div className={css.viewSwitch + ' ' + css.filters} role="group" aria-label={t('viewLabel')}>
-    {(['list', 'canvas', 'board'] as TaskView[]).map(item => <button
-      key={item} type="button" className={view === item ? css.selectedView : css.filter}
+  // These pressed buttons switch surfaces within the same task page.
+  const viewSwitcher = <div className={css.viewSwitch} role="group" aria-label={t('viewLabel')}>
+    {(['list', 'canvas', 'board'] as TaskView[]).map(item => <Pill
+      key={item} className={css.viewButton} active={view === item}
       aria-pressed={view === item} onClick={() => setView(item)}>
       {t(item === 'list' ? 'viewList' : item === 'canvas' ? 'viewCanvas' : 'viewBoard')}
-    </button>)}
+    </Pill>)}
   </div>
 
   const header = <header className={css.header}>
