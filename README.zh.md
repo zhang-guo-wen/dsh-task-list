@@ -143,10 +143,10 @@ dsh plugin --profile web add @guowenzhang/dsh-task-list
 在本仓库目录执行：
 
 ```sh
-npm ci
-npm run typecheck
-npm test
-npm run build
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm test
+pnpm run build
 dsh plugin --profile web add 'link:/absolute/path/to/dsh-task-list'
 ```
 

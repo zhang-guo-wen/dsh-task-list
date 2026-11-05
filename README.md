@@ -141,10 +141,10 @@ Click **Statistics report** next to **New task** to open a separate report page.
 Run from this repository:
 
 ```sh
-npm ci
-npm run typecheck
-npm test
-npm run build
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm test
+pnpm run build
 dsh plugin --profile web add 'link:/absolute/path/to/dsh-task-list'
 ```
 

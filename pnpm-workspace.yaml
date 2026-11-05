@@ -1,0 +1,12 @@
+packages:
+  - .
+
+nodeLinker: hoisted
+strictPeerDependencies: false
+
+# 本仓的类型检查依赖 npm 的嵌套副本：pnpm 自动补装 peer 会把更严格的 SessionTarget
+# 声明提到顶层，改变 tsc 的解析结果；因此这里不自动补装 peer，改为显式声明所需包。
+autoInstallPeers: false
+
+allowBuilds:
+  'esbuild': true
